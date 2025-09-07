@@ -2,24 +2,14 @@
 
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { useAuthStore } from '@/store/auth-store'
 
 export default function Home() {
   const router = useRouter()
-  const { isAuthenticated, initializeUsers } = useAuthStore()
 
   useEffect(() => {
-    // אתחול משתמשים ברירת מחדל
-    initializeUsers()
-    
-    if (isAuthenticated) {
-      // המשתמש מחובר - הפנה לסידור עבודה
-      router.push('/schedule')
-    } else {
-      // המשתמש לא מחובר - הפנה להתחברות
-      router.push('/auth/signin')
-    }
-  }, [isAuthenticated, router, initializeUsers])
+    // הפנה להתחברות
+    router.push('/auth/signin')
+  }, [router])
 
   // מסך טעינה
   return (
