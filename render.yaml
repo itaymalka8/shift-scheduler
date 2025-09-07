@@ -1,0 +1,59 @@
+services:
+  # Backend API Service
+  - type: web
+    name: shift-scheduler-backend
+    env: node
+    plan: free
+    buildCommand: cd backend && npm install
+    startCommand: cd backend && npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: DB_HOST
+        fromDatabase:
+          name: shift-scheduler-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: shift-scheduler-db
+          property: port
+      - key: DB_NAME
+        fromDatabase:
+          name: shift-scheduler-db
+          property: database
+      - key: DB_USER
+        fromDatabase:
+          name: shift-scheduler-db
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: shift-scheduler-db
+          property: password
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 24h
+      - key: FRONTEND_URL
+        value: https://shift-scheduler-frontend.onrender.com
+
+  # Frontend Service
+  - type: web
+    name: shift-scheduler-frontend
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_PUBLIC_API_URL
+        value: https://shift-scheduler-backend.onrender.com/api
+
+  # PostgreSQL Database
+  - type: pserv
+    name: shift-scheduler-db
+    plan: free
+    databaseName: shift_scheduler
+    user: postgres
