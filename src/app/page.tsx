@@ -1,30 +1,43 @@
-import Link from 'next/link';
+'use client'
+
+import { useEffect } from 'react'
+import { useRouter } from 'next/navigation'
+import { useAuthStore } from '@/store/auth-store'
 
 export default function Home() {
+  const router = useRouter()
+  const { isAuthenticated, initializeUsers } = useAuthStore()
+
+  useEffect(() => {
+    // אתחול משתמשים ברירת מחדל
+    initializeUsers()
+    
+    if (isAuthenticated) {
+      // המשתמש מחובר - הפנה לסידור עבודה
+      router.push('/schedule')
+    } else {
+      // המשתמש לא מחובר - הפנה להתחברות
+      router.push('/auth/signin')
+    }
+  }, [isAuthenticated, router, initializeUsers])
+
+  // מסך טעינה
   return (
-    <div className="min-h-screen bg-gray-100 flex items-center justify-center">
-      <div className="bg-white p-8 rounded-lg shadow-md max-w-md w-full">
-        <h1 className="text-3xl font-bold text-gray-800 mb-4 text-center">
-          Shift Scheduler
-        </h1>
-        <p className="text-gray-600 mb-6 text-center">
-          Welcome to the Shift Scheduler application!
-        </p>
+    <div className="w-screen h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center">
+      <div className="text-center">
+        {/* ספינר טעינה */}
+        <div className="w-20 h-20 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-8"></div>
         
-        <div className="space-y-4">
-          <Link 
-            href="/dashboard" 
-            className="w-full bg-blue-600 text-white py-3 px-4 rounded-md hover:bg-blue-700 text-center block"
-          >
-            Enter Dashboard
-          </Link>
-          
-          <div className="text-sm text-gray-500 space-y-1">
-            <p>Backend: https://shift-scheduler-anao.onrender.com</p>
-            <p>Status: Connected ✅</p>
-          </div>
-        </div>
+        {/* כותרת האפליקציה */}
+        <h1 className="text-3xl md:text-4xl font-bold text-white mb-4">
+          סידור עבודה מודיעין בילוש שפט
+        </h1>
+        
+        {/* זכויות יוצרים */}
+        <p className="text-slate-300 text-sm">
+          © 2024 כל הזכויות שמורות לאיתי מלכא
+        </p>
       </div>
     </div>
-  );
+  )
 }
