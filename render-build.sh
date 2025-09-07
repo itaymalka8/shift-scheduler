@@ -1,14 +1,10 @@
 #!/usr/bin/env bash
-# Render build script for Shift Scheduler
+# Render build script for Backend
 
-echo "🚀 Starting Render build process..."
+echo "🚀 Starting Backend build process..."
 
 # Install dependencies
-echo "📦 Installing dependencies..."
+echo "📦 Installing backend dependencies..."
 npm install
 
-# Build the application
-echo "🔨 Building application..."
-npm run build
-
-echo "✅ Build completed successfully!"
+echo "✅ Backend build completed successfully!"

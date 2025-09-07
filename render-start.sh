@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Render start script for Shift Scheduler
+# Render start script for Backend
 
-echo "🚀 Starting Shift Scheduler on Render..."
+echo "🚀 Starting Backend on Render..."
 
-# Start the application
+# Start the backend server
 npm start
