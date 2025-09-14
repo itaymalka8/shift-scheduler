@@ -36,15 +36,15 @@ services:
       - key: JWT_EXPIRES_IN
         value: 24h
       - key: FRONTEND_URL
-        value: https://shift-scheduler-frontend.onrender.com
+        value: https://shift-scheduler-frontend-6erj.onrender.com
 
   # Frontend Service
   - type: web
-    name: shift-scheduler-frontend
+    name: shift-scheduler-frontend-6erj
     env: node
     plan: free
     buildCommand: npm install && npm run build
-    startCommand: npm start
+    startCommand: npx next start
     envVars:
       - key: NODE_ENV
         value: production

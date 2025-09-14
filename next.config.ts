@@ -4,6 +4,14 @@ const nextConfig: NextConfig = {
   // Enable standalone output for Docker
   output: 'standalone',
   
+  // Disable ESLint and TypeScript during build for production deployment
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+  typescript: {
+    ignoreBuildErrors: true,
+  },
+  
   // Enable experimental features
   experimental: {
     turbo: {

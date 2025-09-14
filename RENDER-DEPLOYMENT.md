@@ -1,104 +1,154 @@
-# Shift Scheduler - Render Deployment Guide
+# Shift Scheduler - מערכת ניהול משמרות
 
-## 🚀 פריסה ל-Render
+מערכת ניהול משמרות מתקדמת וחכמה למודיעין בילוש שפט.
 
-### שלב 1: הכנת Repository
+## תכונות המערכת
 
-1. העלה את הקוד ל-GitHub repository
-2. ודא שכל הקבצים נכללים:
-   - `render.yaml` (בתיקייה הראשית)
-   - `render-build.sh` (בתיקייה הראשית)
-   - `render-start.sh` (בתיקייה הראשית)
-   - `backend/render-build.sh`
-   - `backend/render-start.sh`
+- **מסך כניסה אינטראקטיבי** עם אנימציות מתקדמות
+- **ניהול משמרות** - סידור עבודה חכם ויעיל
+- **ניהול עובדים** - מעקב אחר עובדים ומשמרות
+- **ניהול כלי רכב** - מעקב אחר כלי רכב וזמינות
+- **דוחות וניתוח** - מעקב וניתוח ביצועים
+- **ממשק רספונסיבי** - מותאם לכל הגדלי מסך
 
-### שלב 2: יצירת שירותים ב-Render
+## טכנולוגיות
 
-#### 2.1 יצירת בסיס נתונים PostgreSQL
-1. היכנס ל-Render Dashboard
-2. לחץ על "New +" → "PostgreSQL"
-3. בחר "Free" plan
-4. שם: `shift-scheduler-db`
-5. לחץ "Create Database"
+- **Frontend**: Next.js 15, React 19, TypeScript
+- **Styling**: Tailwind CSS
+- **State Management**: Zustand
+- **Icons**: Font Awesome
+- **Deployment**: Render.com
 
-#### 2.2 יצירת Backend Service
-1. לחץ על "New +" → "Web Service"
-2. חבר את ה-GitHub repository
-3. הגדרות:
-   - **Name**: `shift-scheduler-backend`
-   - **Environment**: `Node`
-   - **Build Command**: `cd backend && npm install`
-   - **Start Command**: `cd backend && npm start`
-   - **Plan**: `Free`
+## פרסום ל-Render.com
 
-4. **Environment Variables**:
+### הגדרות הפרסום
+
+המערכת מוכנה לפרסום ב-Render.com עם הקובץ `render.yaml`:
+
+```yaml
+services:
+  # Frontend Service
+  - type: web
+    name: shift-scheduler-frontend-6erj
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_PUBLIC_API_URL
+        value: https://shift-scheduler-backend.onrender.com/api
+```
+
+### כתובת הפרסום
+
+האפליקציה תפורסם בכתובת:
+**https://shift-scheduler-frontend-6erj.onrender.com**
+
+### הוראות פרסום
+
+1. **העלה את הקוד ל-GitHub**
+2. **חבר את החשבון ל-Render.com**
+3. **בחר "New Web Service"**
+4. **בחר את הרפוזיטורי שלך**
+5. **Render יזהה אוטומטית את `render.yaml`**
+6. **לחץ על "Deploy"**
+
+### משתמשי ברירת מחדל
+
+המערכת כוללת משתמשי ברירת מחדל:
+- **Admin**: admin / admin123
+- **Manager**: manager / manager123
+- **User**: user / user123
+
+## פיתוח מקומי
+
+```bash
+# התקנת תלויות
+npm install
+
+# הרצה במצב פיתוח
+npm run dev
+
+# בנייה לפרסום
+npm run build
+
+# הרצה במצב ייצור
+npm start
+```
+
+## מסך הכניסה האינטראקטיבי
+
+המערכת כוללת מסך כניסה אינטראקטיבי עם:
+
+- **אנימציות מתקדמות** - חלקיקים נעים ואפקטי זוהר
+- **עיצוב מודרני** - צבעי כחול כהה ולבן
+- **רספונסיבי** - מותאם לכל הגדלי מסך
+- **אפקטי hover** - אינטראקטיביות מתקדמת
+- **זכויות יוצרים** - "כל הזכויות שמורות לאיתי מלכא"
+
+## נתיבי האפליקציה
+
+- **מסך ראשי**: `/` - מסך הכניסה האינטראקטיבי
+- **כניסה**: `/auth/signin` - דף התחברות
+- **הרשמה**: `/auth/signup` - דף הרשמה
+- **לוח זמנים**: `/schedule` - ניהול משמרות
+- **ניהול משתמשים**: `/admin/users` - ניהול משתמשים
+
+## פתרון בעיות
+
+### שגיאת 502 Bad Gateway
+אם אתה מקבל שגיאת 502, זה אומר שהשרת לא מצליח להתחיל. הפתרונות:
+
+1. **ודא שהבנייה הצליחה**:
+   ```bash
+   npm run build
    ```
-   NODE_ENV=production
-   PORT=10000
-   DB_HOST=[from database]
-   DB_PORT=[from database]
-   DB_NAME=[from database]
-   DB_USER=[from database]
-   DB_PASSWORD=[from database]
-   JWT_SECRET=[generate new]
-   JWT_EXPIRES_IN=24h
-   FRONTEND_URL=https://shift-scheduler-frontend.onrender.com
-   ```
 
-#### 2.3 יצירת Frontend Service
-1. לחץ על "New +" → "Web Service"
-2. חבר את אותו GitHub repository
-3. הגדרות:
-   - **Name**: `shift-scheduler-frontend`
-   - **Environment**: `Node`
-   - **Build Command**: `npm install && npm run build`
-   - **Start Command**: `npm start`
-   - **Plan**: `Free`
+2. **בדוק את הלוגים ב-Render**:
+   - לך לדשבורד של השירות
+   - לחץ על "Logs"
+   - חפש שגיאות בהפעלה
 
-4. **Environment Variables**:
-   ```
-   NODE_ENV=production
-   NEXT_PUBLIC_API_URL=https://shift-scheduler-backend.onrender.com/api
-   ```
+3. **ודא שהפורט מוגדר נכון**:
+   - Render משתמש בפורט דינמי
+   - השתמשנו ב-`npx next start` שמזהה אוטומטית את הפורט
 
-### שלב 3: הגדרת בסיס הנתונים
+### שגיאת 404
+אם אתה מקבל שגיאת 404, ודא ש:
+1. הקוד הועלה ל-GitHub
+2. הבנייה הצליחה ב-Render
+3. השירות רץ בהצלחה
 
-1. היכנס לבסיס הנתונים ב-Render
-2. לחץ על "Connect" → "External Connection"
-3. העתק את פרטי החיבור
-4. השתמש ב-PgAdmin או כלי אחר לחיבור
-5. הרץ את הסקריפטים מ-`backend/database/schema.js`
+### שגיאות בנייה
+אם יש שגיאות בנייה:
+1. ודא שהקוד עובר `npm run build` מקומית
+2. בדוק את הלוגים ב-Render
+3. ודא שכל התלויות מותקנות
 
-### שלב 4: בדיקת הפריסה
+### הגדרות Render המעודכנות
 
-1. **Backend**: `https://shift-scheduler-backend.onrender.com/api/health`
-2. **Frontend**: `https://shift-scheduler-frontend.onrender.com`
+```yaml
+services:
+  # Frontend Service
+  - type: web
+    name: shift-scheduler-frontend-6erj
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npx next start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_PUBLIC_API_URL
+        value: https://shift-scheduler-backend.onrender.com/api
+```
 
-### שלב 5: התחברות ראשונית
+## תמיכה
 
-- **URL**: `https://shift-scheduler-frontend.onrender.com`
-- **Username**: `itaymalka8`
-- **Password**: `1990`
+לשאלות ותמיכה, פנה לאיתי מלכא.
 
-## 🔧 פתרון בעיות
+---
 
-### בעיות נפוצות:
-
-1. **Build fails**: ודא שכל הקבצים נכללים ב-repository
-2. **Database connection**: בדוק את ה-environment variables
-3. **CORS errors**: ודא שה-FRONTEND_URL מוגדר נכון
-4. **Port issues**: Render משתמש בפורט 10000
-
-### לוגים:
-- Backend: Render Dashboard → shift-scheduler-backend → Logs
-- Frontend: Render Dashboard → shift-scheduler-frontend → Logs
-
-## 📱 כתובות הפריסה
-
-- **Frontend**: `https://shift-scheduler-frontend.onrender.com`
-- **Backend API**: `https://shift-scheduler-backend.onrender.com/api`
-- **Health Check**: `https://shift-scheduler-backend.onrender.com/api/health`
-
-## 🎉 סיום
-
-לאחר הפריסה, האפליקציה תהיה זמינה ברשת ותוכל לגשת אליה מכל מקום!
+© 2024 כל הזכויות שמורות לאיתי מלכא
