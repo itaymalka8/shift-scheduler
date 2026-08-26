@@ -1,28 +1,16 @@
 {
-  "name": "מערכת ניהול משמרות חכמה",
-  "short_name": "ניהול משמרות",
-  "description": "מערכת ניהול סידור עבודה של מודיעין בילוש שפט",
+  "name": "Goalx Manager",
+  "short_name": "Goalx",
+  "description": "משחק ניהול כדורגל מקוון",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0f172a",
-  "theme_color": "#3b82f6",
-  "orientation": "portrait-primary",
+  "background_color": "#F5F4FA",
+  "theme_color": "#3B2F7A",
   "icons": [
     {
-      "src": "/icon-192x192.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "maskable any"
-    },
-    {
-      "src": "/icon-512x512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "maskable any"
+      "src": "/logo.png",
+      "sizes": "1254x1254",
+      "type": "image/png"
     }
-  ],
-  "categories": ["productivity", "business"],
-  "lang": "he",
-  "dir": "rtl"
+  ]
 }
-
