@@ -109,6 +109,9 @@ const he = {
   "dashboard.signOut": "התנתקות",
 
   "league.title": "הליגה שלי",
+  "league.viewAllLeagues": "צפו בכל הליגות",
+  "league.allLeaguesTitle": "כל הליגות",
+  "league.backToDashboard": "חזרה לדשבורד",
   "league.notAssigned": "הקבוצה שלכם עדיין לא משויכת לליגה פעילה במדינה שלה.",
   "league.standings": "טבלת הליגה",
   "league.upcomingFixtures": "המשחקים הקרובים",
@@ -237,6 +240,9 @@ const en: Record<keyof typeof he, string> = {
   "dashboard.signOut": "Sign out",
 
   "league.title": "My League",
+  "league.viewAllLeagues": "View all leagues",
+  "league.allLeaguesTitle": "All leagues",
+  "league.backToDashboard": "Back to dashboard",
   "league.notAssigned": "Your team isn't assigned to an active league in its country yet.",
   "league.standings": "Standings",
   "league.upcomingFixtures": "Upcoming fixtures",
@@ -362,6 +368,9 @@ const ar: Record<keyof typeof he, string> = {
   "dashboard.signOut": "تسجيل الخروج",
 
   "league.title": "دوريّ",
+  "league.viewAllLeagues": "عرض كل الدوريات",
+  "league.allLeaguesTitle": "كل الدوريات",
+  "league.backToDashboard": "العودة للوحة التحكم",
   "league.notAssigned": "فريقك لم يُنسب بعد إلى دوري نشط في دولته.",
   "league.standings": "جدول الترتيب",
   "league.upcomingFixtures": "المباريات القادمة",

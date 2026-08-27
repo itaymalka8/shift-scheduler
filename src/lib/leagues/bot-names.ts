@@ -1,9 +1,14 @@
 // Deterministic name generator for the placeholder clubs that fill a
 // division until real managers register and take their slots over (see
-// seed.ts / signup.ts). Deliberately skips Israel's handful of truly famous
-// club identities (Tel Aviv, Haifa, Jerusalem, Beer Sheva, Petah Tikva) so
-// bot teams don't read as a specific real-world club.
-const PREFIXES = ["הפועל", "מכבי", "בית\"ר", "עירוני", "הכוח", "א.ס"]
+// seed.ts / assign.ts). Deliberately avoids real club branding (Hapoel,
+// Maccabi, Beitar, etc.) and Israel's handful of truly famous club
+// identities (Tel Aviv, Haifa, Jerusalem, Beer Sheva, Petah Tikva) so bot
+// teams never read as a specific real-world club.
+const PREFIXES = [
+  "איחוד", "בני", "החדשה", "הישנה", "כוכבי", "שועלי", "אריות", "סוסי",
+  "נשרי", "זאבי", "נמרי", "ברקי", "דובי", "גיבורי", "אלופי", "לוחמי",
+  "עיטי", "פרשי",
+]
 
 const PLACES = [
   "אשדוד", "אשקלון", "עפולה", "נתניה", "חדרה", "רעננה", "הרצליה", "לוד",
@@ -16,13 +21,19 @@ const PLACES = [
   "הוד השרון", "רמת השרון", "ראש העין", "גבעת שמואל",
 ]
 
-/** Returns `count` unique deterministic club names, e.g. "הפועל אשדוד". */
+/**
+ * Returns `count` unique deterministic club names, e.g. "איחוד אשדוד".
+ * Cycles through every prefix for each place before moving to the next
+ * place, so a full division's worth of names (~20-60) already samples
+ * most prefixes instead of leaning on just the first one or two.
+ */
 export function generateBotTeamNames(count: number): string[] {
   const names: string[] = []
-  for (let round = 0; names.length < count && round < PREFIXES.length; round++) {
-    for (const place of PLACES) {
+  for (const place of PLACES) {
+    if (names.length >= count) break
+    for (const prefix of PREFIXES) {
       if (names.length >= count) break
-      names.push(`${PREFIXES[round]} ${place}`)
+      names.push(`${prefix} ${place}`)
     }
   }
   return names

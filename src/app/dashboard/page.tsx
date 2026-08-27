@@ -1,4 +1,5 @@
 import Image from "next/image"
+import Link from "next/link"
 import { cookies } from "next/headers"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
@@ -95,7 +96,14 @@ export default async function DashboardPage() {
 
         <Card className="mt-6">
           <CardHeader>
-            <CardTitle>{t("league.title")}</CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle>{t("league.title")}</CardTitle>
+              {division && (
+                <Link href="/league" className="text-sm text-primary hover:underline">
+                  {t("league.viewAllLeagues")}
+                </Link>
+              )}
+            </div>
             {divisionName && <CardDescription>{divisionName}</CardDescription>}
           </CardHeader>
           <CardContent>
