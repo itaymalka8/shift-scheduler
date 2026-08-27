@@ -3,7 +3,7 @@ services:
     name: goalx-manager
     env: node
     plan: free
-    buildCommand: npm install && npx prisma migrate deploy && npm run build
+    buildCommand: npm install --include=dev && npx prisma migrate deploy && npm run build
     startCommand: npx next start
     envVars:
       - key: NODE_ENV
