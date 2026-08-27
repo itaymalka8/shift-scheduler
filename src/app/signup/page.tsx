@@ -17,7 +17,7 @@ import {
 import { markLoginRemember } from "@/lib/remember-me"
 import { useLocale, useT } from "@/lib/i18n/locale-context"
 import type { TranslationKey } from "@/lib/i18n/translations"
-import { getCountryOptions } from "@/lib/countries"
+import { getCountryOptions, isLaunchCountry } from "@/lib/countries"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -535,6 +535,12 @@ export default function SignUpPage() {
                           {countryOptions.map((c) => (
                             <SelectItem key={c.code} value={c.code}>
                               {c.name}
+                              {!c.isLaunchCountry && (
+                                <span className="text-muted-foreground">
+                                  {" "}
+                                  ({t("team.countryComingSoonBadge")})
+                                </span>
+                              )}
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -545,6 +551,9 @@ export default function SignUpPage() {
                     <p className="text-sm text-destructive">
                       {teamForm.formState.errors.countryCode.message}
                     </p>
+                  )}
+                  {teamForm.watch("countryCode") && !isLaunchCountry(teamForm.watch("countryCode")) && (
+                    <p className="text-sm text-muted-foreground">{t("team.countryComingSoonNote")}</p>
                   )}
                 </div>
 
