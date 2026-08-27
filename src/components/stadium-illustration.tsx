@@ -56,6 +56,19 @@ function lerp(from: number, to: number, t: number): number {
   return from + (to - from) * t
 }
 
+/** Walks the perimeter of an axis-aligned rectangle (half-extents hw/hh) starting
+ *  at the top-left corner and going clockwise; t is the fraction traveled (0..1). */
+function pointOnRectPerimeter(hw: number, hh: number, t: number): { x: number; y: number } {
+  const w = hw * 2
+  const h = hh * 2
+  const perimeter = 2 * (w + h)
+  const d = ((t % 1) + 1) % 1 * perimeter
+  if (d < w) return { x: -hw + d, y: -hh }
+  if (d < w + h) return { x: hw, y: -hh + (d - w) }
+  if (d < 2 * w + h) return { x: hw - (d - w - h), y: hh }
+  return { x: -hw, y: hh - (d - 2 * w - h) }
+}
+
 export function StadiumIllustration({
   style,
   capacity = MIN_STADIUM_CAPACITY,
@@ -68,7 +81,7 @@ export function StadiumIllustration({
   const cfg = getStadiumStyleConfig(style)
   const uid = cfg.id
   const pitchRx = cfg.intimate ? 108 : 98
-  const pitchRy = cfg.intimate ? 40 : 36
+  const pitchRy = cfg.intimate ? 48 : 44
 
   const growth = getCapacityGrowth(capacity)
   const seatMode = capacity <= SEAT_MODE_THRESHOLD
@@ -133,11 +146,9 @@ export function StadiumIllustration({
 
       {seatMode ? (
         Array.from({ length: seatCount }).map((_, i) => {
-          const angle = (i / seatCount) * Math.PI * 2
-          const rx = pitchRx + 16
-          const ry = pitchRy + 14
-          const x = 200 + rx * Math.cos(angle)
-          const y = 120 + ry * Math.sin(angle)
+          const { x: ox, y: oy } = pointOnRectPerimeter(pitchRx + 16, pitchRy + 14, i / seatCount)
+          const x = 200 + ox
+          const y = 120 + oy
           return <rect key={i} x={x - 3} y={y - 2.5} width="6" height="5" rx="1" fill={cfg.accent} opacity="0.9" />
         })
       ) : cfg.shape === "rect" ? (
@@ -163,6 +174,9 @@ export function StadiumIllustration({
                 height={h}
                 rx="14"
                 fill={i % 2 === 0 ? `url(#bowl-outer-${uid})` : `url(#tier-${uid})`}
+                stroke="#000000"
+                strokeOpacity="0.22"
+                strokeWidth="1.5"
               />
             )
           })}
@@ -185,6 +199,9 @@ export function StadiumIllustration({
                 rx={rx}
                 ry={ry}
                 fill={i % 2 === 0 ? `url(#bowl-outer-${uid})` : `url(#tier-${uid})`}
+                stroke="#000000"
+                strokeOpacity="0.22"
+                strokeWidth="1.5"
               />
             )
           })}
@@ -222,46 +239,70 @@ export function StadiumIllustration({
           />
         ))}
 
-      {cfg.track && (
-        <ellipse
-          cx="200"
-          cy="120"
-          rx={pitchRx + 16}
-          ry={pitchRy + 12}
-          fill="none"
-          stroke={cfg.accent}
-          strokeWidth="10"
-          opacity="0.85"
-        />
-      )}
+      {cfg.track &&
+        (() => {
+          const trackHalfH = pitchRy + 12
+          const trackHalfW = pitchRx + 18
+          return (
+            <rect
+              x={200 - trackHalfW}
+              y={120 - trackHalfH}
+              width={trackHalfW * 2}
+              height={trackHalfH * 2}
+              rx={trackHalfH}
+              ry={trackHalfH}
+              fill="none"
+              stroke={cfg.accent}
+              strokeWidth="10"
+              opacity="0.85"
+            />
+          )
+        })()}
 
-      <ellipse
-        cx="200"
-        cy="120"
-        rx={pitchRx}
-        ry={pitchRy}
+      <rect
+        x={200 - pitchRx}
+        y={120 - pitchRy}
+        width={pitchRx * 2}
+        height={pitchRy * 2}
         fill={`url(#pitch-${uid})`}
         stroke="#ffffff"
         strokeOpacity="0.7"
         strokeWidth="2"
       />
+      {/* corner arcs */}
+      {[
+        { cx: 200 - pitchRx, cy: 120 - pitchRy, d: "M -1 7 A 8 8 0 0 1 7 -1" },
+        { cx: 200 + pitchRx, cy: 120 - pitchRy, d: "M -7 -1 A 8 8 0 0 1 1 7" },
+        { cx: 200 + pitchRx, cy: 120 + pitchRy, d: "M 1 -7 A 8 8 0 0 1 -7 1" },
+        { cx: 200 - pitchRx, cy: 120 + pitchRy, d: "M 7 1 A 8 8 0 0 1 -1 -7" },
+      ].map((c, i) => (
+        <path
+          key={i}
+          d={c.d}
+          transform={`translate(${c.cx} ${c.cy})`}
+          fill="none"
+          stroke="#ffffff"
+          strokeOpacity="0.6"
+          strokeWidth="1.5"
+        />
+      ))}
       <line x1="200" y1={120 - pitchRy} x2="200" y2={120 + pitchRy} stroke="#ffffff" strokeOpacity="0.7" strokeWidth="2" />
       <ellipse cx="200" cy="120" rx="20" ry="9" fill="none" stroke="#ffffff" strokeOpacity="0.7" strokeWidth="2" />
-      <ellipse
-        cx={200 - pitchRx + 22}
-        cy="120"
-        rx="10"
-        ry="16"
+      <rect
+        x={200 - pitchRx}
+        y={120 - Math.min(pitchRy * 0.85, pitchRy - 4)}
+        width="22"
+        height={Math.min(pitchRy * 0.85, pitchRy - 4) * 2}
         fill="none"
         stroke="#ffffff"
         strokeOpacity="0.6"
         strokeWidth="2"
       />
-      <ellipse
-        cx={200 + pitchRx - 22}
-        cy="120"
-        rx="10"
-        ry="16"
+      <rect
+        x={200 + pitchRx - 22}
+        y={120 - Math.min(pitchRy * 0.85, pitchRy - 4)}
+        width="22"
+        height={Math.min(pitchRy * 0.85, pitchRy - 4) * 2}
         fill="none"
         stroke="#ffffff"
         strokeOpacity="0.6"
