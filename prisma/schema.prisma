@@ -23,7 +23,9 @@ model User {
 model Team {
   id            String   @id @default(cuid())
   name          String
-  crestPreset   String?
+  crestShape    String?
+  crestIcon     String?
+  crestColor    String?
   crestImageUrl String?
   createdAt     DateTime @default(now())
   user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)

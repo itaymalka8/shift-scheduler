@@ -7,44 +7,114 @@ import {
   Flame,
   Crown,
   Swords,
+  Target,
+  Rocket,
+  Gem,
+  Award,
+  Flag,
   CircleDot,
   type LucideIcon,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-export interface CrestPreset {
-  id: string
-  label: string
-  icon: LucideIcon
-  color: string
-}
+export type CrestShapeId = "circle" | "shield" | "hexagon" | "squircle"
 
-export const CREST_PRESETS: CrestPreset[] = [
-  { id: "shield-indigo", label: "מגן אינדיגו", icon: Shield, color: "#3B2F7A" },
-  { id: "shield-violet", label: "מגן סגול", icon: ShieldCheck, color: "#6C4FD9" },
-  { id: "trophy-amber", label: "גביע ענבר", icon: Trophy, color: "#D97706" },
-  { id: "star-rose", label: "כוכב אדום", icon: Star, color: "#E11D48" },
-  { id: "zap-sky", label: "ברק תכלת", icon: Zap, color: "#0284C7" },
-  { id: "flame-orange", label: "להבה כתומה", icon: Flame, color: "#EA580C" },
-  { id: "crown-emerald", label: "כתר ירוק", icon: Crown, color: "#059669" },
-  { id: "swords-slate", label: "חרבות אפור", icon: Swords, color: "#334155" },
-  { id: "dot-fuchsia", label: "עיגול פוקסיה", icon: CircleDot, color: "#C026D3" },
+export const CREST_SHAPES: { id: CrestShapeId; label: string }[] = [
+  { id: "circle", label: "עיגול" },
+  { id: "shield", label: "מגן" },
+  { id: "hexagon", label: "משושה" },
+  { id: "squircle", label: "ריבוע מעוגל" },
 ]
 
-export const DEFAULT_CREST_PRESET = CREST_PRESETS[0].id
+export const DEFAULT_CREST_SHAPE: CrestShapeId = "circle"
 
-export function getCrestPreset(id: string | null | undefined): CrestPreset {
-  return CREST_PRESETS.find((p) => p.id === id) ?? CREST_PRESETS[0]
+export function isCrestShape(value: string | null | undefined): value is CrestShapeId {
+  return CREST_SHAPES.some((s) => s.id === value)
+}
+
+function getShapeClassName(shape: CrestShapeId): string {
+  if (shape === "circle") return "rounded-full"
+  if (shape === "squircle") return "rounded-2xl"
+  return ""
+}
+
+function getShapeStyle(shape: CrestShapeId): React.CSSProperties {
+  switch (shape) {
+    case "shield":
+      return { clipPath: "polygon(0% 0%, 100% 0%, 100% 55%, 50% 100%, 0% 55%)" }
+    case "hexagon":
+      return { clipPath: "polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%)" }
+    default:
+      return {}
+  }
+}
+
+export const CREST_ICON_OPTIONS: { id: string; icon: LucideIcon }[] = [
+  { id: "shield", icon: Shield },
+  { id: "shield-check", icon: ShieldCheck },
+  { id: "trophy", icon: Trophy },
+  { id: "star", icon: Star },
+  { id: "zap", icon: Zap },
+  { id: "flame", icon: Flame },
+  { id: "crown", icon: Crown },
+  { id: "swords", icon: Swords },
+  { id: "target", icon: Target },
+  { id: "rocket", icon: Rocket },
+  { id: "gem", icon: Gem },
+  { id: "award", icon: Award },
+  { id: "flag", icon: Flag },
+  { id: "circle-dot", icon: CircleDot },
+]
+
+const CREST_ICON_MAP: Record<string, LucideIcon> = Object.fromEntries(
+  CREST_ICON_OPTIONS.map((o) => [o.id, o.icon])
+)
+
+export const DEFAULT_CREST_ICON = CREST_ICON_OPTIONS[0].id
+
+export function isCrestIcon(value: string | null | undefined): boolean {
+  return !!value && value in CREST_ICON_MAP
+}
+
+function getCrestIconComponent(id?: string | null): LucideIcon {
+  return (id && CREST_ICON_MAP[id]) || CREST_ICON_MAP[DEFAULT_CREST_ICON]
+}
+
+export const CREST_COLORS = [
+  "#3B2F7A",
+  "#6C4FD9",
+  "#0284C7",
+  "#0D9488",
+  "#059669",
+  "#65A30D",
+  "#D97706",
+  "#EA580C",
+  "#DC2626",
+  "#E11D48",
+  "#C026D3",
+  "#334155",
+]
+
+export const DEFAULT_CREST_COLOR = CREST_COLORS[0]
+
+export function isCrestColor(value: string | null | undefined): boolean {
+  return !!value && CREST_COLORS.includes(value)
 }
 
 interface TeamCrestProps {
-  preset?: string | null
+  shape?: string | null
+  icon?: string | null
+  color?: string | null
   imageUrl?: string | null
   size?: number
   className?: string
 }
 
-export function TeamCrest({ preset, imageUrl, size = 64, className }: TeamCrestProps) {
+export function TeamCrest({ shape, icon, color, imageUrl, size = 64, className }: TeamCrestProps) {
+  const resolvedShape = isCrestShape(shape) ? shape : DEFAULT_CREST_SHAPE
+  const shapeClassName = getShapeClassName(resolvedShape)
+  const shapeStyle = getShapeStyle(resolvedShape)
+
   if (imageUrl) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
@@ -53,21 +123,21 @@ export function TeamCrest({ preset, imageUrl, size = 64, className }: TeamCrestP
         alt="סמל הקבוצה"
         width={size}
         height={size}
-        className={cn("rounded-full object-cover border border-border", className)}
-        style={{ width: size, height: size }}
+        className={cn("object-cover border border-border", shapeClassName, className)}
+        style={{ width: size, height: size, ...shapeStyle }}
       />
     )
   }
 
-  const crest = getCrestPreset(preset)
-  const Icon = crest.icon
+  const Icon = getCrestIconComponent(icon)
+  const resolvedColor = isCrestColor(color) ? (color as string) : DEFAULT_CREST_COLOR
 
   return (
     <div
-      className={cn("flex items-center justify-center rounded-full border border-white/10", className)}
-      style={{ width: size, height: size, backgroundColor: crest.color }}
+      className={cn("flex items-center justify-center border border-white/10", shapeClassName, className)}
+      style={{ width: size, height: size, backgroundColor: resolvedColor, ...shapeStyle }}
     >
-      <Icon color="white" size={Math.round(size * 0.55)} strokeWidth={2} />
+      <Icon color="white" size={Math.round(size * 0.5)} strokeWidth={2} />
     </div>
   )
 }

@@ -29,7 +29,13 @@ export default async function DashboardPage() {
         <Card>
           <CardHeader>
             <div className="flex items-center gap-4">
-              <TeamCrest preset={team?.crestPreset} imageUrl={team?.crestImageUrl} size={56} />
+              <TeamCrest
+                shape={team?.crestShape}
+                icon={team?.crestIcon}
+                color={team?.crestColor}
+                imageUrl={team?.crestImageUrl}
+                size={56}
+              />
               <div>
                 <CardTitle className="text-2xl">
                   ברוכים הבאים, קבוצת {team?.name ?? session?.user?.teamName ?? ""}

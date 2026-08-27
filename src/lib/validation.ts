@@ -7,7 +7,9 @@ export const registerSchema = z
     email: z.string().email("כתובת אימייל לא תקינה"),
     password: z.string().min(6, "הסיסמה חייבת להכיל לפחות 6 תווים"),
     confirmPassword: z.string(),
-    crestPreset: z.string().optional(),
+    crestShape: z.string().optional(),
+    crestIcon: z.string().optional(),
+    crestColor: z.string().optional(),
   })
   .refine((data) => data.password === data.confirmPassword, {
     message: "הסיסמאות אינן תואמות",

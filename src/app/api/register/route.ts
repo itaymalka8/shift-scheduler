@@ -5,7 +5,14 @@ import path from "path"
 import bcrypt from "bcryptjs"
 import { prisma } from "@/lib/prisma"
 import { registerSchema } from "@/lib/validation"
-import { CREST_PRESETS, DEFAULT_CREST_PRESET } from "@/components/team-crest"
+import {
+  DEFAULT_CREST_COLOR,
+  DEFAULT_CREST_ICON,
+  DEFAULT_CREST_SHAPE,
+  isCrestColor,
+  isCrestIcon,
+  isCrestShape,
+} from "@/components/team-crest"
 
 const MAX_CREST_SIZE = 2 * 1024 * 1024 // 2MB
 const ALLOWED_CREST_TYPES: Record<string, string> = {
@@ -24,7 +31,9 @@ export async function POST(request: Request) {
     email: formData.get("email"),
     password: formData.get("password"),
     confirmPassword: formData.get("confirmPassword"),
-    crestPreset: formData.get("crestPreset") || undefined,
+    crestShape: formData.get("crestShape") || undefined,
+    crestIcon: formData.get("crestIcon") || undefined,
+    crestColor: formData.get("crestColor") || undefined,
   })
 
   if (!parsed.success) {
@@ -34,7 +43,7 @@ export async function POST(request: Request) {
     )
   }
 
-  const { name, teamName, email, password, crestPreset } = parsed.data
+  const { name, teamName, email, password, crestShape, crestIcon, crestColor } = parsed.data
 
   const existing = await prisma.user.findUnique({ where: { email } })
   if (existing) {
@@ -74,11 +83,17 @@ export async function POST(request: Request) {
   }
 
   const passwordHash = await bcrypt.hash(password, 10)
-  const resolvedPreset = crestImageUrl
+  const resolvedShape = isCrestShape(crestShape) ? crestShape : DEFAULT_CREST_SHAPE
+  const resolvedIcon = crestImageUrl
     ? null
-    : CREST_PRESETS.some((p) => p.id === crestPreset)
-      ? crestPreset
-      : DEFAULT_CREST_PRESET
+    : isCrestIcon(crestIcon)
+      ? crestIcon
+      : DEFAULT_CREST_ICON
+  const resolvedColor = crestImageUrl
+    ? null
+    : isCrestColor(crestColor)
+      ? crestColor
+      : DEFAULT_CREST_COLOR
 
   await prisma.user.create({
     data: {
@@ -88,7 +103,9 @@ export async function POST(request: Request) {
       team: {
         create: {
           name: teamName,
-          crestPreset: resolvedPreset,
+          crestShape: resolvedShape,
+          crestIcon: resolvedIcon,
+          crestColor: resolvedColor,
           crestImageUrl,
         },
       },
