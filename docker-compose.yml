@@ -6,14 +6,11 @@ services:
     container_name: goalx_manager_app
     environment:
       NODE_ENV: production
-      DATABASE_URL: file:./dev.db
+      # Postgres, e.g. a free Neon project (https://neon.tech) - override
+      # with a real connection string when running this compose file.
+      DATABASE_URL: postgresql://user:password@host/dbname?sslmode=require
       NEXTAUTH_URL: http://localhost:3000
       NEXTAUTH_SECRET: change-me-in-production
     ports:
       - "3000:3000"
-    volumes:
-      - goalx_data:/app/prisma
     restart: unless-stopped
-
-volumes:
-  goalx_data:

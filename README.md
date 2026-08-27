@@ -36,10 +36,13 @@ npm run dev
 ראו `.env.example`:
 
 ```bash
-DATABASE_URL="file:./dev.db"
+DATABASE_URL="postgresql://user:password@host/dbname?sslmode=require"
 NEXTAUTH_SECRET="secret-אקראי"
 NEXTAUTH_URL="http://localhost:3000"
 ```
+
+מסד הנתונים הוא Postgres (לא SQLite) - כולל בפיתוח מקומי, כדי לשקף מקרוב את הפרודקשן.
+לבדיקה מהירה מקומית אפשר [Neon](https://neon.tech) (טיר חינמי, לא פג תוקף) או Postgres מקומי.
 
 ## 🏗️ ארכיטקטורה
 
@@ -57,7 +60,7 @@ prisma/
 
 - **Next.js 15** (App Router) + **React 19** + **TypeScript**
 - **Tailwind CSS v4** + **shadcn/ui** (Radix primitives)
-- **Prisma** + **SQLite** (בפיתוח; ניתן לעבור ל-Postgres בפרודקשן)
+- **Prisma** + **PostgreSQL**
 - **NextAuth.js** (Credentials provider) + **bcryptjs**
 
 ## 📄 רישיון

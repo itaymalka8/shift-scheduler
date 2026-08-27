@@ -7,8 +7,10 @@ const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient }
 // same long-running Node process (unlike a single serverless invocation), so
 // skipping this cache in production - as the old Vercel-oriented guidance
 // suggested - let different routes end up with their own independent
-// PrismaClient/SQLite connection instead of sharing one, causing reads right
-// after a write (e.g. logging in right after registering) to intermittently
-// miss data that was just committed by a different connection.
+// PrismaClient/DB connection pool instead of sharing one. With the previous
+// SQLite database this caused reads right after a write (e.g. logging in
+// right after registering) to intermittently miss data just committed by a
+// different connection; against a hosted Postgres it would instead needlessly
+// multiply open connections against the database's connection limit.
 export const prisma = globalForPrisma.prisma ?? new PrismaClient()
 globalForPrisma.prisma = prisma
