@@ -35,11 +35,11 @@ async function refreshBotTeamNames(tx: Prisma.TransactionClient): Promise<void> 
     include: { teams: { include: { team: true }, orderBy: { joinedAt: "asc" } } },
   })
 
-  let divisionOrdinal = 0
+  let nameIndex = 0
   for (const division of divisions) {
     const botMemberships = division.teams.filter((dt) => dt.team.isBot)
-    const names = generateBotTeamNames(botMemberships.length, divisionOrdinal)
-    divisionOrdinal++
+    const names = generateBotTeamNames(botMemberships.length, nameIndex)
+    nameIndex += botMemberships.length
 
     for (let i = 0; i < botMemberships.length; i++) {
       const team = botMemberships[i].team
@@ -70,7 +70,6 @@ export async function ensureIsraelSeasonSeeded(): Promise<void> {
   }
 
   let nameIndex = 0
-  let divisionOrdinal = 0
 
   await prisma.$transaction(
     async (tx) => {
@@ -89,10 +88,10 @@ export async function ensureIsraelSeasonSeeded(): Promise<void> {
             },
           })
 
-          // Generated per division (not one global list sliced up) so every
-          // division draws its own set of distinct places - see bot-names.ts.
-          const names = generateBotTeamNames(tierConfig.groupSize, divisionOrdinal)
-          divisionOrdinal++
+          // One continuous index across every division (not one global list
+          // sliced up ahead of time) so places/prefixes never overlap
+          // between divisions either - see bot-names.ts.
+          const names = generateBotTeamNames(tierConfig.groupSize, nameIndex)
 
           const teamIds: string[] = []
           for (let i = 0; i < tierConfig.groupSize; i++) {

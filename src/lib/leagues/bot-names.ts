@@ -35,24 +35,26 @@ const PLACES = [
 ]
 
 /**
- * Returns `count` unique deterministic club names, e.g. "איחוד ירושלים".
- * Cycles through every place for each prefix before moving to the next
- * prefix, so any contiguous slice of up to PLACES.length names (i.e. any
- * one division) draws from distinct places - no city repeats within a
- * division as long as the division is smaller than the place list.
+ * Returns `count` unique deterministic club names, e.g. "איחוד ירושלים",
+ * starting at `startIndex` in a shared place/prefix sequence (pass a
+ * running total of teams generated so far - one continuous counter across
+ * every division, not reset per call - so different divisions land on
+ * different places and prefixes instead of overlapping).
  *
- * `prefixOffset` shifts the starting prefix (pass a division's ordinal so
- * different divisions lean on different prefixes instead of every bot in
- * the country starting with the same one).
+ * Places advance once per name, so within any one division (count places
+ * ≤ PLACES.length) every place is distinct - no repeated city. Prefixes
+ * also advance once per name but the prefix list is shorter (18), so a
+ * prefix repeats at most ⌈count / 18⌉ times within a division - for a
+ * 20-team division that's at most twice, never three teams sharing one
+ * prefix in a row.
  */
-export function generateBotTeamNames(count: number, prefixOffset = 0): string[] {
+export function generateBotTeamNames(count: number, startIndex = 0): string[] {
   const names: string[] = []
-  for (let round = 0; names.length < count; round++) {
-    const prefix = PREFIXES[(round + prefixOffset) % PREFIXES.length]
-    for (const place of PLACES) {
-      if (names.length >= count) break
-      names.push(`${prefix} ${place}`)
-    }
+  for (let i = 0; i < count; i++) {
+    const n = startIndex + i
+    const place = PLACES[n % PLACES.length]
+    const prefix = PREFIXES[n % PREFIXES.length]
+    names.push(`${prefix} ${place}`)
   }
   return names
 }
