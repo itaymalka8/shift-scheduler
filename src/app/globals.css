@@ -121,7 +121,6 @@
 
   body {
     @apply bg-background text-foreground;
-    direction: rtl;
     min-height: 100vh;
   }
 }

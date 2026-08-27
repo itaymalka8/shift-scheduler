@@ -83,6 +83,7 @@ export const authOptions: NextAuthOptions = {
           crestColor: DEFAULT_CREST_COLOR,
           crestSecondaryColor: DEFAULT_CREST_SECONDARY_COLOR,
           crestBorderColor: DEFAULT_CREST_BORDER_COLOR,
+          crowdStyle: "calm",
         },
       })
     },

@@ -4,7 +4,7 @@ import { mkdir, writeFile } from "fs/promises"
 import path from "path"
 import bcrypt from "bcryptjs"
 import { prisma } from "@/lib/prisma"
-import { registerSchema } from "@/lib/validation"
+import { CROWD_STYLES, makeAccountSchema, makeTeamDetailsSchema } from "@/lib/validation"
 import {
   DEFAULT_CREST_BORDER_COLOR,
   DEFAULT_CREST_COLOR,
@@ -26,10 +26,17 @@ const ALLOWED_CREST_TYPES: Record<string, string> = {
   "image/svg+xml": "svg",
 }
 
+// Server-side validation is a defense-in-depth check behind the client's
+// already-localized zod validation, so the schema's own message text is
+// never shown to the user - only the stable `error` code below is.
+const noopT = (key: string) => key
+const accountSchema = makeAccountSchema(noopT)
+const teamDetailsSchema = makeTeamDetailsSchema(noopT)
+
 export async function POST(request: Request) {
   const formData = await request.formData()
 
-  const parsed = registerSchema.safeParse({
+  const accountParsed = accountSchema.safeParse({
     name: formData.get("name"),
     teamName: formData.get("teamName"),
     email: formData.get("email"),
@@ -43,11 +50,18 @@ export async function POST(request: Request) {
     crestBorderColor: formData.get("crestBorderColor") || undefined,
   })
 
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "נתונים לא תקינים" },
-      { status: 400 }
-    )
+  if (!accountParsed.success) {
+    return NextResponse.json({ error: "VALIDATION_ERROR" }, { status: 400 })
+  }
+
+  const teamDetailsParsed = teamDetailsSchema.safeParse({
+    countryCode: formData.get("countryCode"),
+    stadiumName: formData.get("stadiumName"),
+    crowdStyle: formData.get("crowdStyle"),
+  })
+
+  if (!teamDetailsParsed.success) {
+    return NextResponse.json({ error: "VALIDATION_ERROR" }, { status: 400 })
   }
 
   const {
@@ -61,14 +75,12 @@ export async function POST(request: Request) {
     crestColor,
     crestSecondaryColor,
     crestBorderColor,
-  } = parsed.data
+  } = accountParsed.data
+  const { countryCode, stadiumName, crowdStyle } = teamDetailsParsed.data
 
   const existing = await prisma.user.findUnique({ where: { email } })
   if (existing) {
-    return NextResponse.json(
-      { error: "כבר קיים חשבון עם כתובת האימייל הזו" },
-      { status: 409 }
-    )
+    return NextResponse.json({ error: "EMAIL_TAKEN" }, { status: 409 })
   }
 
   const crestFile = formData.get("crestImage")
@@ -76,18 +88,12 @@ export async function POST(request: Request) {
 
   if (crestFile instanceof File && crestFile.size > 0) {
     if (crestFile.size > MAX_CREST_SIZE) {
-      return NextResponse.json(
-        { error: "קובץ הסמל גדול מדי (מקסימום 2MB)" },
-        { status: 400 }
-      )
+      return NextResponse.json({ error: "CREST_TOO_LARGE" }, { status: 400 })
     }
 
     const extension = ALLOWED_CREST_TYPES[crestFile.type]
     if (!extension) {
-      return NextResponse.json(
-        { error: "סוג קובץ לא נתמך (יש להעלות PNG, JPG, WEBP או SVG)" },
-        { status: 400 }
-      )
+      return NextResponse.json({ error: "CREST_BAD_TYPE" }, { status: 400 })
     }
 
     const uploadDir = path.join(process.cwd(), "public", "uploads", "crests")
@@ -123,6 +129,7 @@ export async function POST(request: Request) {
     : isCrestColor(crestSecondaryColor)
       ? crestSecondaryColor
       : DEFAULT_CREST_SECONDARY_COLOR
+  const resolvedCrowdStyle = CROWD_STYLES.includes(crowdStyle) ? crowdStyle : "calm"
 
   await prisma.user.create({
     data: {
@@ -139,6 +146,9 @@ export async function POST(request: Request) {
           crestSecondaryColor: resolvedSecondary,
           crestBorderColor: resolvedBorder,
           crestImageUrl,
+          countryCode,
+          stadiumName,
+          crowdStyle: resolvedCrowdStyle,
         },
       },
     },

@@ -1,8 +1,11 @@
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
 import { Geist, Geist_Mono } from "next/font/google";
 import { AuthSessionProvider } from "@/components/session-provider";
 import { SessionGuard } from "@/components/session-guard";
 import { CrestDefs } from "@/components/team-crest";
+import { LocaleProvider } from "@/lib/i18n/locale-context";
+import { DEFAULT_LOCALE, LOCALE_DIR, isLocale } from "@/lib/i18n/translations";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -24,21 +27,27 @@ export const metadata: Metadata = {
   manifest: "/manifest.json",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const cookieStore = await cookies();
+  const cookieLocale = cookieStore.get("goalx-locale")?.value;
+  const locale = isLocale(cookieLocale) ? cookieLocale : DEFAULT_LOCALE;
+
   return (
-    <html lang="he" dir="rtl">
+    <html lang={locale} dir={LOCALE_DIR[locale]}>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         <CrestDefs />
-        <AuthSessionProvider>
-          <SessionGuard />
-          {children}
-        </AuthSessionProvider>
+        <LocaleProvider initialLocale={locale}>
+          <AuthSessionProvider>
+            <SessionGuard />
+            {children}
+          </AuthSessionProvider>
+        </LocaleProvider>
       </body>
     </html>
   );
