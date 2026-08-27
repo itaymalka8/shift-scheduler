@@ -23,6 +23,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
+import { CrowdIllustration } from "@/components/crowd-illustration"
 import {
   Select,
   SelectContent,
@@ -538,29 +539,35 @@ export default function SignUpPage() {
                       <RadioGroup value={field.value} onValueChange={field.onChange} className="gap-3">
                         <label
                           className={cn(
-                            "flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors",
+                            "block rounded-lg border p-3 cursor-pointer transition-colors overflow-hidden",
                             field.value === "calm" ? "border-primary bg-primary/5" : "border-border"
                           )}
                         >
-                          <RadioGroupItem value="calm" className="mt-1" />
-                          <span>
-                            <span className="block font-medium">{t("team.crowdStyleCalm")}</span>
-                            <span className="block text-sm text-muted-foreground">
-                              {t("team.crowdStyleCalmDesc")}
+                          <CrowdIllustration style="calm" className="w-full h-24 rounded-md mb-3" />
+                          <span className="flex items-start gap-3">
+                            <RadioGroupItem value="calm" className="mt-1" />
+                            <span>
+                              <span className="block font-medium">{t("team.crowdStyleCalm")}</span>
+                              <span className="block text-sm text-muted-foreground">
+                                {t("team.crowdStyleCalmDesc")}
+                              </span>
                             </span>
                           </span>
                         </label>
                         <label
                           className={cn(
-                            "flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors",
+                            "block rounded-lg border p-3 cursor-pointer transition-colors overflow-hidden",
                             field.value === "ultras" ? "border-primary bg-primary/5" : "border-border"
                           )}
                         >
-                          <RadioGroupItem value="ultras" className="mt-1" />
-                          <span>
-                            <span className="block font-medium">{t("team.crowdStyleUltras")}</span>
-                            <span className="block text-sm text-muted-foreground">
-                              {t("team.crowdStyleUltrasDesc")}
+                          <CrowdIllustration style="ultras" className="w-full h-24 rounded-md mb-3" />
+                          <span className="flex items-start gap-3">
+                            <RadioGroupItem value="ultras" className="mt-1" />
+                            <span>
+                              <span className="block font-medium">{t("team.crowdStyleUltras")}</span>
+                              <span className="block text-sm text-muted-foreground">
+                                {t("team.crowdStyleUltrasDesc")}
+                              </span>
                             </span>
                           </span>
                         </label>
