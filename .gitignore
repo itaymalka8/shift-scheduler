@@ -28,6 +28,9 @@ src/generated/prisma/
 # TypeScript incremental build cache
 *.tsbuildinfo
 
+# User-uploaded content
+public/uploads/
+
 # Logs
 logs/
 *.log

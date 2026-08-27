@@ -1,11 +1,17 @@
 import Image from "next/image"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
+import { prisma } from "@/lib/prisma"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { TeamCrest } from "@/components/team-crest"
 import { SignOutButton } from "./sign-out-button"
 
 export default async function DashboardPage() {
   const session = await getServerSession(authOptions)
+
+  const team = session?.user?.id
+    ? await prisma.team.findUnique({ where: { userId: session.user.id } })
+    : null
 
   return (
     <div className="min-h-screen bg-background">
@@ -22,13 +28,18 @@ export default async function DashboardPage() {
       <main className="mx-auto max-w-5xl px-6 py-12">
         <Card>
           <CardHeader>
-            <CardTitle className="text-2xl">
-              ברוכים הבאים, קבוצת {session?.user?.teamName ?? ""}
-            </CardTitle>
-            <CardDescription>
-              שלום {session?.user?.name}, כאן יתנהל ניהול הקבוצה שלכם - הסגל, הטקטיקה
-              והליגה יגיעו בקרוב.
-            </CardDescription>
+            <div className="flex items-center gap-4">
+              <TeamCrest preset={team?.crestPreset} imageUrl={team?.crestImageUrl} size={56} />
+              <div>
+                <CardTitle className="text-2xl">
+                  ברוכים הבאים, קבוצת {team?.name ?? session?.user?.teamName ?? ""}
+                </CardTitle>
+                <CardDescription>
+                  שלום {session?.user?.name}, כאן יתנהל ניהול הקבוצה שלכם - הסגל,
+                  הטקטיקה והליגה יגיעו בקרוב.
+                </CardDescription>
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
             <p className="text-muted-foreground">
