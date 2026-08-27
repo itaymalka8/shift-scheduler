@@ -24,6 +24,7 @@ import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { CrowdIllustration } from "@/components/crowd-illustration"
+import { StadiumIllustration } from "@/components/stadium-illustration"
 import {
   Select,
   SelectContent,
@@ -488,6 +489,7 @@ export default function SignUpPage() {
         ) : (
           <>
             <CardHeader>
+              <StadiumIllustration className="w-full h-36 rounded-lg mb-2" />
               <CardTitle className="text-2xl">{t("team.title")}</CardTitle>
               <CardDescription>{t("team.description")}</CardDescription>
             </CardHeader>
