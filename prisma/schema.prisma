@@ -69,7 +69,6 @@ model Team {
   crestBorderColor    String?
   crestImageUrl       String?
   countryCode         String?
-  city                String?
   stadiumName         String?
   stadiumStyle        String?
   stadiumCapacity     Int      @default(100)

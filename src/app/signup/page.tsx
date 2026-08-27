@@ -30,7 +30,6 @@ import {
   DEFAULT_STADIUM_STYLE,
   type StadiumStyleId,
 } from "@/components/stadium-illustration"
-import { CitySelect } from "@/components/city-select"
 import {
   Select,
   SelectContent,
@@ -151,7 +150,7 @@ export default function SignUpPage() {
 
   const teamForm = useForm<TeamDetailsInput>({
     resolver: zodResolver(makeTeamDetailsSchema(t)),
-    defaultValues: { crowdStyle: "calm", stadiumName: "", countryCode: "", city: "" },
+    defaultValues: { crowdStyle: "calm", stadiumName: "", countryCode: "" },
   })
   const [stadiumStyle, setStadiumStyle] = useState<StadiumStyleId>(DEFAULT_STADIUM_STYLE)
 
@@ -201,7 +200,6 @@ export default function SignUpPage() {
       formData.set("crestShape", shape)
       formData.set("crestBorderColor", borderColor)
       formData.set("countryCode", teamDetails.countryCode)
-      formData.set("city", teamDetails.city)
       formData.set("stadiumName", teamDetails.stadiumName)
       formData.set("stadiumStyle", stadiumStyle)
       formData.set("crowdStyle", teamDetails.crowdStyle)
@@ -521,13 +519,7 @@ export default function SignUpPage() {
                     control={teamForm.control}
                     name="countryCode"
                     render={({ field }) => (
-                      <Select
-                        value={field.value}
-                        onValueChange={(next) => {
-                          field.onChange(next)
-                          teamForm.setValue("city", "")
-                        }}
-                      >
+                      <Select value={field.value} onValueChange={field.onChange}>
                         <SelectTrigger id="countryCode" className="w-full">
                           <SelectValue placeholder={t("team.countryPlaceholder")} />
                         </SelectTrigger>
@@ -554,25 +546,6 @@ export default function SignUpPage() {
                   )}
                   {teamForm.watch("countryCode") && !isLaunchCountry(teamForm.watch("countryCode")) && (
                     <p className="text-sm text-muted-foreground">{t("team.countryComingSoonNote")}</p>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="city">{t("team.city")}</Label>
-                  <Controller
-                    control={teamForm.control}
-                    name="city"
-                    render={({ field }) => (
-                      <CitySelect
-                        id="city"
-                        countryCode={teamForm.watch("countryCode")}
-                        value={field.value}
-                        onChange={field.onChange}
-                      />
-                    )}
-                  />
-                  {teamForm.formState.errors.city && (
-                    <p className="text-sm text-destructive">{teamForm.formState.errors.city.message}</p>
                   )}
                 </div>
 

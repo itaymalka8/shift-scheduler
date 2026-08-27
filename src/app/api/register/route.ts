@@ -59,7 +59,6 @@ export async function POST(request: Request) {
 
   const teamDetailsParsed = teamDetailsSchema.safeParse({
     countryCode: formData.get("countryCode"),
-    city: formData.get("city"),
     stadiumName: formData.get("stadiumName"),
     stadiumStyle: formData.get("stadiumStyle") || undefined,
     crowdStyle: formData.get("crowdStyle"),
@@ -81,7 +80,7 @@ export async function POST(request: Request) {
     crestSecondaryColor,
     crestBorderColor,
   } = accountParsed.data
-  const { countryCode, city, stadiumName, stadiumStyle, crowdStyle } = teamDetailsParsed.data
+  const { countryCode, stadiumName, stadiumStyle, crowdStyle } = teamDetailsParsed.data
 
   const existing = await prisma.user.findUnique({ where: { email } })
   if (existing) {
@@ -153,7 +152,6 @@ export async function POST(request: Request) {
           crestBorderColor: resolvedBorder,
           crestImageUrl,
           countryCode,
-          city,
           stadiumName,
           stadiumStyle: resolvedStadiumStyle,
           stadiumCapacity: DEFAULT_STADIUM_CAPACITY,
