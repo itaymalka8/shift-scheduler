@@ -1,37 +1,55 @@
 // Deterministic name generator for the placeholder clubs that fill a
 // division until real managers register and take their slots over (see
-// seed.ts / assign.ts). Deliberately avoids real club branding (Hapoel,
-// Maccabi, Beitar, etc.) and Israel's handful of truly famous club
-// identities (Tel Aviv, Haifa, Jerusalem, Beer Sheva, Petah Tikva) so bot
-// teams never read as a specific real-world club.
+// seed.ts / assign.ts). Prefixes are fictional (no Hapoel/Maccabi/Beitar)
+// so combining them with real place names doesn't recreate a real club's
+// identity - the one real risk left is the "Bnei <place>" pattern some
+// actual Israeli clubs use, so Sakhnin and Reineh (home towns of Bnei
+// Sakhnin and Maccabi Bnei Reineh) are left out of the place list.
 const PREFIXES = [
   "איחוד", "בני", "החדשה", "הישנה", "כוכבי", "שועלי", "אריות", "סוסי",
   "נשרי", "זאבי", "נמרי", "ברקי", "דובי", "גיבורי", "אלופי", "לוחמי",
   "עיטי", "פרשי",
 ]
 
+// Israeli cities and towns, roughly biggest-to-smallest, so the biggest
+// settlements get used first as more divisions/tiers are seeded over time.
 const PLACES = [
-  "אשדוד", "אשקלון", "עפולה", "נתניה", "חדרה", "רעננה", "הרצליה", "לוד",
-  "רמלה", "דימונה", "ערד", "טבריה", "צפת", "נהריה", "עכו", "קריית שמונה",
-  "קריית גת", "קריית מוצקין", "קריית ים", "קריית ביאליק", "קריית אתא",
-  "בת ים", "חולון", "גבעתיים", "רמת גן", "ראשון לציון", "רחובות",
-  "נס ציונה", "גדרה", "יבנה", "אילת", "מגדל העמק", "יקנעם", "טירת כרמל",
-  "שדרות", "נתיבות", "אופקים", "ירוחם", "מצפה רמון", "כרמיאל",
-  "מעלות תרשיחא", "שלומי", "בית שאן", "עתלית", "אור יהודה", "כפר סבא",
-  "הוד השרון", "רמת השרון", "ראש העין", "גבעת שמואל",
+  "ירושלים", "תל אביב", "חיפה", "ראשון לציון", "פתח תקווה", "אשדוד",
+  "נתניה", "באר שבע", "בני ברק", "חולון", "רמת גן", "רחובות", "בת ים",
+  "בית שמש", "אשקלון", "הרצליה", "כפר סבא", "חדרה", "מודיעין מכבים רעות",
+  "נהריה", "רעננה", "נצרת", "לוד", "רמלה", "רמת השרון", "קריית אתא",
+  "קריית גת", "נוף הגליל", "עפולה", "ראש העין", "קריית מוצקין",
+  "קריית ים", "קריית ביאליק", "כרמיאל", "טבריה", "אום אל פחם",
+  "קריית אונו", "אור יהודה", "גבעתיים", "טירה", "נשר", "כפר יונה",
+  "יבנה", "דימונה", "טייבה", "מגדל העמק", "שפרעם", "באקה אל-גרבייה",
+  "טמרה", "עכו", "מעלות תרשיחא", "שדרות", "קריית שמונה", "ערד", "אילת",
+  "נתיבות", "אופקים", "יהוד מונוסון", "גני תקווה", "גדרה", "אבן יהודה",
+  "פרדסיה", "זכרון יעקב", "בנימינה גבעת עדה", "טירת כרמל", "קריית טבעון",
+  "יקנעם עילית", "בית שאן", "ראש פינה", "מטולה", "צפת", "קצרין",
+  "מעלה אדומים", "גבעת שמואל", "אלעד", "מודיעין עילית", "אפרת", "אריאל",
+  "קריית מלאכי", "אור עקיבא", "נורדיה", "כפר קאסם", "ג'לג'וליה",
+  "קלנסווה", "טורעאן", "ג'וליס", "רמה", "פקיעין", "חורפיש", "ירכא",
+  "אבו סנאן", "שעב", "כאבול", "כפר מנדא", "כפר כנא", "נין", "אכסאל",
+  "דבוריה", "בית ג'ן", "דיר חנא", "עראבה", "מגד אל כרום", "בענה", "חורה",
+  "רהט", "שגב שלום", "תל שבע", "לקיה", "כסיפה",
 ]
 
 /**
- * Returns `count` unique deterministic club names, e.g. "איחוד אשדוד".
- * Cycles through every prefix for each place before moving to the next
- * place, so a full division's worth of names (~20-60) already samples
- * most prefixes instead of leaning on just the first one or two.
+ * Returns `count` unique deterministic club names, e.g. "איחוד ירושלים".
+ * Cycles through every place for each prefix before moving to the next
+ * prefix, so any contiguous slice of up to PLACES.length names (i.e. any
+ * one division) draws from distinct places - no city repeats within a
+ * division as long as the division is smaller than the place list.
+ *
+ * `prefixOffset` shifts the starting prefix (pass a division's ordinal so
+ * different divisions lean on different prefixes instead of every bot in
+ * the country starting with the same one).
  */
-export function generateBotTeamNames(count: number): string[] {
+export function generateBotTeamNames(count: number, prefixOffset = 0): string[] {
   const names: string[] = []
-  for (const place of PLACES) {
-    if (names.length >= count) break
-    for (const prefix of PREFIXES) {
+  for (let round = 0; names.length < count; round++) {
+    const prefix = PREFIXES[(round + prefixOffset) % PREFIXES.length]
+    for (const place of PLACES) {
       if (names.length >= count) break
       names.push(`${prefix} ${place}`)
     }

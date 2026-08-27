@@ -40,13 +40,13 @@ export const ISRAEL_LEAGUE_TIERS: LeagueTierConfig[] = [
   },
   {
     tier: 2,
-    key: "liga-leumit",
+    key: "liga-shniya",
     groups: ["A", "B"],
     groupSize: 20,
-    names: { he: "ליגה לאומית", en: "Liga Leumit", ar: "الدوري الوطني" },
+    names: { he: "ליגה שנייה", en: "Second League", ar: "الدوري الثاني" },
     groupNames: {
-      A: { he: "צפון", en: "North", ar: "الشمال" },
-      B: { he: "דרום", en: "South", ar: "الجنوب" },
+      A: { he: "א'", en: "A", ar: "أ" },
+      B: { he: "ב'", en: "B", ar: "ب" },
     },
   },
 ]
@@ -61,5 +61,5 @@ export function getLeagueTiers(countryCode: string): LeagueTierConfig[] {
 export function getDivisionName(tierConfig: LeagueTierConfig, group: string, locale: Locale): string {
   const tierName = tierConfig.names[locale]
   const groupName = tierConfig.groupNames?.[group]?.[locale]
-  return groupName ? `${tierName} - ${groupName}` : tierName
+  return groupName ? `${tierName} ${groupName}` : tierName
 }

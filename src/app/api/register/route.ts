@@ -73,7 +73,6 @@ export async function POST(request: Request) {
   const {
     name,
     teamName,
-    email,
     password,
     crestShape,
     crestPattern,
@@ -82,6 +81,7 @@ export async function POST(request: Request) {
     crestSecondaryColor,
     crestBorderColor,
   } = accountParsed.data
+  const email = accountParsed.data.email.trim().toLowerCase()
   const { countryCode, stadiumName, stadiumStyle, crowdStyle } = teamDetailsParsed.data
 
   const existing = await prisma.user.findUnique({ where: { email } })

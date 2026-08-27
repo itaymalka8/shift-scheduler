@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { LanguageSwitcher } from "@/components/language-switcher"
 import { getLeagueTiers, getDivisionName } from "@/lib/leagues/config"
 import { computeStandings } from "@/lib/leagues/standings"
+import { ensureIsraelSeasonSeeded } from "@/lib/leagues/seed"
 import { cn } from "@/lib/utils"
 
 export default async function LeaguePage() {
@@ -21,6 +22,10 @@ export default async function LeaguePage() {
   const team = session?.user?.id
     ? await prisma.team.findUnique({ where: { userId: session.user.id } })
     : null
+
+  if (team?.countryCode === "IL") {
+    await ensureIsraelSeasonSeeded()
+  }
 
   const tierConfigs = getLeagueTiers(team?.countryCode ?? "")
   const season = team?.countryCode
