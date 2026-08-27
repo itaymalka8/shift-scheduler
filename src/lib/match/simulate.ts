@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma"
-import type { PlayerPosition } from "@/lib/players/formations"
+import { POSITION_GROUP, isPlayerPosition, type PositionGroup } from "@/lib/players/positions"
 
 const BASE_GOAL_RATE = 1.35
 const HOME_ADVANTAGE = 1.15
@@ -11,7 +11,7 @@ interface TeamStrength {
   defense: number
 }
 
-const POSITION_WEIGHTS: Record<PlayerPosition, { attack: number; defense: number }> = {
+const GROUP_WEIGHTS: Record<PositionGroup, { attack: number; defense: number }> = {
   GK: { attack: 0, defense: 1.2 },
   DF: { attack: 0.3, defense: 1.0 },
   MF: { attack: 0.7, defense: 0.6 },
@@ -38,20 +38,22 @@ async function computeTeamStrength(teamId: string): Promise<TeamStrength> {
     let defenseSum = 0
     let defenseWeight = 0
     for (const slot of slots) {
-      const weights = POSITION_WEIGHTS[slot.player.position as PlayerPosition] ?? { attack: 0.5, defense: 0.5 }
-      attackSum += slot.player.rating * weights.attack
+      const group = isPlayerPosition(slot.player.position) ? POSITION_GROUP[slot.player.position] : "MF"
+      const weights = GROUP_WEIGHTS[group]
+      const effectiveRating = slot.player.rating * (slot.player.fitness / 100)
+      attackSum += effectiveRating * weights.attack
       attackWeight += weights.attack
-      defenseSum += slot.player.rating * weights.defense
+      defenseSum += effectiveRating * weights.defense
       defenseWeight += weights.defense
     }
     attack = attackWeight ? attackSum / attackWeight : 55
     defense = defenseWeight ? defenseSum / defenseWeight : 55
   }
 
-  if (team?.tacticStyle === "attacking") {
+  if (team?.mentality === "attacking") {
     attack *= 1.15
     defense *= 0.9
-  } else if (team?.tacticStyle === "defensive") {
+  } else if (team?.mentality === "defensive") {
     attack *= 0.88
     defense *= 1.12
   }

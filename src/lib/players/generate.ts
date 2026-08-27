@@ -1,15 +1,28 @@
 import type { Prisma, PrismaClient } from "@/generated/prisma"
 import { generatePlayerName } from "./names"
-import { DEFAULT_FORMATION, FORMATIONS, type PlayerPosition } from "./formations"
+import { DEFAULT_FORMATION } from "./formations"
+import { computeRecommendedLineup } from "./recommend"
+import type { PlayerPosition } from "./positions"
 
 type DbClient = PrismaClient | Prisma.TransactionClient
 
+// Covers every offered formation's starting needs (max 3 CB, 2 RB/LB/CDM,
+// 3 CM, 1 CAM/RM/LM/RW/LW, 2 ST) with bench depth at every position.
 const SQUAD_COMPOSITION: { position: PlayerPosition; count: number }[] = [
   { position: "GK", count: 2 },
-  { position: "DF", count: 6 },
-  { position: "MF", count: 6 },
-  { position: "FW", count: 4 },
+  { position: "CB", count: 4 },
+  { position: "RB", count: 2 },
+  { position: "LB", count: 2 },
+  { position: "CDM", count: 2 },
+  { position: "CM", count: 3 },
+  { position: "CAM", count: 2 },
+  { position: "RM", count: 2 },
+  { position: "LM", count: 2 },
+  { position: "RW", count: 1 },
+  { position: "LW", count: 1 },
+  { position: "ST", count: 2 },
 ]
+const SQUAD_SIZE = SQUAD_COMPOSITION.reduce((sum, c) => sum + c.count, 0)
 
 function randomInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min
@@ -25,57 +38,48 @@ function shuffle<T>(items: T[]): T[] {
 }
 
 /**
- * Creates an 18-player squad for a team and picks a default starting XI in
- * DEFAULT_FORMATION (best-rated player per position). Every offered
- * formation needs at most 4 DF / 5 MF / 3 FW, so this composition always
- * has enough depth to fill any of them plus bench cover.
+ * Creates a full squad for a team and picks a recommended starting XI in
+ * DEFAULT_FORMATION so the team never starts with an empty pitch.
  */
 export async function generateSquad(db: DbClient, teamId: string): Promise<void> {
-  const jerseyNumbers = shuffle(Array.from({ length: 18 }, (_, i) => i + 1))
+  const jerseyNumbers = shuffle(Array.from({ length: SQUAD_SIZE }, (_, i) => i + 1))
   let jerseyIndex = 0
 
-  const playersByPosition: Record<PlayerPosition, { id: string; rating: number }[]> = {
-    GK: [],
-    DF: [],
-    MF: [],
-    FW: [],
-  }
+  const created: { id: string; position: string; rating: number; fitness: number; availability: string }[] = []
 
   for (const { position, count } of SQUAD_COMPOSITION) {
     for (let i = 0; i < count; i++) {
-      const rating = randomInt(48, 85)
       const player = await db.player.create({
         data: {
           teamId,
           name: generatePlayerName(),
           position,
           age: randomInt(17, 35),
-          rating,
+          rating: randomInt(48, 85),
+          fitness: 100,
+          availability: "available",
           jerseyNumber: jerseyNumbers[jerseyIndex++],
         },
       })
-      playersByPosition[position].push({ id: player.id, rating })
+      created.push({
+        id: player.id,
+        position: player.position,
+        rating: player.rating,
+        fitness: player.fitness,
+        availability: player.availability,
+      })
     }
   }
 
-  for (const position of Object.keys(playersByPosition) as PlayerPosition[]) {
-    playersByPosition[position].sort((a, b) => b.rating - a.rating)
-  }
-
-  const used: Partial<Record<PlayerPosition, number>> = {}
-  for (const slot of FORMATIONS[DEFAULT_FORMATION]) {
-    const index = used[slot.position] ?? 0
-    const player = playersByPosition[slot.position][index]
-    used[slot.position] = index + 1
-    if (!player) continue
-
+  const assignments = computeRecommendedLineup(DEFAULT_FORMATION, created)
+  for (const assignment of assignments) {
     await db.lineupSlot.create({
-      data: { teamId, playerId: player.id, x: slot.x, y: slot.y },
+      data: { teamId, playerId: assignment.playerId, slotIndex: assignment.slotIndex },
     })
   }
 
   await db.team.update({
     where: { id: teamId },
-    data: { formation: DEFAULT_FORMATION, tacticStyle: "balanced" },
+    data: { formation: DEFAULT_FORMATION, mentality: "balanced", tempo: "normal", pressing: "normal", width: "balanced" },
   })
 }

@@ -75,7 +75,10 @@ model Team {
   crowdStyle          String?
   isBot               Boolean        @default(false)
   formation           String?
-  tacticStyle         String?
+  mentality           String?
+  tempo               String?
+  pressing            String?
+  width               String?
   createdAt           DateTime       @default(now())
   user                User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId              String?        @unique
@@ -85,32 +88,46 @@ model Team {
   players             Player[]
   lineupSlots         LineupSlot[]
   matchEvents         MatchEvent[]
+  captainId           String?        @unique
+  captain             Player?        @relation("TeamCaptain", fields: [captainId], references: [id], onDelete: SetNull)
+  penaltyTakerId      String?        @unique
+  penaltyTaker        Player?        @relation("TeamPenaltyTaker", fields: [penaltyTakerId], references: [id], onDelete: SetNull)
+  freeKickTakerId     String?        @unique
+  freeKickTaker       Player?        @relation("TeamFreeKickTaker", fields: [freeKickTakerId], references: [id], onDelete: SetNull)
+  cornerTakerId       String?        @unique
+  cornerTaker         Player?        @relation("TeamCornerTaker", fields: [cornerTakerId], references: [id], onDelete: SetNull)
 }
 
 model Player {
-  id           String      @id @default(cuid())
-  teamId       String
-  team         Team        @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  name         String
-  position     String
-  age          Int
-  rating       Int
-  jerseyNumber Int
-  createdAt    DateTime    @default(now())
-  lineupSlot   LineupSlot?
+  id                  String      @id @default(cuid())
+  teamId              String
+  team                Team        @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  name                String
+  position            String
+  age                 Int
+  rating              Int
+  fitness             Int         @default(100)
+  availability        String      @default("available")
+  jerseyNumber        Int
+  createdAt           DateTime    @default(now())
+  lineupSlot          LineupSlot?
+  captainOfTeam       Team?       @relation("TeamCaptain")
+  penaltyTakerOfTeam  Team?       @relation("TeamPenaltyTaker")
+  freeKickTakerOfTeam Team?       @relation("TeamFreeKickTaker")
+  cornerTakerOfTeam   Team?       @relation("TeamCornerTaker")
 }
 
-// A player's spot in their team's current starting XI, positioned freely on
-// the pitch (x/y are 0-100 percentages). Only 11 players have one at a time;
-// everyone else on the roster is on the bench.
+// A player's spot in their team's current starting XI. slotIndex points at
+// FORMATIONS[team.formation][slotIndex] for that slot's role/x/y - position
+// comes from the formation, not stored per-player, so switching formation
+// can never leave a slot's coordinates stale.
 model LineupSlot {
-  id       String @id @default(cuid())
-  teamId   String
-  team     Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  playerId String @unique
-  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
-  x        Float
-  y        Float
+  id        String @id @default(cuid())
+  teamId    String
+  team      Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  playerId  String @unique
+  player    Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  slotIndex Int
 }
 
 // A country's league pyramid is instantiated one Season at a time. Season 1

@@ -13,7 +13,11 @@ import {
 import { STADIUM_STYLES } from "@/components/stadium-illustration"
 import { CROWD_STYLES } from "@/lib/validation"
 import { generateSquad } from "@/lib/players/generate"
+import { computeRecommendedLineup } from "@/lib/players/recommend"
+import { DEFAULT_FORMATION, isFormationId } from "@/lib/players/formations"
 import { getSeasonStartMonday, computeMatchdayDate } from "@/lib/match/schedule"
+
+const LEGACY_POSITION_REMAP: Record<string, string> = { DF: "CB", MF: "CM", FW: "ST" }
 
 const COUNTRY_CODE = "IL"
 const SEASON_NUMBER = 1
@@ -63,12 +67,51 @@ async function refreshBotTeamNames(tx: Prisma.TransactionClient): Promise<void> 
  * players or a schedule forever.
  */
 async function backfillMissingGameData(tx: Prisma.TransactionClient, seasonId: string): Promise<void> {
-  const teamsMissingSquad = await tx.team.findMany({
-    where: { divisionMemberships: { some: { division: { seasonId } } }, players: { none: {} } },
-    select: { id: true },
+  // Squads generated before granular positions existed still carry the old
+  // broad GK/DF/MF/FW codes - remap to a sensible granular default.
+  const legacyPlayers = await tx.player.findMany({
+    where: {
+      team: { divisionMemberships: { some: { division: { seasonId } } } },
+      position: { in: Object.keys(LEGACY_POSITION_REMAP) },
+    },
+    select: { id: true, position: true },
   })
-  for (const team of teamsMissingSquad) {
-    await generateSquad(tx, team.id)
+  for (const player of legacyPlayers) {
+    await tx.player.update({
+      where: { id: player.id },
+      data: { position: LEGACY_POSITION_REMAP[player.position] },
+    })
+  }
+
+  const teamsInSeason = await tx.team.findMany({
+    where: { divisionMemberships: { some: { division: { seasonId } } } },
+    include: { players: true, lineupSlots: true },
+  })
+
+  for (const team of teamsInSeason) {
+    if (team.players.length === 0) {
+      await generateSquad(tx, team.id)
+    } else if (team.lineupSlots.length === 0) {
+      // The lineup-slot schema changed (x/y -> slotIndex) and dropped old
+      // rows - give any squad left without a starting XI a fresh one.
+      const formation = isFormationId(team.formation) ? team.formation : DEFAULT_FORMATION
+      const assignments = computeRecommendedLineup(
+        formation,
+        team.players.map((p) => ({
+          id: p.id,
+          position: p.position,
+          rating: p.rating,
+          fitness: p.fitness,
+          availability: p.availability,
+        }))
+      )
+      await tx.lineupSlot.createMany({
+        data: assignments.map((a) => ({ teamId: team.id, playerId: a.playerId, slotIndex: a.slotIndex })),
+      })
+      if (!isFormationId(team.formation)) {
+        await tx.team.update({ where: { id: team.id }, data: { formation } })
+      }
+    }
   }
 
   const unscheduledFixtures = await tx.fixture.findMany({
