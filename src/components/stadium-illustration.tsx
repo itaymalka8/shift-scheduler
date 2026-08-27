@@ -29,6 +29,11 @@ export const STADIUM_STYLES: StadiumStyleConfig[] = [
 ]
 
 export const DEFAULT_STADIUM_STYLE: StadiumStyleId = "classic-bowl"
+export const MIN_STADIUM_CAPACITY = 100
+export const MAX_STADIUM_CAPACITY = 30000
+// Below this, there's no real "bowl" yet - just a fence of individually
+// countable seats around the pitch.
+const SEAT_MODE_THRESHOLD = 300
 
 export function isStadiumStyle(value: string | null | undefined): value is StadiumStyleId {
   return STADIUM_STYLES.some((s) => s.id === value)
@@ -38,19 +43,45 @@ function getStadiumStyleConfig(id?: string | null): StadiumStyleConfig {
   return STADIUM_STYLES.find((s) => s.id === id) ?? STADIUM_STYLES[0]
 }
 
+/** 0 at MIN_STADIUM_CAPACITY, 1 at MAX_STADIUM_CAPACITY, log-scaled so growth reads as steady. */
+function getCapacityGrowth(capacity: number): number {
+  const clamped = Math.min(MAX_STADIUM_CAPACITY, Math.max(MIN_STADIUM_CAPACITY, capacity))
+  return (
+    (Math.log(clamped) - Math.log(MIN_STADIUM_CAPACITY)) /
+    (Math.log(MAX_STADIUM_CAPACITY) - Math.log(MIN_STADIUM_CAPACITY))
+  )
+}
+
+function lerp(from: number, to: number, t: number): number {
+  return from + (to - from) * t
+}
+
 export function StadiumIllustration({
   style,
+  capacity = MIN_STADIUM_CAPACITY,
   className,
 }: {
   style?: string | null
+  capacity?: number
   className?: string
 }) {
   const cfg = getStadiumStyleConfig(style)
   const uid = cfg.id
-  const bowlRx = cfg.intimate ? 128 : 166
-  const bowlRy = cfg.intimate ? 46 : 62
   const pitchRx = cfg.intimate ? 108 : 98
   const pitchRy = cfg.intimate ? 40 : 36
+
+  const growth = getCapacityGrowth(capacity)
+  const seatMode = capacity <= SEAT_MODE_THRESHOLD
+  const seatCount = Math.round(lerp(12, 40, Math.min(1, capacity / SEAT_MODE_THRESHOLD)))
+  const tiers = 1 + Math.round(growth * 3) // 1..4 tiers as capacity climbs toward 30,000
+
+  const bowlBaseRx = pitchRx + 18
+  const bowlBaseRy = pitchRy + 16
+  const bowlMaxRx = cfg.intimate ? 136 : 166
+  const bowlMaxRy = cfg.intimate ? 50 : 62
+  const bowlRx = lerp(bowlBaseRx, bowlMaxRx, growth)
+  const bowlRy = lerp(bowlBaseRy, bowlMaxRy, growth)
+  const wallHeight = lerp(14, 40, growth)
 
   return (
     <svg viewBox="0 0 400 220" className={className} aria-hidden>
@@ -87,11 +118,11 @@ export function StadiumIllustration({
         <path d="M 0 190 Q 100 178 200 190 T 400 190 L 400 220 L 0 220 Z" fill="#0e7490" opacity="0.5" />
       )}
 
-      <ellipse cx="200" cy="176" rx="150" ry="14" fill="#000000" opacity="0.35" />
+      <ellipse cx="200" cy="176" rx={lerp(80, 150, growth)} ry="14" fill="#000000" opacity="0.35" />
 
       {[
-        { x: 42, y: 150, h: 70 },
-        { x: 358, y: 150, h: 70 },
+        { x: lerp(120, 42, growth), y: 150, h: lerp(40, 70, growth) },
+        { x: lerp(280, 358, growth), y: 150, h: lerp(40, 70, growth) },
       ].map((f, i) => (
         <g key={i}>
           <circle cx={f.x} cy={f.y - f.h} r="22" fill={`url(#glow-${uid})`} />
@@ -100,20 +131,63 @@ export function StadiumIllustration({
         </g>
       ))}
 
-      {cfg.shape === "rect" ? (
+      {seatMode ? (
+        Array.from({ length: seatCount }).map((_, i) => {
+          const angle = (i / seatCount) * Math.PI * 2
+          const rx = pitchRx + 16
+          const ry = pitchRy + 14
+          const x = 200 + rx * Math.cos(angle)
+          const y = 120 + ry * Math.sin(angle)
+          return <rect key={i} x={x - 3} y={y - 2.5} width="6" height="5" rx="1" fill={cfg.accent} opacity="0.9" />
+        })
+      ) : cfg.shape === "rect" ? (
         <>
-          <rect x="34" y="66" width="332" height="112" rx="18" fill={`url(#bowl-wall-${uid})`} />
-          <rect x="34" y="66" width="332" height="88" rx="18" fill={`url(#bowl-outer-${uid})`} />
-          <rect x="60" y="80" width="280" height="66" rx="12" fill={`url(#tier-${uid})`} />
+          <rect
+            x={200 - bowlRx - 10}
+            y={120 - bowlRy}
+            width={(bowlRx + 10) * 2}
+            height={bowlRy * 2 + wallHeight}
+            rx="18"
+            fill={`url(#bowl-wall-${uid})`}
+          />
+          {Array.from({ length: tiers + 1 }).map((_, i) => {
+            const f = i / tiers
+            const w = lerp(bowlRx + 10, pitchRx + 10, f) * 2
+            const h = lerp(bowlRy, pitchRy + 10, f) * 2
+            return (
+              <rect
+                key={i}
+                x={200 - w / 2}
+                y={120 - h / 2}
+                width={w}
+                height={h}
+                rx="14"
+                fill={i % 2 === 0 ? `url(#bowl-outer-${uid})` : `url(#tier-${uid})`}
+              />
+            )
+          })}
         </>
       ) : (
         <>
           <path
-            d={`M 34 128 A ${bowlRx} ${bowlRy} 0 0 0 366 128 L 366 152 A ${bowlRx} ${bowlRy} 0 0 1 34 152 Z`}
+            d={`M ${200 - bowlRx} 128 A ${bowlRx} ${bowlRy} 0 0 0 ${200 + bowlRx} 128 L ${200 + bowlRx} ${128 + wallHeight} A ${bowlRx} ${bowlRy} 0 0 1 ${200 - bowlRx} ${128 + wallHeight} Z`}
             fill={`url(#bowl-wall-${uid})`}
           />
-          <ellipse cx="200" cy="128" rx={bowlRx} ry={bowlRy} fill={`url(#bowl-outer-${uid})`} />
-          <ellipse cx="200" cy="124" rx={bowlRx - 34} ry={bowlRy - 13} fill={`url(#tier-${uid})`} />
+          {Array.from({ length: tiers + 1 }).map((_, i) => {
+            const f = i / tiers
+            const rx = lerp(bowlRx, pitchRx + 6, f)
+            const ry = lerp(bowlRy, pitchRy + 6, f)
+            return (
+              <ellipse
+                key={i}
+                cx="200"
+                cy={i === 0 ? 128 : 124}
+                rx={rx}
+                ry={ry}
+                fill={i % 2 === 0 ? `url(#bowl-outer-${uid})` : `url(#tier-${uid})`}
+              />
+            )
+          })}
         </>
       )}
 
