@@ -24,7 +24,13 @@ import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { CrowdIllustration } from "@/components/crowd-illustration"
-import { StadiumIllustration } from "@/components/stadium-illustration"
+import {
+  StadiumIllustration,
+  STADIUM_STYLES,
+  DEFAULT_STADIUM_STYLE,
+  type StadiumStyleId,
+} from "@/components/stadium-illustration"
+import { CitySelect } from "@/components/city-select"
 import {
   Select,
   SelectContent,
@@ -72,6 +78,17 @@ const PATTERN_LABEL_KEY: Record<CrestPatternId, TranslationKey> = {
   solid: "crest.patternSolid",
   split: "crest.patternSplit",
   stripes: "crest.patternStripes",
+}
+
+const STADIUM_STYLE_LABEL_KEY: Record<StadiumStyleId, TranslationKey> = {
+  "classic-bowl": "stadium.classicBowl",
+  "modern-arena": "stadium.modernArena",
+  "four-stand": "stadium.fourStand",
+  athletics: "stadium.athletics",
+  boutique: "stadium.boutique",
+  retractable: "stadium.retractable",
+  historic: "stadium.historic",
+  coastal: "stadium.coastal",
 }
 
 function ColorRow({
@@ -134,8 +151,9 @@ export default function SignUpPage() {
 
   const teamForm = useForm<TeamDetailsInput>({
     resolver: zodResolver(makeTeamDetailsSchema(t)),
-    defaultValues: { crowdStyle: "calm", stadiumName: "", countryCode: "" },
+    defaultValues: { crowdStyle: "calm", stadiumName: "", countryCode: "", city: "" },
   })
+  const [stadiumStyle, setStadiumStyle] = useState<StadiumStyleId>(DEFAULT_STADIUM_STYLE)
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -183,7 +201,9 @@ export default function SignUpPage() {
       formData.set("crestShape", shape)
       formData.set("crestBorderColor", borderColor)
       formData.set("countryCode", teamDetails.countryCode)
+      formData.set("city", teamDetails.city)
       formData.set("stadiumName", teamDetails.stadiumName)
+      formData.set("stadiumStyle", stadiumStyle)
       formData.set("crowdStyle", teamDetails.crowdStyle)
 
       if (crestFile) {
@@ -489,7 +509,7 @@ export default function SignUpPage() {
         ) : (
           <>
             <CardHeader>
-              <StadiumIllustration className="w-full h-36 rounded-lg mb-2" />
+              <StadiumIllustration style={stadiumStyle} className="w-full h-36 rounded-lg mb-2" />
               <CardTitle className="text-2xl">{t("team.title")}</CardTitle>
               <CardDescription>{t("team.description")}</CardDescription>
             </CardHeader>
@@ -501,7 +521,13 @@ export default function SignUpPage() {
                     control={teamForm.control}
                     name="countryCode"
                     render={({ field }) => (
-                      <Select value={field.value} onValueChange={field.onChange}>
+                      <Select
+                        value={field.value}
+                        onValueChange={(next) => {
+                          field.onChange(next)
+                          teamForm.setValue("city", "")
+                        }}
+                      >
                         <SelectTrigger id="countryCode" className="w-full">
                           <SelectValue placeholder={t("team.countryPlaceholder")} />
                         </SelectTrigger>
@@ -523,6 +549,25 @@ export default function SignUpPage() {
                 </div>
 
                 <div className="space-y-2">
+                  <Label htmlFor="city">{t("team.city")}</Label>
+                  <Controller
+                    control={teamForm.control}
+                    name="city"
+                    render={({ field }) => (
+                      <CitySelect
+                        id="city"
+                        countryCode={teamForm.watch("countryCode")}
+                        value={field.value}
+                        onChange={field.onChange}
+                      />
+                    )}
+                  />
+                  {teamForm.formState.errors.city && (
+                    <p className="text-sm text-destructive">{teamForm.formState.errors.city.message}</p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
                   <Label htmlFor="stadiumName">{t("team.stadiumName")}</Label>
                   <Input id="stadiumName" type="text" {...teamForm.register("stadiumName")} />
                   {teamForm.formState.errors.stadiumName && (
@@ -530,6 +575,29 @@ export default function SignUpPage() {
                       {teamForm.formState.errors.stadiumName.message}
                     </p>
                   )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label>{t("team.stadiumStyle")}</Label>
+                  <div className="grid grid-cols-4 gap-2">
+                    {STADIUM_STYLES.map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        title={t(STADIUM_STYLE_LABEL_KEY[s.id])}
+                        onClick={() => setStadiumStyle(s.id)}
+                        className={cn(
+                          "rounded-md overflow-hidden border-2 transition-colors",
+                          stadiumStyle === s.id ? "border-primary" : "border-transparent opacity-70 hover:opacity-100"
+                        )}
+                      >
+                        <StadiumIllustration style={s.id} className="w-full h-12" />
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    {t(STADIUM_STYLE_LABEL_KEY[stadiumStyle])}
+                  </p>
                 </div>
 
                 <div className="space-y-2">

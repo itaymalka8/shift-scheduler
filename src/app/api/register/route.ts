@@ -17,6 +17,9 @@ import {
   isCrestPattern,
   isCrestShape,
 } from "@/components/team-crest"
+import { DEFAULT_STADIUM_STYLE, isStadiumStyle } from "@/components/stadium-illustration"
+
+const DEFAULT_STADIUM_CAPACITY = 100
 
 const MAX_CREST_SIZE = 2 * 1024 * 1024 // 2MB
 const ALLOWED_CREST_TYPES: Record<string, string> = {
@@ -56,7 +59,9 @@ export async function POST(request: Request) {
 
   const teamDetailsParsed = teamDetailsSchema.safeParse({
     countryCode: formData.get("countryCode"),
+    city: formData.get("city"),
     stadiumName: formData.get("stadiumName"),
+    stadiumStyle: formData.get("stadiumStyle") || undefined,
     crowdStyle: formData.get("crowdStyle"),
   })
 
@@ -76,7 +81,7 @@ export async function POST(request: Request) {
     crestSecondaryColor,
     crestBorderColor,
   } = accountParsed.data
-  const { countryCode, stadiumName, crowdStyle } = teamDetailsParsed.data
+  const { countryCode, city, stadiumName, stadiumStyle, crowdStyle } = teamDetailsParsed.data
 
   const existing = await prisma.user.findUnique({ where: { email } })
   if (existing) {
@@ -130,6 +135,7 @@ export async function POST(request: Request) {
       ? crestSecondaryColor
       : DEFAULT_CREST_SECONDARY_COLOR
   const resolvedCrowdStyle = CROWD_STYLES.includes(crowdStyle) ? crowdStyle : "calm"
+  const resolvedStadiumStyle = isStadiumStyle(stadiumStyle) ? stadiumStyle : DEFAULT_STADIUM_STYLE
 
   await prisma.user.create({
     data: {
@@ -147,7 +153,10 @@ export async function POST(request: Request) {
           crestBorderColor: resolvedBorder,
           crestImageUrl,
           countryCode,
+          city,
           stadiumName,
+          stadiumStyle: resolvedStadiumStyle,
+          stadiumCapacity: DEFAULT_STADIUM_CAPACITY,
           crowdStyle: resolvedCrowdStyle,
         },
       },

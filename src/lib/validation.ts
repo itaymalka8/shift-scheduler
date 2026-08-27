@@ -32,7 +32,9 @@ export type CrowdStyle = (typeof CROWD_STYLES)[number]
 export function makeTeamDetailsSchema(t: T) {
   return z.object({
     countryCode: z.string().min(1, t("validation.countryRequired")),
+    city: z.string().min(1, t("validation.cityRequired")),
     stadiumName: z.string().min(1, t("validation.stadiumNameMin")),
+    stadiumStyle: z.string().optional(),
     crowdStyle: z.enum(CROWD_STYLES),
   })
 }

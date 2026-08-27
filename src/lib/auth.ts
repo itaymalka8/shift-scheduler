@@ -13,6 +13,7 @@ import {
   DEFAULT_CREST_SECONDARY_COLOR,
   DEFAULT_CREST_SHAPE,
 } from "@/components/team-crest"
+import { DEFAULT_STADIUM_STYLE } from "@/components/stadium-illustration"
 
 const providers: NextAuthOptions["providers"] = [
   CredentialsProvider({
@@ -84,6 +85,8 @@ export const authOptions: NextAuthOptions = {
           crestSecondaryColor: DEFAULT_CREST_SECONDARY_COLOR,
           crestBorderColor: DEFAULT_CREST_BORDER_COLOR,
           crowdStyle: "calm",
+          stadiumStyle: DEFAULT_STADIUM_STYLE,
+          stadiumCapacity: 100,
         },
       })
     },
