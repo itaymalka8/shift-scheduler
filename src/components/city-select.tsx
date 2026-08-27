@@ -1,7 +1,8 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { useT } from "@/lib/i18n/locale-context"
+import { useLocale, useT } from "@/lib/i18n/locale-context"
+import { getCityDisplayName } from "@/lib/city-translations"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 
@@ -19,15 +20,17 @@ export function CitySelect({
   id?: string
 }) {
   const t = useT()
+  const { locale } = useLocale()
   const containerRef = useRef<HTMLDivElement>(null)
   const [cities, setCities] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
-  const [query, setQuery] = useState(value)
+  const [query, setQuery] = useState(() => getCityDisplayName(countryCode, value, locale))
   const [open, setOpen] = useState(false)
 
   useEffect(() => {
-    setQuery(value)
-  }, [value])
+    setQuery(getCityDisplayName(countryCode, value, locale))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, countryCode, locale])
 
   useEffect(() => {
     setCities([])
@@ -49,9 +52,10 @@ export function CitySelect({
     return () => document.removeEventListener("mousedown", handleClickOutside)
   }, [])
 
+  const options = cities.map((city) => ({ city, label: getCityDisplayName(countryCode, city, locale) }))
   const filtered = query
-    ? cities.filter((c) => c.toLowerCase().includes(query.toLowerCase())).slice(0, MAX_RESULTS)
-    : cities.slice(0, MAX_RESULTS)
+    ? options.filter((o) => o.label.toLowerCase().includes(query.toLowerCase())).slice(0, MAX_RESULTS)
+    : options.slice(0, MAX_RESULTS)
 
   const disabled = !countryCode
 
@@ -78,13 +82,13 @@ export function CitySelect({
           ) : filtered.length === 0 ? (
             <div className="px-3 py-2 text-sm text-muted-foreground">{t("team.cityNoResults")}</div>
           ) : (
-            filtered.map((city) => (
+            filtered.map(({ city, label }) => (
               <button
                 key={city}
                 type="button"
                 onClick={() => {
                   onChange(city)
-                  setQuery(city)
+                  setQuery(label)
                   setOpen(false)
                 }}
                 className={cn(
@@ -92,7 +96,7 @@ export function CitySelect({
                   city === value && "bg-accent/60"
                 )}
               >
-                {city}
+                {label}
               </button>
             ))
           )}
