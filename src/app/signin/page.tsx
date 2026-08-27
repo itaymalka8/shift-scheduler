@@ -8,9 +8,11 @@ import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { signIn } from "next-auth/react"
 import { signInSchema, type SignInInput } from "@/lib/validation"
+import { markLoginRemember } from "@/lib/remember-me"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Card,
   CardContent,
@@ -18,6 +20,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { OAuthButtons } from "@/components/oauth-buttons"
 
 function SignInForm() {
   const router = useRouter()
@@ -25,6 +28,7 @@ function SignInForm() {
   const callbackUrl = searchParams.get("callbackUrl") ?? "/dashboard"
   const [serverError, setServerError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [rememberMe, setRememberMe] = useState(true)
 
   const {
     register,
@@ -49,6 +53,7 @@ function SignInForm() {
         return
       }
 
+      markLoginRemember(rememberMe)
       router.push(callbackUrl)
       router.refresh()
     } finally {
@@ -63,6 +68,8 @@ function SignInForm() {
         <CardDescription>התחברו כדי לנהל את הקבוצה שלכם</CardDescription>
       </CardHeader>
       <CardContent>
+        <OAuthButtons callbackUrl={callbackUrl} />
+
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="email">אימייל</Label>
@@ -83,6 +90,17 @@ function SignInForm() {
             {errors.password && (
               <p className="text-sm text-destructive">{errors.password.message}</p>
             )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="rememberMe"
+              checked={rememberMe}
+              onCheckedChange={(checked) => setRememberMe(checked === true)}
+            />
+            <Label htmlFor="rememberMe" className="text-sm font-normal cursor-pointer">
+              זכרו אותי (השארו מחוברים גם אחרי סגירת הדפדפן)
+            </Label>
           </div>
 
           {serverError && (

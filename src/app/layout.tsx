@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { AuthSessionProvider } from "@/components/session-provider";
+import { SessionGuard } from "@/components/session-guard";
 import { CrestDefs } from "@/components/team-crest";
 import "./globals.css";
 
@@ -34,7 +35,10 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         <CrestDefs />
-        <AuthSessionProvider>{children}</AuthSessionProvider>
+        <AuthSessionProvider>
+          <SessionGuard />
+          {children}
+        </AuthSessionProvider>
       </body>
     </html>
   );

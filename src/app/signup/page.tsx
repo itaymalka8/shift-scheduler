@@ -9,9 +9,11 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { signIn } from "next-auth/react"
 import { Upload, X } from "lucide-react"
 import { registerSchema, type RegisterInput } from "@/lib/validation"
+import { markLoginRemember } from "@/lib/remember-me"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Card,
   CardContent,
@@ -19,6 +21,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { OAuthButtons } from "@/components/oauth-buttons"
 import { cn } from "@/lib/utils"
 import {
   CREST_COLORS,
@@ -76,6 +79,7 @@ export default function SignUpPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [serverError, setServerError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [rememberMe, setRememberMe] = useState(true)
 
   const [shape, setShape] = useState<CrestShapeId>(DEFAULT_CREST_SHAPE)
   const [pattern, setPattern] = useState<CrestPatternId>(DEFAULT_CREST_PATTERN)
@@ -164,6 +168,7 @@ export default function SignUpPage() {
         return
       }
 
+      markLoginRemember(rememberMe)
       router.push("/dashboard")
       router.refresh()
     } finally {
@@ -183,6 +188,8 @@ export default function SignUpPage() {
           <CardDescription>מלאו את הפרטים כדי להתחיל לנהל את הקבוצה שלכם</CardDescription>
         </CardHeader>
         <CardContent>
+          <OAuthButtons />
+
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="name">שם מלא</Label>
@@ -386,6 +393,17 @@ export default function SignUpPage() {
               />
 
               {crestError && <p className="text-sm text-destructive">{crestError}</p>}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="rememberMe"
+                checked={rememberMe}
+                onCheckedChange={(checked) => setRememberMe(checked === true)}
+              />
+              <Label htmlFor="rememberMe" className="text-sm font-normal cursor-pointer">
+                השאירו אותי מחובר גם אחרי סגירת הדפדפן
+              </Label>
             </div>
 
             {serverError && (
