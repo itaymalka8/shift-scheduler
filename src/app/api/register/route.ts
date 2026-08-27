@@ -18,6 +18,8 @@ import {
   isCrestShape,
 } from "@/components/team-crest"
 import { DEFAULT_STADIUM_STYLE, isStadiumStyle } from "@/components/stadium-illustration"
+import { ensureIsraelSeasonSeeded } from "@/lib/leagues/seed"
+import { pickBotTeamForNewSignup } from "@/lib/leagues/assign"
 
 const DEFAULT_STADIUM_CAPACITY = 100
 
@@ -136,29 +138,38 @@ export async function POST(request: Request) {
   const resolvedCrowdStyle = CROWD_STYLES.includes(crowdStyle) ? crowdStyle : "calm"
   const resolvedStadiumStyle = isStadiumStyle(stadiumStyle) ? stadiumStyle : DEFAULT_STADIUM_STYLE
 
-  await prisma.user.create({
-    data: {
-      name,
-      email,
-      passwordHash,
-      team: {
-        create: {
-          name: teamName,
-          crestShape: resolvedShape,
-          crestPattern: resolvedPattern,
-          crestIcon: resolvedIcon,
-          crestColor: resolvedColor,
-          crestSecondaryColor: resolvedSecondary,
-          crestBorderColor: resolvedBorder,
-          crestImageUrl,
-          countryCode,
-          stadiumName,
-          stadiumStyle: resolvedStadiumStyle,
-          stadiumCapacity: DEFAULT_STADIUM_CAPACITY,
-          crowdStyle: resolvedCrowdStyle,
-        },
-      },
-    },
+  if (countryCode === "IL") {
+    await ensureIsraelSeasonSeeded()
+  }
+
+  const teamData = {
+    name: teamName,
+    crestShape: resolvedShape,
+    crestPattern: resolvedPattern,
+    crestIcon: resolvedIcon,
+    crestColor: resolvedColor,
+    crestSecondaryColor: resolvedSecondary,
+    crestBorderColor: resolvedBorder,
+    crestImageUrl,
+    countryCode,
+    stadiumName,
+    stadiumStyle: resolvedStadiumStyle,
+    stadiumCapacity: DEFAULT_STADIUM_CAPACITY,
+    crowdStyle: resolvedCrowdStyle,
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const user = await tx.user.create({ data: { name, email, passwordHash } })
+
+    // Real signups take over an existing bot team's slot (and fixtures)
+    // instead of joining without a division - see pickBotTeamForNewSignup.
+    const botTeamId = countryCode === "IL" ? await pickBotTeamForNewSignup(tx) : null
+
+    if (botTeamId) {
+      await tx.team.update({ where: { id: botTeamId }, data: { ...teamData, userId: user.id, isBot: false } })
+    } else {
+      await tx.team.create({ data: { ...teamData, userId: user.id } })
+    }
   })
 
   return NextResponse.json({ ok: true })

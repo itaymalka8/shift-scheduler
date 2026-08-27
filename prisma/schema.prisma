@@ -59,7 +59,7 @@ model VerificationToken {
 }
 
 model Team {
-  id                  String   @id @default(cuid())
+  id                  String         @id @default(cuid())
   name                String
   crestShape          String?
   crestPattern        String?
@@ -71,9 +71,69 @@ model Team {
   countryCode         String?
   stadiumName         String?
   stadiumStyle        String?
-  stadiumCapacity     Int      @default(100)
+  stadiumCapacity     Int            @default(100)
   crowdStyle          String?
-  createdAt           DateTime @default(now())
-  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId              String   @unique
+  isBot               Boolean        @default(false)
+  createdAt           DateTime       @default(now())
+  user                User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId              String?        @unique
+  divisionMemberships DivisionTeam[]
+  homeFixtures        Fixture[]      @relation("HomeFixtures")
+  awayFixtures        Fixture[]      @relation("AwayFixtures")
+}
+
+// A country's league pyramid is instantiated one Season at a time. Season 1
+// for a country is created (with bot teams filling every slot) the first
+// time someone registers a team there - see src/lib/leagues/seed.ts.
+model Season {
+  id          String     @id @default(cuid())
+  countryCode String
+  number      Int
+  isActive    Boolean    @default(true)
+  createdAt   DateTime   @default(now())
+  divisions   Division[]
+
+  @@unique([countryCode, number])
+}
+
+// One table/group within a tier for a given season - e.g. tier 1 has a
+// single division, tier 2 has two parallel divisions ("A"/"B").
+model Division {
+  id        String         @id @default(cuid())
+  seasonId  String
+  season    Season         @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  tier      Int
+  group     String?
+  name      String
+  createdAt DateTime       @default(now())
+  teams     DivisionTeam[]
+  fixtures  Fixture[]
+
+  @@unique([seasonId, tier, group])
+}
+
+model DivisionTeam {
+  id         String   @id @default(cuid())
+  divisionId String
+  division   Division @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+  teamId     String
+  team       Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  joinedAt   DateTime @default(now())
+
+  @@unique([divisionId, teamId])
+}
+
+model Fixture {
+  id         String    @id @default(cuid())
+  divisionId String
+  division   Division  @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+  matchday   Int
+  homeTeamId String
+  homeTeam   Team      @relation("HomeFixtures", fields: [homeTeamId], references: [id], onDelete: Cascade)
+  awayTeamId String
+  awayTeam   Team      @relation("AwayFixtures", fields: [awayTeamId], references: [id], onDelete: Cascade)
+  homeScore  Int?
+  awayScore  Int?
+  playedAt   DateTime?
+  createdAt  DateTime  @default(now())
 }

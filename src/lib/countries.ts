@@ -10,9 +10,9 @@ countries.registerLocale(ar)
 
 // Countries with an active league engine at launch. Everyone else can still
 // register and pick their real country - they just don't have a running
-// league yet. Note: "England" has no ISO 3166-1 code of its own (only the
-// United Kingdom, GB, does) - GB stands in for it here.
-export const LAUNCH_COUNTRY_CODES = ["IL", "GR", "GB"] as const
+// league yet. Greece and the UK are staged for later rounds once their own
+// league structures are built; only Israel's is live for now.
+export const LAUNCH_COUNTRY_CODES = ["IL"] as const
 
 export function isLaunchCountry(code: string | null | undefined): boolean {
   return !!code && (LAUNCH_COUNTRY_CODES as readonly string[]).includes(code)
