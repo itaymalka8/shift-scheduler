@@ -7,14 +7,17 @@ import { useMemo, useRef, useState } from "react"
 import { Controller, useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { signIn } from "next-auth/react"
-import { Upload, X } from "lucide-react"
+import { CheckCircle2, Eye, EyeOff, Loader2, Upload, X } from "lucide-react"
 import {
   makeAccountSchema,
   makeTeamDetailsSchema,
+  makeTeamIdentitySchema,
   type AccountInput,
   type TeamDetailsInput,
+  type TeamIdentityInput,
 } from "@/lib/validation"
 import { markLoginRemember } from "@/lib/remember-me"
+import { isAuthErrorCode } from "@/lib/auth-errors"
 import { useLocale, useT } from "@/lib/i18n/locale-context"
 import type { TranslationKey } from "@/lib/i18n/translations"
 import { getCountryOptions, isLaunchCountry } from "@/lib/countries"
@@ -127,10 +130,14 @@ export default function SignUpPage() {
   const t = useT()
   const { locale } = useLocale()
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const [step, setStep] = useState<1 | 2>(1)
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(1)
   const [serverError, setServerError] = useState<string | null>(null)
+  const [emailExists, setEmailExists] = useState(false)
+  const [signupSucceededSigninFailed, setSignupSucceededSigninFailed] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [rememberMe, setRememberMe] = useState(true)
+  const [showPassword, setShowPassword] = useState(false)
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
 
   const [shape, setShape] = useState<CrestShapeId>(DEFAULT_CREST_SHAPE)
   const [pattern, setPattern] = useState<CrestPatternId>(DEFAULT_CREST_PATTERN)
@@ -146,6 +153,10 @@ export default function SignUpPage() {
 
   const accountForm = useForm<AccountInput>({
     resolver: zodResolver(makeAccountSchema(t)),
+  })
+
+  const identityForm = useForm<TeamIdentityInput>({
+    resolver: zodResolver(makeTeamIdentitySchema(t)),
   })
 
   const teamForm = useForm<TeamDetailsInput>({
@@ -178,25 +189,27 @@ export default function SignUpPage() {
     if (fileInputRef.current) fileInputRef.current.value = ""
   }
 
-  const goToStep2 = () => {
-    const teamName = accountForm.getValues("teamName")
-    if (!teamForm.getValues("stadiumName") && teamName) {
-      teamForm.setValue("stadiumName", teamName)
+  const goToStep3 = (identity: TeamIdentityInput) => {
+    if (!teamForm.getValues("stadiumName")) {
+      teamForm.setValue("stadiumName", identity.teamName)
     }
-    setStep(2)
+    setStep(3)
   }
 
   const onFinalSubmit = async (teamDetails: TeamDetailsInput) => {
     const account = accountForm.getValues()
+    const identity = identityForm.getValues()
     setServerError(null)
+    setEmailExists(false)
+    setSignupSucceededSigninFailed(false)
     setIsSubmitting(true)
     try {
       const formData = new FormData()
       formData.set("name", account.name)
-      formData.set("teamName", account.teamName)
       formData.set("email", account.email)
       formData.set("password", account.password)
       formData.set("confirmPassword", account.confirmPassword)
+      formData.set("teamName", identity.teamName)
       formData.set("crestShape", shape)
       formData.set("crestBorderColor", borderColor)
       formData.set("countryCode", teamDetails.countryCode)
@@ -213,19 +226,30 @@ export default function SignUpPage() {
         formData.set("crestSecondaryColor", secondaryColor)
       }
 
-      const res = await fetch("/api/register", {
-        method: "POST",
-        body: formData,
-      })
-
-      if (!res.ok) {
-        const body = await res.json()
-        const code = body.error as string | undefined
-        const key = (code ? `error.${code}` : "error.GENERIC") as TranslationKey
-        setServerError(t(key) === key ? t("error.GENERIC") : t(key))
+      let res: Response
+      try {
+        res = await fetch("/api/register", { method: "POST", body: formData })
+      } catch {
+        setServerError(t("error.NETWORK_ERROR"))
         return
       }
 
+      if (!res.ok) {
+        const body = await res.json().catch(() => null)
+        const code = body?.error as string | undefined
+        if (code === "EMAIL_ALREADY_EXISTS") {
+          setEmailExists(true)
+          return
+        }
+        const key = (isAuthErrorCode(code) ? `error.${code}` : "error.UNKNOWN_ERROR") as TranslationKey
+        setServerError(t(key))
+        return
+      }
+
+      // Auto-sign-in right after a successful registration - never force the
+      // user back to a manual sign-in unless this itself fails, and even
+      // then we don't silently retry it (that's the one thing not to build
+      // here) - we just surface it and let them sign in themselves.
       const signInResult = await signIn("credentials", {
         email: account.email,
         password: account.password,
@@ -234,16 +258,20 @@ export default function SignUpPage() {
 
       if (signInResult?.error) {
         setServerError(t("signup.signupSucceededSigninFailed"))
-        router.push("/signin")
+        setSignupSucceededSigninFailed(true)
         return
       }
 
       markLoginRemember(rememberMe)
-      router.push("/dashboard")
-      router.refresh()
+      setStep(4)
     } finally {
       setIsSubmitting(false)
     }
+  }
+
+  const enterClub = () => {
+    router.push("/dashboard")
+    router.refresh()
   }
 
   return (
@@ -256,7 +284,7 @@ export default function SignUpPage() {
       </Link>
 
       <Card className="w-full max-w-lg">
-        {step === 1 ? (
+        {step === 1 && (
           <>
             <CardHeader>
               <CardTitle className="text-2xl">{t("signup.title")}</CardTitle>
@@ -265,7 +293,7 @@ export default function SignUpPage() {
             <CardContent>
               <OAuthButtons />
 
-              <form onSubmit={accountForm.handleSubmit(goToStep2)} className="space-y-4">
+              <form onSubmit={accountForm.handleSubmit(() => setStep(2))} className="space-y-4">
                 <div className="space-y-2">
                   <Label htmlFor="name">{t("auth.fullName")}</Label>
                   <Input id="name" type="text" autoComplete="name" {...accountForm.register("name")} />
@@ -277,18 +305,17 @@ export default function SignUpPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="teamName">{t("auth.teamName")}</Label>
-                  <Input id="teamName" type="text" {...accountForm.register("teamName")} />
-                  {accountForm.formState.errors.teamName && (
-                    <p className="text-sm text-destructive">
-                      {accountForm.formState.errors.teamName.message}
-                    </p>
-                  )}
-                </div>
-
-                <div className="space-y-2">
                   <Label htmlFor="email">{t("auth.email")}</Label>
-                  <Input id="email" type="email" autoComplete="email" {...accountForm.register("email")} />
+                  <Input
+                    id="email"
+                    type="email"
+                    inputMode="email"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    autoComplete="email"
+                    {...accountForm.register("email")}
+                  />
                   {accountForm.formState.errors.email && (
                     <p className="text-sm text-destructive">
                       {accountForm.formState.errors.email.message}
@@ -298,12 +325,23 @@ export default function SignUpPage() {
 
                 <div className="space-y-2">
                   <Label htmlFor="password">{t("auth.password")}</Label>
-                  <Input
-                    id="password"
-                    type="password"
-                    autoComplete="new-password"
-                    {...accountForm.register("password")}
-                  />
+                  <div className="relative">
+                    <Input
+                      id="password"
+                      type={showPassword ? "text" : "password"}
+                      autoComplete="new-password"
+                      className="pe-10"
+                      {...accountForm.register("password")}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((v) => !v)}
+                      aria-label={showPassword ? t("signin.hidePassword") : t("signin.showPassword")}
+                      className="absolute inset-y-0 end-0 flex items-center px-3 text-muted-foreground hover:text-foreground"
+                    >
+                      {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                    </button>
+                  </div>
                   {accountForm.formState.errors.password && (
                     <p className="text-sm text-destructive">
                       {accountForm.formState.errors.password.message}
@@ -313,12 +351,25 @@ export default function SignUpPage() {
 
                 <div className="space-y-2">
                   <Label htmlFor="confirmPassword">{t("auth.confirmPassword")}</Label>
-                  <Input
-                    id="confirmPassword"
-                    type="password"
-                    autoComplete="new-password"
-                    {...accountForm.register("confirmPassword")}
-                  />
+                  <div className="relative">
+                    <Input
+                      id="confirmPassword"
+                      type={showConfirmPassword ? "text" : "password"}
+                      autoComplete="new-password"
+                      className="pe-10"
+                      {...accountForm.register("confirmPassword")}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmPassword((v) => !v)}
+                      aria-label={
+                        showConfirmPassword ? t("signin.hidePassword") : t("signin.showPassword")
+                      }
+                      className="absolute inset-y-0 end-0 flex items-center px-3 text-muted-foreground hover:text-foreground"
+                    >
+                      {showConfirmPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                    </button>
+                  </div>
                   {accountForm.formState.errors.confirmPassword && (
                     <p className="text-sm text-destructive">
                       {accountForm.formState.errors.confirmPassword.message}
@@ -326,7 +377,41 @@ export default function SignUpPage() {
                   )}
                 </div>
 
-                <div className="space-y-4 border-t pt-4">
+                <Button type="submit" className="w-full">
+                  {t("signup.createAccount")}
+                </Button>
+              </form>
+
+              <p className="mt-6 text-center text-sm text-muted-foreground">
+                {t("signup.alreadyHaveTeam")}{" "}
+                <Link href="/signin" className="text-primary font-medium hover:underline">
+                  {t("signup.signInHere")}
+                </Link>
+              </p>
+              <p className="mt-3 text-center text-xs text-muted-foreground">{t("signup.legalFooter")}</p>
+            </CardContent>
+          </>
+        )}
+
+        {step === 2 && (
+          <>
+            <CardHeader>
+              <CardTitle className="text-2xl">{t("crest.title")}</CardTitle>
+              <CardDescription>{t("signup.identityDescription")}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={identityForm.handleSubmit(goToStep3)} className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="teamName">{t("auth.teamName")}</Label>
+                  <Input id="teamName" type="text" {...identityForm.register("teamName")} />
+                  {identityForm.formState.errors.teamName && (
+                    <p className="text-sm text-destructive">
+                      {identityForm.formState.errors.teamName.message}
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-4">
                   <div className="flex items-center gap-4">
                     <TeamCrest
                       shape={shape}
@@ -339,7 +424,6 @@ export default function SignUpPage() {
                       size={80}
                     />
                     <div className="flex-1">
-                      <Label>{t("crest.title")}</Label>
                       {crestPreviewUrl && (
                         <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
                           <span className="truncate">{crestFile?.name}</span>
@@ -480,31 +564,20 @@ export default function SignUpPage() {
                   {crestError && <p className="text-sm text-destructive">{crestError}</p>}
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="rememberMe"
-                    checked={rememberMe}
-                    onCheckedChange={(checked) => setRememberMe(checked === true)}
-                  />
-                  <Label htmlFor="rememberMe" className="text-sm font-normal cursor-pointer">
-                    {t("auth.rememberMeSignup")}
-                  </Label>
+                <div className="flex gap-3">
+                  <Button type="button" variant="outline" className="flex-1" onClick={() => setStep(1)}>
+                    {t("signup.back")}
+                  </Button>
+                  <Button type="submit" className="flex-1">
+                    {t("signup.next")}
+                  </Button>
                 </div>
-
-                <Button type="submit" className="w-full">
-                  {t("signup.next")}
-                </Button>
               </form>
-
-              <p className="mt-6 text-center text-sm text-muted-foreground">
-                {t("signup.alreadyHaveTeam")}{" "}
-                <Link href="/signin" className="text-primary font-medium hover:underline">
-                  {t("signup.signInHere")}
-                </Link>
-              </p>
             </CardContent>
           </>
-        ) : (
+        )}
+
+        {step === 3 && (
           <>
             <CardHeader>
               <StadiumIllustration style={stadiumStyle} className="w-full h-36 rounded-lg mb-2" />
@@ -628,8 +701,38 @@ export default function SignUpPage() {
                   />
                 </div>
 
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="rememberMe"
+                    checked={rememberMe}
+                    onCheckedChange={(checked) => setRememberMe(checked === true)}
+                  />
+                  <Label htmlFor="rememberMe" className="text-sm font-normal cursor-pointer">
+                    {t("auth.rememberMeSignup")}
+                  </Label>
+                </div>
+
+                {emailExists && (
+                  <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-center">
+                    <p className="text-sm text-destructive">{t("signup.emailExistsTitle")}</p>
+                    <Link
+                      href={`/signin?email=${encodeURIComponent(accountForm.getValues("email"))}`}
+                      className="mt-1 inline-block text-sm font-medium text-primary hover:underline"
+                    >
+                      {t("signup.goToSignin")}
+                    </Link>
+                  </div>
+                )}
+
                 {serverError && (
-                  <p className="text-sm text-destructive text-center">{serverError}</p>
+                  <div className="text-center">
+                    <p className="text-sm text-destructive">{serverError}</p>
+                    {signupSucceededSigninFailed && (
+                      <Link href="/signin" className="text-sm font-medium text-primary hover:underline">
+                        {t("signup.goToSignin")}
+                      </Link>
+                    )}
+                  </div>
                 )}
 
                 <div className="flex gap-3">
@@ -637,16 +740,43 @@ export default function SignUpPage() {
                     type="button"
                     variant="outline"
                     className="flex-1"
-                    onClick={() => setStep(1)}
+                    onClick={() => setStep(2)}
                     disabled={isSubmitting}
                   >
                     {t("signup.back")}
                   </Button>
-                  <Button type="submit" className="flex-1" disabled={isSubmitting}>
+                  <Button type="submit" className="flex-1 gap-2" disabled={isSubmitting}>
+                    {isSubmitting && <Loader2 className="size-4 animate-spin" />}
                     {isSubmitting ? t("signup.submitting") : t("signup.submit")}
                   </Button>
                 </div>
               </form>
+            </CardContent>
+          </>
+        )}
+
+        {step === 4 && (
+          <>
+            <CardHeader className="items-center text-center">
+              <CheckCircle2 className="size-12 text-primary mb-2" />
+              <CardTitle className="text-2xl">{t("signup.readyTitle")}</CardTitle>
+              <CardDescription>{t("signup.readyDescription")}</CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col items-center gap-6">
+              <TeamCrest
+                shape={shape}
+                pattern={pattern}
+                icon={icon}
+                color={color}
+                secondaryColor={secondaryColor}
+                borderColor={borderColor}
+                imageUrl={crestPreviewUrl}
+                size={96}
+              />
+              <p className="text-lg font-semibold">{identityForm.getValues("teamName")}</p>
+              <Button className="w-full" onClick={enterClub}>
+                {t("signup.enterClub")}
+              </Button>
             </CardContent>
           </>
         )}

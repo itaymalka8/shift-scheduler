@@ -5,16 +5,8 @@ import GoogleProvider from "next-auth/providers/google"
 import AppleProvider from "next-auth/providers/apple"
 import bcrypt from "bcryptjs"
 import { prisma } from "@/lib/prisma"
-import {
-  DEFAULT_CREST_BORDER_COLOR,
-  DEFAULT_CREST_COLOR,
-  DEFAULT_CREST_ICON,
-  DEFAULT_CREST_PATTERN,
-  DEFAULT_CREST_SECONDARY_COLOR,
-  DEFAULT_CREST_SHAPE,
-} from "@/components/team-crest"
-import { DEFAULT_STADIUM_STYLE } from "@/components/stadium-illustration"
-import { generateSquad } from "@/lib/players/generate"
+import { ensureTeamForUser } from "@/lib/team-setup"
+import { isRateLimited, recordFailedAttempt, clearAttempts } from "@/lib/rate-limit"
 
 const providers: NextAuthOptions["providers"] = [
   CredentialsProvider({
@@ -23,16 +15,48 @@ const providers: NextAuthOptions["providers"] = [
       email: { label: "אימייל", type: "email" },
       password: { label: "סיסמה", type: "password" },
     },
+    // Throws a distinct error code per failure reason instead of returning
+    // null for everything - NextAuth passes a thrown Error's message straight
+    // through as signIn()'s result.error, but silently collapses a `null`
+    // return into a single generic "CredentialsSignin" string. User-not-found
+    // and wrong-password are deliberately kept under the same
+    // INVALID_CREDENTIALS code (never revealing which one it was) to avoid
+    // leaking whether an email is registered - every other case here is a
+    // real, distinct condition that safely can (and per the product spec,
+    // must) be told apart.
     async authorize(credentials) {
-      if (!credentials?.email || !credentials?.password) return null
+      if (!credentials?.email || !credentials?.password) {
+        throw new Error("VALIDATION_ERROR")
+      }
 
+      // Password is compared byte-for-byte via bcrypt, never lowercased or
+      // trimmed - only the email identity lookup is normalized.
       const email = credentials.email.trim().toLowerCase()
-      const user = await prisma.user.findUnique({ where: { email } })
-      if (!user || !user.passwordHash) return null
+      const rateLimitKey = `login:${email}`
+
+      if (isRateLimited(rateLimitKey)) {
+        throw new Error("RATE_LIMITED")
+      }
+
+      let user
+      try {
+        user = await prisma.user.findUnique({ where: { email } })
+      } catch {
+        throw new Error("NETWORK_ERROR")
+      }
+
+      if (!user || !user.passwordHash) {
+        recordFailedAttempt(rateLimitKey)
+        throw new Error("INVALID_CREDENTIALS")
+      }
 
       const isValid = await bcrypt.compare(credentials.password, user.passwordHash)
-      if (!isValid) return null
+      if (!isValid) {
+        recordFailedAttempt(rateLimitKey)
+        throw new Error("INVALID_CREDENTIALS")
+      }
 
+      clearAttempts(rateLimitKey)
       return { id: user.id, email: user.email, name: user.name }
     },
   }),
@@ -72,26 +96,16 @@ export const authOptions: NextAuthOptions = {
     // Fires once when the Prisma adapter creates a brand-new user - i.e. a
     // first-time Google/Apple sign-in (credentials signup creates its own
     // Team directly in /api/register and never goes through this path).
+    // If this fails partway through, the user is left signed in but without
+    // a team ("account setup incomplete") rather than fully broken - the
+    // same ensureTeamForUser call self-heals that state on their next
+    // dashboard load, so nobody gets stuck.
     async createUser({ user }) {
-      const existingTeam = await prisma.team.findUnique({ where: { userId: user.id } })
-      if (existingTeam) return
-
-      const team = await prisma.team.create({
-        data: {
-          userId: user.id,
-          name: user.name ? `קבוצת ${user.name}` : "הקבוצה החדשה שלי",
-          crestShape: DEFAULT_CREST_SHAPE,
-          crestPattern: DEFAULT_CREST_PATTERN,
-          crestIcon: DEFAULT_CREST_ICON,
-          crestColor: DEFAULT_CREST_COLOR,
-          crestSecondaryColor: DEFAULT_CREST_SECONDARY_COLOR,
-          crestBorderColor: DEFAULT_CREST_BORDER_COLOR,
-          crowdStyle: "calm",
-          stadiumStyle: DEFAULT_STADIUM_STYLE,
-          stadiumCapacity: 100,
-        },
-      })
-      await generateSquad(prisma, team.id)
+      try {
+        await ensureTeamForUser(prisma, user.id, user.name ?? null)
+      } catch (error) {
+        console.error("Failed to create default team for new OAuth user", user.id, error)
+      }
     },
   },
   callbacks: {

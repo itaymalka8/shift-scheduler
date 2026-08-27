@@ -7,9 +7,12 @@ import { Suspense, useState } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { signIn } from "next-auth/react"
+import { Eye, EyeOff, Loader2 } from "lucide-react"
 import { makeSignInSchema, type SignInInput } from "@/lib/validation"
 import { markLoginRemember } from "@/lib/remember-me"
+import { isAuthErrorCode } from "@/lib/auth-errors"
 import { useT } from "@/lib/i18n/locale-context"
+import type { TranslationKey } from "@/lib/i18n/translations"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -32,16 +35,20 @@ function SignInForm() {
   const [serverError, setServerError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [rememberMe, setRememberMe] = useState(true)
+  const [showPassword, setShowPassword] = useState(false)
 
   const {
     register,
     handleSubmit,
+    setValue,
     formState: { errors },
   } = useForm<SignInInput>({
     resolver: zodResolver(makeSignInSchema(t)),
+    defaultValues: { email: searchParams.get("email") ?? "" },
   })
 
   const onSubmit = async (data: SignInInput) => {
+    if (isSubmitting) return
     setServerError(null)
     setIsSubmitting(true)
     try {
@@ -52,13 +59,19 @@ function SignInForm() {
       })
 
       if (result?.error) {
-        setServerError(t("signin.invalidCredentials"))
+        const key = (isAuthErrorCode(result.error) ? `error.${result.error}` : "error.UNKNOWN_ERROR") as TranslationKey
+        setServerError(t(key))
+        // Deliberately never clear the email field on failure - re-typing a
+        // correct email after a wrong password is a real, common complaint.
+        setValue("password", "")
         return
       }
 
       markLoginRemember(rememberMe)
       router.push(callbackUrl)
       router.refresh()
+    } catch {
+      setServerError(t("error.NETWORK_ERROR"))
     } finally {
       setIsSubmitting(false)
     }
@@ -76,20 +89,45 @@ function SignInForm() {
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="email">{t("auth.email")}</Label>
-            <Input id="email" type="email" autoComplete="email" {...register("email")} />
+            <Input
+              id="email"
+              type="email"
+              inputMode="email"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              autoComplete="email"
+              {...register("email")}
+            />
             {errors.email && (
               <p className="text-sm text-destructive">{errors.email.message}</p>
             )}
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="password">{t("auth.password")}</Label>
-            <Input
-              id="password"
-              type="password"
-              autoComplete="current-password"
-              {...register("password")}
-            />
+            <div className="flex items-center justify-between">
+              <Label htmlFor="password">{t("auth.password")}</Label>
+              <Link href="/forgot-password" className="text-sm text-primary hover:underline">
+                {t("signin.forgotPassword")}
+              </Link>
+            </div>
+            <div className="relative">
+              <Input
+                id="password"
+                type={showPassword ? "text" : "password"}
+                autoComplete="current-password"
+                className="pe-10"
+                {...register("password")}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((v) => !v)}
+                aria-label={showPassword ? t("signin.hidePassword") : t("signin.showPassword")}
+                className="absolute inset-y-0 end-0 flex items-center px-3 text-muted-foreground hover:text-foreground"
+              >
+                {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+              </button>
+            </div>
             {errors.password && (
               <p className="text-sm text-destructive">{errors.password.message}</p>
             )}
@@ -110,7 +148,8 @@ function SignInForm() {
             <p className="text-sm text-destructive text-center">{serverError}</p>
           )}
 
-          <Button type="submit" className="w-full" disabled={isSubmitting}>
+          <Button type="submit" className="w-full gap-2" disabled={isSubmitting}>
+            {isSubmitting && <Loader2 className="size-4 animate-spin" />}
             {isSubmitting ? t("signin.submitting") : t("signin.submit")}
           </Button>
         </form>

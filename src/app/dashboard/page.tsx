@@ -12,10 +12,20 @@ import { SignOutButton } from "./sign-out-button"
 import { getLeagueTiers, getDivisionName } from "@/lib/leagues/config"
 import { computeStandings } from "@/lib/leagues/standings"
 import { ensureIsraelSeasonSeeded } from "@/lib/leagues/seed"
+import { ensureTeamForUser } from "@/lib/team-setup"
 import { cn } from "@/lib/utils"
 
 export default async function DashboardPage() {
   const session = await getServerSession(authOptions)
+
+  // Self-heal an "account setup incomplete" state: an authenticated user
+  // who somehow ended up without a team (e.g. an OAuth signup whose team
+  // creation failed partway through) gets one created here instead of
+  // seeing a broken, team-less dashboard forever.
+  if (session?.user?.id) {
+    await ensureTeamForUser(prisma, session.user.id, session.user.name ?? null)
+  }
+
   const cookieStore = await cookies()
   const cookieLocale = cookieStore.get("goalx-locale")?.value
   const locale = isLocale(cookieLocale) ? cookieLocale : DEFAULT_LOCALE

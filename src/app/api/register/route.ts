@@ -4,7 +4,7 @@ import { mkdir, writeFile } from "fs/promises"
 import path from "path"
 import bcrypt from "bcryptjs"
 import { prisma } from "@/lib/prisma"
-import { CROWD_STYLES, makeAccountSchema, makeTeamDetailsSchema } from "@/lib/validation"
+import { CROWD_STYLES, makeAccountSchema, makeTeamDetailsSchema, makeTeamIdentitySchema } from "@/lib/validation"
 import {
   DEFAULT_CREST_BORDER_COLOR,
   DEFAULT_CREST_COLOR,
@@ -37,6 +37,7 @@ const ALLOWED_CREST_TYPES: Record<string, string> = {
 // never shown to the user - only the stable `error` code below is.
 const noopT = (key: string) => key
 const accountSchema = makeAccountSchema(noopT)
+const teamIdentitySchema = makeTeamIdentitySchema(noopT)
 const teamDetailsSchema = makeTeamDetailsSchema(noopT)
 
 export async function POST(request: Request) {
@@ -44,10 +45,18 @@ export async function POST(request: Request) {
 
   const accountParsed = accountSchema.safeParse({
     name: formData.get("name"),
-    teamName: formData.get("teamName"),
     email: formData.get("email"),
     password: formData.get("password"),
     confirmPassword: formData.get("confirmPassword"),
+  })
+
+  if (!accountParsed.success) {
+    const isWeakPassword = accountParsed.error.issues.every((issue) => issue.path[0] === "password")
+    return NextResponse.json({ error: isWeakPassword ? "WEAK_PASSWORD" : "VALIDATION_ERROR" }, { status: 400 })
+  }
+
+  const teamIdentityParsed = teamIdentitySchema.safeParse({
+    teamName: formData.get("teamName"),
     crestShape: formData.get("crestShape") || undefined,
     crestPattern: formData.get("crestPattern") || undefined,
     crestIcon: formData.get("crestIcon") || undefined,
@@ -56,7 +65,7 @@ export async function POST(request: Request) {
     crestBorderColor: formData.get("crestBorderColor") || undefined,
   })
 
-  if (!accountParsed.success) {
+  if (!teamIdentityParsed.success) {
     return NextResponse.json({ error: "VALIDATION_ERROR" }, { status: 400 })
   }
 
@@ -71,23 +80,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "VALIDATION_ERROR" }, { status: 400 })
   }
 
+  const { name, password } = accountParsed.data
+  const email = accountParsed.data.email.trim().toLowerCase()
   const {
-    name,
     teamName,
-    password,
     crestShape,
     crestPattern,
     crestIcon,
     crestColor,
     crestSecondaryColor,
     crestBorderColor,
-  } = accountParsed.data
-  const email = accountParsed.data.email.trim().toLowerCase()
+  } = teamIdentityParsed.data
   const { countryCode, stadiumName, stadiumStyle, crowdStyle } = teamDetailsParsed.data
 
   const existing = await prisma.user.findUnique({ where: { email } })
   if (existing) {
-    return NextResponse.json({ error: "EMAIL_TAKEN" }, { status: 409 })
+    return NextResponse.json({ error: "EMAIL_ALREADY_EXISTS" }, { status: 409 })
   }
 
   const crestFile = formData.get("crestImage")
@@ -159,21 +167,40 @@ export async function POST(request: Request) {
     crowdStyle: resolvedCrowdStyle,
   }
 
-  await prisma.$transaction(async (tx) => {
-    const user = await tx.user.create({ data: { name, email, passwordHash } })
+  try {
+    await prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({ data: { name, email, passwordHash } })
 
-    // Real signups take over an existing bot team's slot (and fixtures)
-    // instead of joining without a division - see pickBotTeamForNewSignup.
-    const botTeamId = countryCode === "IL" ? await pickBotTeamForNewSignup(tx) : null
+      // Real signups take over an existing bot team's slot (and fixtures)
+      // instead of joining without a division - see pickBotTeamForNewSignup.
+      const botTeamId = countryCode === "IL" ? await pickBotTeamForNewSignup(tx) : null
 
-    if (botTeamId) {
-      // Inherits the bot's already-generated squad and fixtures as-is.
-      await tx.team.update({ where: { id: botTeamId }, data: { ...teamData, userId: user.id, isBot: false } })
-    } else {
-      const team = await tx.team.create({ data: { ...teamData, userId: user.id } })
-      await generateSquad(tx, team.id)
+      if (botTeamId) {
+        // Inherits the bot's already-generated squad and fixtures as-is.
+        await tx.team.update({ where: { id: botTeamId }, data: { ...teamData, userId: user.id, isBot: false } })
+      } else {
+        const team = await tx.team.create({ data: { ...teamData, userId: user.id } })
+        await generateSquad(tx, team.id)
+      }
+    })
+  } catch (error) {
+    // Two concurrent requests can both pass the `existing` check above and
+    // then race into user.create - the DB's unique constraint on email is
+    // the real guard, so a P2002 violation here still means "already
+    // registered", not a server error. Since user+team creation is one
+    // transaction, any other failure rolls back user.create too - there is
+    // no half-registered user left behind by this path.
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error as { code?: string }).code === "P2002"
+    ) {
+      return NextResponse.json({ error: "EMAIL_ALREADY_EXISTS" }, { status: 409 })
     }
-  })
+    console.error("Registration failed", error)
+    return NextResponse.json({ error: "UNKNOWN_ERROR" }, { status: 500 })
+  }
 
   return NextResponse.json({ ok: true })
 }

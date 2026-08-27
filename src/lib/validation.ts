@@ -7,16 +7,9 @@ export function makeAccountSchema(t: T) {
   return z
     .object({
       name: z.string().min(2, t("validation.nameMin")),
-      teamName: z.string().min(2, t("validation.teamNameMin")),
       email: z.string().email(t("validation.emailInvalid")),
       password: z.string().min(6, t("validation.passwordMin")),
       confirmPassword: z.string(),
-      crestShape: z.string().optional(),
-      crestPattern: z.string().optional(),
-      crestIcon: z.string().optional(),
-      crestColor: z.string().optional(),
-      crestSecondaryColor: z.string().optional(),
-      crestBorderColor: z.string().optional(),
     })
     .refine((data) => data.password === data.confirmPassword, {
       message: t("validation.passwordMismatch"),
@@ -25,6 +18,20 @@ export function makeAccountSchema(t: T) {
 }
 
 export type AccountInput = z.infer<ReturnType<typeof makeAccountSchema>>
+
+export function makeTeamIdentitySchema(t: T) {
+  return z.object({
+    teamName: z.string().min(2, t("validation.teamNameMin")),
+    crestShape: z.string().optional(),
+    crestPattern: z.string().optional(),
+    crestIcon: z.string().optional(),
+    crestColor: z.string().optional(),
+    crestSecondaryColor: z.string().optional(),
+    crestBorderColor: z.string().optional(),
+  })
+}
+
+export type TeamIdentityInput = z.infer<ReturnType<typeof makeTeamIdentitySchema>>
 
 export const CROWD_STYLES = ["calm", "ultras"] as const
 export type CrowdStyle = (typeof CROWD_STYLES)[number]
