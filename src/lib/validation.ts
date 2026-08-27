@@ -8,8 +8,11 @@ export const registerSchema = z
     password: z.string().min(6, "הסיסמה חייבת להכיל לפחות 6 תווים"),
     confirmPassword: z.string(),
     crestShape: z.string().optional(),
+    crestPattern: z.string().optional(),
     crestIcon: z.string().optional(),
     crestColor: z.string().optional(),
+    crestSecondaryColor: z.string().optional(),
+    crestBorderColor: z.string().optional(),
   })
   .refine((data) => data.password === data.confirmPassword, {
     message: "הסיסמאות אינן תואמות",

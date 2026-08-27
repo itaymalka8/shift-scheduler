@@ -6,11 +6,15 @@ import bcrypt from "bcryptjs"
 import { prisma } from "@/lib/prisma"
 import { registerSchema } from "@/lib/validation"
 import {
+  DEFAULT_CREST_BORDER_COLOR,
   DEFAULT_CREST_COLOR,
   DEFAULT_CREST_ICON,
+  DEFAULT_CREST_PATTERN,
+  DEFAULT_CREST_SECONDARY_COLOR,
   DEFAULT_CREST_SHAPE,
   isCrestColor,
   isCrestIcon,
+  isCrestPattern,
   isCrestShape,
 } from "@/components/team-crest"
 
@@ -32,8 +36,11 @@ export async function POST(request: Request) {
     password: formData.get("password"),
     confirmPassword: formData.get("confirmPassword"),
     crestShape: formData.get("crestShape") || undefined,
+    crestPattern: formData.get("crestPattern") || undefined,
     crestIcon: formData.get("crestIcon") || undefined,
     crestColor: formData.get("crestColor") || undefined,
+    crestSecondaryColor: formData.get("crestSecondaryColor") || undefined,
+    crestBorderColor: formData.get("crestBorderColor") || undefined,
   })
 
   if (!parsed.success) {
@@ -43,7 +50,18 @@ export async function POST(request: Request) {
     )
   }
 
-  const { name, teamName, email, password, crestShape, crestIcon, crestColor } = parsed.data
+  const {
+    name,
+    teamName,
+    email,
+    password,
+    crestShape,
+    crestPattern,
+    crestIcon,
+    crestColor,
+    crestSecondaryColor,
+    crestBorderColor,
+  } = parsed.data
 
   const existing = await prisma.user.findUnique({ where: { email } })
   if (existing) {
@@ -84,6 +102,12 @@ export async function POST(request: Request) {
 
   const passwordHash = await bcrypt.hash(password, 10)
   const resolvedShape = isCrestShape(crestShape) ? crestShape : DEFAULT_CREST_SHAPE
+  const resolvedBorder = isCrestColor(crestBorderColor) ? crestBorderColor : DEFAULT_CREST_BORDER_COLOR
+  const resolvedPattern = crestImageUrl
+    ? null
+    : isCrestPattern(crestPattern)
+      ? crestPattern
+      : DEFAULT_CREST_PATTERN
   const resolvedIcon = crestImageUrl
     ? null
     : isCrestIcon(crestIcon)
@@ -94,6 +118,11 @@ export async function POST(request: Request) {
     : isCrestColor(crestColor)
       ? crestColor
       : DEFAULT_CREST_COLOR
+  const resolvedSecondary = crestImageUrl
+    ? null
+    : isCrestColor(crestSecondaryColor)
+      ? crestSecondaryColor
+      : DEFAULT_CREST_SECONDARY_COLOR
 
   await prisma.user.create({
     data: {
@@ -104,8 +133,11 @@ export async function POST(request: Request) {
         create: {
           name: teamName,
           crestShape: resolvedShape,
+          crestPattern: resolvedPattern,
           crestIcon: resolvedIcon,
           crestColor: resolvedColor,
+          crestSecondaryColor: resolvedSecondary,
+          crestBorderColor: resolvedBorder,
           crestImageUrl,
         },
       },

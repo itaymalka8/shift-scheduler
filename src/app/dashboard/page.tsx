@@ -31,8 +31,11 @@ export default async function DashboardPage() {
             <div className="flex items-center gap-4">
               <TeamCrest
                 shape={team?.crestShape}
+                pattern={team?.crestPattern}
                 icon={team?.crestIcon}
                 color={team?.crestColor}
+                secondaryColor={team?.crestSecondaryColor}
+                borderColor={team?.crestBorderColor}
                 imageUrl={team?.crestImageUrl}
                 size={56}
               />

@@ -23,16 +23,53 @@ import { cn } from "@/lib/utils"
 import {
   CREST_COLORS,
   CREST_ICON_OPTIONS,
+  CREST_PATTERNS,
   CREST_SHAPES,
+  DEFAULT_CREST_BORDER_COLOR,
   DEFAULT_CREST_COLOR,
   DEFAULT_CREST_ICON,
+  DEFAULT_CREST_PATTERN,
+  DEFAULT_CREST_SECONDARY_COLOR,
   DEFAULT_CREST_SHAPE,
   TeamCrest,
+  type CrestPatternId,
   type CrestShapeId,
 } from "@/components/team-crest"
 
 const MAX_CREST_SIZE = 2 * 1024 * 1024
 const ALLOWED_CREST_TYPES = ["image/png", "image/jpeg", "image/webp", "image/svg+xml"]
+
+function ColorRow({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: string
+  onChange: (color: string) => void
+}) {
+  return (
+    <div>
+      <p className="text-xs text-muted-foreground mb-1.5">{label}</p>
+      <div className="flex flex-wrap gap-1.5">
+        {CREST_COLORS.map((c) => (
+          <button
+            key={c}
+            type="button"
+            onClick={() => onChange(c)}
+            style={{ backgroundColor: c }}
+            className={cn(
+              "size-6 rounded-full border border-black/10 transition-all",
+              value === c
+                ? "ring-2 ring-offset-2 ring-primary ring-offset-background"
+                : "opacity-70 hover:opacity-100"
+            )}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
 
 export default function SignUpPage() {
   const router = useRouter()
@@ -41,8 +78,11 @@ export default function SignUpPage() {
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const [shape, setShape] = useState<CrestShapeId>(DEFAULT_CREST_SHAPE)
+  const [pattern, setPattern] = useState<CrestPatternId>(DEFAULT_CREST_PATTERN)
   const [icon, setIcon] = useState<string>(DEFAULT_CREST_ICON)
   const [color, setColor] = useState<string>(DEFAULT_CREST_COLOR)
+  const [secondaryColor, setSecondaryColor] = useState<string>(DEFAULT_CREST_SECONDARY_COLOR)
+  const [borderColor, setBorderColor] = useState<string>(DEFAULT_CREST_BORDER_COLOR)
   const [crestFile, setCrestFile] = useState<File | null>(null)
   const [crestPreviewUrl, setCrestPreviewUrl] = useState<string | null>(null)
   const [crestError, setCrestError] = useState<string | null>(null)
@@ -90,12 +130,15 @@ export default function SignUpPage() {
       formData.set("password", data.password)
       formData.set("confirmPassword", data.confirmPassword)
       formData.set("crestShape", shape)
+      formData.set("crestBorderColor", borderColor)
 
       if (crestFile) {
         formData.set("crestImage", crestFile)
       } else {
+        formData.set("crestPattern", pattern)
         formData.set("crestIcon", icon)
         formData.set("crestColor", color)
+        formData.set("crestSecondaryColor", secondaryColor)
       }
 
       const res = await fetch("/api/register", {
@@ -195,7 +238,16 @@ export default function SignUpPage() {
 
             <div className="space-y-4 border-t pt-4">
               <div className="flex items-center gap-4">
-                <TeamCrest shape={shape} icon={icon} color={color} imageUrl={crestPreviewUrl} size={72} />
+                <TeamCrest
+                  shape={shape}
+                  pattern={pattern}
+                  icon={icon}
+                  color={color}
+                  secondaryColor={secondaryColor}
+                  borderColor={borderColor}
+                  imageUrl={crestPreviewUrl}
+                  size={80}
+                />
                 <div className="flex-1">
                   <Label>סמל הקבוצה</Label>
                   {crestPreviewUrl && (
@@ -231,7 +283,15 @@ export default function SignUpPage() {
                           : "opacity-60 hover:opacity-100"
                       )}
                     >
-                      <TeamCrest shape={s.id} icon={icon} color={color} size={36} />
+                      <TeamCrest
+                        shape={s.id}
+                        pattern={pattern}
+                        icon={icon}
+                        color={color}
+                        secondaryColor={secondaryColor}
+                        borderColor={borderColor}
+                        size={40}
+                      />
                     </button>
                   ))}
                 </div>
@@ -240,8 +300,43 @@ export default function SignUpPage() {
               {!crestPreviewUrl && (
                 <>
                   <div>
+                    <p className="text-xs text-muted-foreground mb-1.5">תבנית צבעים</p>
+                    <div className="flex gap-2">
+                      {CREST_PATTERNS.map((p) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          title={p.label}
+                          onClick={() => setPattern(p.id)}
+                          className={cn(
+                            "rounded-full p-0.5 transition-all",
+                            pattern === p.id
+                              ? "ring-2 ring-offset-2 ring-primary ring-offset-background"
+                              : "opacity-60 hover:opacity-100"
+                          )}
+                        >
+                          <TeamCrest
+                            shape={shape}
+                            pattern={p.id}
+                            icon={icon}
+                            color={color}
+                            secondaryColor={secondaryColor}
+                            borderColor={borderColor}
+                            size={40}
+                          />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <ColorRow label="צבע ראשי" value={color} onChange={setColor} />
+                  {pattern !== "solid" && (
+                    <ColorRow label="צבע משני" value={secondaryColor} onChange={setSecondaryColor} />
+                  )}
+
+                  <div>
                     <p className="text-xs text-muted-foreground mb-1.5">אייקון</p>
-                    <div className="grid grid-cols-7 gap-2">
+                    <div className="grid grid-cols-7 gap-1.5">
                       {CREST_ICON_OPTIONS.map((opt) => (
                         <button
                           key={opt.id}
@@ -254,33 +349,22 @@ export default function SignUpPage() {
                               : "opacity-60 hover:opacity-100"
                           )}
                         >
-                          <TeamCrest shape="circle" icon={opt.id} color={color} size={32} />
+                          <TeamCrest
+                            shape="circle"
+                            pattern="solid"
+                            icon={opt.id}
+                            color={color}
+                            borderColor={color}
+                            size={30}
+                          />
                         </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-1.5">צבע</p>
-                    <div className="flex flex-wrap gap-2">
-                      {CREST_COLORS.map((c) => (
-                        <button
-                          key={c}
-                          type="button"
-                          onClick={() => setColor(c)}
-                          style={{ backgroundColor: c }}
-                          className={cn(
-                            "size-7 rounded-full transition-all",
-                            color === c
-                              ? "ring-2 ring-offset-2 ring-primary ring-offset-background"
-                              : "opacity-70 hover:opacity-100"
-                          )}
-                        />
                       ))}
                     </div>
                   </div>
                 </>
               )}
+
+              <ColorRow label="מסגרת" value={borderColor} onChange={setBorderColor} />
 
               <button
                 type="button"
