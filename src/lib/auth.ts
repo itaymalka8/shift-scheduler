@@ -14,6 +14,7 @@ import {
   DEFAULT_CREST_SHAPE,
 } from "@/components/team-crest"
 import { DEFAULT_STADIUM_STYLE } from "@/components/stadium-illustration"
+import { generateSquad } from "@/lib/players/generate"
 
 const providers: NextAuthOptions["providers"] = [
   CredentialsProvider({
@@ -75,7 +76,7 @@ export const authOptions: NextAuthOptions = {
       const existingTeam = await prisma.team.findUnique({ where: { userId: user.id } })
       if (existingTeam) return
 
-      await prisma.team.create({
+      const team = await prisma.team.create({
         data: {
           userId: user.id,
           name: user.name ? `קבוצת ${user.name}` : "הקבוצה החדשה שלי",
@@ -90,6 +91,7 @@ export const authOptions: NextAuthOptions = {
           stadiumCapacity: 100,
         },
       })
+      await generateSquad(prisma, team.id)
     },
   },
   callbacks: {

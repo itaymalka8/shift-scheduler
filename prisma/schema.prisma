@@ -74,12 +74,43 @@ model Team {
   stadiumCapacity     Int            @default(100)
   crowdStyle          String?
   isBot               Boolean        @default(false)
+  formation           String?
+  tacticStyle         String?
   createdAt           DateTime       @default(now())
   user                User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId              String?        @unique
   divisionMemberships DivisionTeam[]
   homeFixtures        Fixture[]      @relation("HomeFixtures")
   awayFixtures        Fixture[]      @relation("AwayFixtures")
+  players             Player[]
+  lineupSlots         LineupSlot[]
+  matchEvents         MatchEvent[]
+}
+
+model Player {
+  id           String      @id @default(cuid())
+  teamId       String
+  team         Team        @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  name         String
+  position     String
+  age          Int
+  rating       Int
+  jerseyNumber Int
+  createdAt    DateTime    @default(now())
+  lineupSlot   LineupSlot?
+}
+
+// A player's spot in their team's current starting XI, positioned freely on
+// the pitch (x/y are 0-100 percentages). Only 11 players have one at a time;
+// everyone else on the roster is on the bench.
+model LineupSlot {
+  id       String @id @default(cuid())
+  teamId   String
+  team     Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  playerId String @unique
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  x        Float
+  y        Float
 }
 
 // A country's league pyramid is instantiated one Season at a time. Season 1
@@ -124,16 +155,33 @@ model DivisionTeam {
 }
 
 model Fixture {
-  id         String    @id @default(cuid())
-  divisionId String
-  division   Division  @relation(fields: [divisionId], references: [id], onDelete: Cascade)
-  matchday   Int
-  homeTeamId String
-  homeTeam   Team      @relation("HomeFixtures", fields: [homeTeamId], references: [id], onDelete: Cascade)
-  awayTeamId String
-  awayTeam   Team      @relation("AwayFixtures", fields: [awayTeamId], references: [id], onDelete: Cascade)
-  homeScore  Int?
-  awayScore  Int?
-  playedAt   DateTime?
-  createdAt  DateTime  @default(now())
+  id          String       @id @default(cuid())
+  divisionId  String
+  division    Division     @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+  matchday    Int
+  homeTeamId  String
+  homeTeam    Team         @relation("HomeFixtures", fields: [homeTeamId], references: [id], onDelete: Cascade)
+  awayTeamId  String
+  awayTeam    Team         @relation("AwayFixtures", fields: [awayTeamId], references: [id], onDelete: Cascade)
+  homeScore   Int?
+  awayScore   Int?
+  scheduledAt DateTime?
+  playedAt    DateTime?
+  createdAt   DateTime     @default(now())
+  events      MatchEvent[]
+}
+
+// A single goal within a fixture's simulated 90 minutes - computed all at
+// once the first time anyone views the match after kickoff (see
+// src/lib/match/simulate.ts), then revealed progressively on the live match
+// page based on elapsed real time.
+model MatchEvent {
+  id        String   @id @default(cuid())
+  fixtureId String
+  fixture   Fixture  @relation(fields: [fixtureId], references: [id], onDelete: Cascade)
+  minute    Int
+  teamId    String
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  type      String   @default("goal")
+  createdAt DateTime @default(now())
 }

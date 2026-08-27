@@ -12,6 +12,8 @@ import {
 } from "@/components/team-crest"
 import { STADIUM_STYLES } from "@/components/stadium-illustration"
 import { CROWD_STYLES } from "@/lib/validation"
+import { generateSquad } from "@/lib/players/generate"
+import { getSeasonStartMonday, computeMatchdayDate } from "@/lib/match/schedule"
 
 const COUNTRY_CODE = "IL"
 const SEASON_NUMBER = 1
@@ -70,6 +72,7 @@ export async function ensureIsraelSeasonSeeded(): Promise<void> {
   }
 
   let nameIndex = 0
+  const seasonStartMonday = getSeasonStartMonday()
 
   await prisma.$transaction(
     async (tx) => {
@@ -118,6 +121,7 @@ export async function ensureIsraelSeasonSeeded(): Promise<void> {
             })
             teamIds.push(team.id)
             await tx.divisionTeam.create({ data: { divisionId: division.id, teamId: team.id } })
+            await generateSquad(tx, team.id)
           }
 
           const fixtures = generateDoubleRoundRobin(teamIds)
@@ -127,6 +131,7 @@ export async function ensureIsraelSeasonSeeded(): Promise<void> {
               matchday: f.matchday,
               homeTeamId: f.homeTeamId,
               awayTeamId: f.awayTeamId,
+              scheduledAt: computeMatchdayDate(seasonStartMonday, f.matchday),
             })),
           })
         }

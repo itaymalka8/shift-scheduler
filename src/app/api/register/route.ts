@@ -20,6 +20,7 @@ import {
 import { DEFAULT_STADIUM_STYLE, isStadiumStyle } from "@/components/stadium-illustration"
 import { ensureIsraelSeasonSeeded } from "@/lib/leagues/seed"
 import { pickBotTeamForNewSignup } from "@/lib/leagues/assign"
+import { generateSquad } from "@/lib/players/generate"
 
 const DEFAULT_STADIUM_CAPACITY = 100
 
@@ -166,9 +167,11 @@ export async function POST(request: Request) {
     const botTeamId = countryCode === "IL" ? await pickBotTeamForNewSignup(tx) : null
 
     if (botTeamId) {
+      // Inherits the bot's already-generated squad and fixtures as-is.
       await tx.team.update({ where: { id: botTeamId }, data: { ...teamData, userId: user.id, isBot: false } })
     } else {
-      await tx.team.create({ data: { ...teamData, userId: user.id } })
+      const team = await tx.team.create({ data: { ...teamData, userId: user.id } })
+      await generateSquad(tx, team.id)
     }
   })
 

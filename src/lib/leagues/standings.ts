@@ -1,4 +1,6 @@
 import { prisma } from "@/lib/prisma"
+import { settleDueFixtures } from "@/lib/match/simulate"
+import { isMatchFinished } from "@/lib/match/timing"
 
 export interface StandingRow {
   teamId: string
@@ -15,12 +17,17 @@ export interface StandingRow {
 }
 
 export async function computeStandings(divisionId: string): Promise<StandingRow[]> {
-  const [memberships, fixtures] = await Promise.all([
+  await settleDueFixtures(divisionId)
+
+  const [memberships, allFixtures] = await Promise.all([
     prisma.divisionTeam.findMany({ where: { divisionId }, include: { team: true } }),
     prisma.fixture.findMany({
       where: { divisionId, homeScore: { not: null }, awayScore: { not: null } },
     }),
   ])
+  // Only count matches whose live 10-minute window has actually played out,
+  // so the table doesn't spoil a still-in-progress match's result.
+  const fixtures = allFixtures.filter((f) => isMatchFinished(f.scheduledAt))
 
   const rows = new Map<string, StandingRow>()
   for (const m of memberships) {

@@ -64,6 +64,9 @@ export default async function DashboardPage() {
             <span className="font-semibold text-lg">{t("app.name")}</span>
           </div>
           <div className="flex items-center gap-4">
+            <Link href="/squad" className="text-sm font-medium text-primary hover:underline">
+              {t("squad.navLink")}
+            </Link>
             <LanguageSwitcher />
             <SignOutButton label={t("dashboard.signOut")} />
           </div>
@@ -167,11 +170,18 @@ export default async function DashboardPage() {
                       const opponentId = isHome ? f.awayTeamId : f.homeTeamId
                       const opponentName = teamNameById.get(opponentId) ?? ""
                       return (
-                        <li key={f.id} className="flex items-center justify-between border-b py-1 last:border-0">
-                          <span className="text-muted-foreground">{t("league.matchday", { n: String(f.matchday) })}</span>
-                          <span>
-                            {isHome ? t("league.home") : t("league.away")} · {opponentName}
-                          </span>
+                        <li key={f.id} className="border-b py-1 last:border-0">
+                          <Link
+                            href={`/match/${f.id}`}
+                            className="flex items-center justify-between hover:text-primary"
+                          >
+                            <span className="text-muted-foreground">
+                              {t("league.matchday", { n: String(f.matchday) })}
+                            </span>
+                            <span>
+                              {isHome ? t("league.home") : t("league.away")} · {opponentName}
+                            </span>
+                          </Link>
                         </li>
                       )
                     })}
