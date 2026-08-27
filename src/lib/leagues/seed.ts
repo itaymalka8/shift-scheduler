@@ -57,17 +57,54 @@ async function refreshBotTeamNames(tx: Prisma.TransactionClient): Promise<void> 
 }
 
 /**
+ * Fills in game-engine data (squads, fixture kickoff times) that an
+ * already-seeded season was created before - so a season seeded by an
+ * older version of this code catches up instead of being stuck without
+ * players or a schedule forever.
+ */
+async function backfillMissingGameData(tx: Prisma.TransactionClient, seasonId: string): Promise<void> {
+  const teamsMissingSquad = await tx.team.findMany({
+    where: { divisionMemberships: { some: { division: { seasonId } } }, players: { none: {} } },
+    select: { id: true },
+  })
+  for (const team of teamsMissingSquad) {
+    await generateSquad(tx, team.id)
+  }
+
+  const unscheduledFixtures = await tx.fixture.findMany({
+    where: { division: { seasonId }, scheduledAt: null },
+    select: { id: true, matchday: true },
+  })
+  if (unscheduledFixtures.length > 0) {
+    const seasonStartMonday = getSeasonStartMonday()
+    for (const fixture of unscheduledFixtures) {
+      await tx.fixture.update({
+        where: { id: fixture.id },
+        data: { scheduledAt: computeMatchdayDate(seasonStartMonday, fixture.matchday) },
+      })
+    }
+  }
+}
+
+/**
  * Creates Season 1 for Israel - every division in ISRAEL_LEAGUE_TIERS, each
  * filled with bot teams and a full double round-robin fixture list - the
  * first time it's needed. Safe to call on every registration; once Season 1
- * exists it just re-syncs bot team names to the current generator instead.
+ * exists it just re-syncs bot team names and backfills any missing squads/
+ * schedule instead.
  */
 export async function ensureIsraelSeasonSeeded(): Promise<void> {
   const existing = await prisma.season.findUnique({
     where: { countryCode_number: { countryCode: COUNTRY_CODE, number: SEASON_NUMBER } },
   })
   if (existing) {
-    await prisma.$transaction((tx) => refreshBotTeamNames(tx), { timeout: 30000 })
+    await prisma.$transaction(
+      async (tx) => {
+        await refreshBotTeamNames(tx)
+        await backfillMissingGameData(tx, existing.id)
+      },
+      { timeout: 30000 }
+    )
     return
   }
 
