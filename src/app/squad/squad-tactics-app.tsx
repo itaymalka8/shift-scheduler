@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { useT } from "@/lib/i18n/locale-context"
 import type { TranslationKey } from "@/lib/i18n/translations"
 import { cn } from "@/lib/utils"
@@ -228,9 +229,27 @@ export function SquadTacticsApp({
   totalWeeklyPlayerSalaries: number
 }) {
   const t = useT()
+  const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
   const byId = useMemo(() => new Map(players.map((p) => [p.id, p])), [players])
 
-  const [tab, setTab] = useState<"squad" | "tactics">("squad")
+  // The URL is the single source of truth for which tab is showing (not
+  // local state) - that's what lets the shared nav bar's "Tactics" link
+  // actually land on the tactics tab: a click there only ever changes the
+  // URL, and if the tab were separate component state, this already-mounted
+  // instance would never learn about it (a prop change alone doesn't reset
+  // useState after the first render). It's also what makes a refresh and a
+  // direct link to /squad?tab=tactics land correctly.
+  const tab: "squad" | "tactics" = searchParams.get("tab") === "tactics" ? "tactics" : "squad"
+
+  const setTab = (next: "squad" | "tactics") => {
+    const params = new URLSearchParams(searchParams.toString())
+    if (next === "tactics") params.set("tab", "tactics")
+    else params.delete("tab")
+    const query = params.toString()
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false })
+  }
   const [sortKey, setSortKey] = useState<SortKey>("ability")
   const [expandedPlayerId, setExpandedPlayerId] = useState<string | null>(null)
 

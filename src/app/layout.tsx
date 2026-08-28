@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
+import { Suspense } from "react";
 import { Geist, Geist_Mono } from "next/font/google";
 import { AuthSessionProvider } from "@/components/session-provider";
 import { LegacyCacheCleanup } from "@/components/legacy-cache-cleanup";
 import { CrestDefs } from "@/components/team-crest";
+import { GoalXNavigation } from "@/components/goalx-navigation";
 import { LocaleProvider } from "@/lib/i18n/locale-context";
 import { DEFAULT_LOCALE, LOCALE_DIR, isLocale } from "@/lib/i18n/translations";
 import "./globals.css";
@@ -45,6 +47,9 @@ export default async function RootLayout({
         <LegacyCacheCleanup />
         <LocaleProvider initialLocale={locale}>
           <AuthSessionProvider>
+            <Suspense fallback={null}>
+              <GoalXNavigation />
+            </Suspense>
             {children}
           </AuthSessionProvider>
         </LocaleProvider>
