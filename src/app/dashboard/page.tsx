@@ -68,19 +68,24 @@ export default async function DashboardPage() {
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b bg-card">
-        <div className="mx-auto max-w-5xl flex items-center justify-between px-6 py-4">
+        <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-2 px-4 py-4 sm:px-6">
           <div className="flex items-center gap-3">
             <Image src="/logo.png" alt="Goalx Manager" width={40} height={40} className="rounded-full" />
-            <span className="font-semibold text-lg">{t("app.name")}</span>
+            <span className="hidden font-semibold text-lg sm:inline">{t("app.name")}</span>
           </div>
-          <div className="flex items-center gap-4">
-            <Link href="/squad" className="text-sm font-medium text-primary hover:underline">
+          {/* Squad/stadium/economy quick-links are hidden below sm: - the
+              persistent GoalXNavigation bar already gives every internal
+              screen (mobile included) direct access to all three, so
+              keeping them here too only ate width without adding a route
+              that wasn't already one tap away. */}
+          <div className="flex items-center gap-2 sm:gap-4">
+            <Link href="/squad" className="hidden text-sm font-medium text-primary hover:underline sm:inline">
               {t("squad.navLink")}
             </Link>
-            <Link href="/stadium" className="text-sm font-medium text-primary hover:underline">
+            <Link href="/stadium" className="hidden text-sm font-medium text-primary hover:underline sm:inline">
               {t("stadium.navLink")}
             </Link>
-            <Link href="/economy" className="text-sm font-medium text-primary hover:underline">
+            <Link href="/economy" className="hidden text-sm font-medium text-primary hover:underline sm:inline">
               {t("economy.navLink")}
             </Link>
             <LanguageSwitcher />
@@ -130,26 +135,34 @@ export default async function DashboardPage() {
             </div>
             {divisionName && <CardDescription>{divisionName}</CardDescription>}
           </CardHeader>
-          <CardContent>
+          <CardContent className="min-w-0">
             {!division ? (
               <p className="text-muted-foreground">{t("league.notAssigned")}</p>
             ) : (
               <>
                 <h3 className="mb-2 text-sm font-medium text-muted-foreground">{t("league.standings")}</h3>
+                {/* min-w-0 above lets this shrink inside its flex-col Card
+                    instead of growing to the table's full intrinsic width -
+                    without it, overflow-x-auto below never gets a chance to
+                    activate and the whole page scrolls horizontally instead.
+                    Secondary columns (W/D/L/GF/GA/GD) are mobile-hidden -
+                    position, team, played and points are the ones that must
+                    always fit without any scrolling; the rest reappear at
+                    sm: and are always one local scroll away below that. */}
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b text-muted-foreground">
-                        <th className="px-2 py-1 text-start font-medium">{t("league.colPos")}</th>
-                        <th className="px-2 py-1 text-start font-medium">{t("league.colTeam")}</th>
-                        <th className="px-2 py-1 text-center font-medium">{t("league.colPlayed")}</th>
-                        <th className="px-2 py-1 text-center font-medium">{t("league.colWon")}</th>
-                        <th className="px-2 py-1 text-center font-medium">{t("league.colDrawn")}</th>
-                        <th className="px-2 py-1 text-center font-medium">{t("league.colLost")}</th>
-                        <th className="px-2 py-1 text-center font-medium">{t("league.colGoalsFor")}</th>
-                        <th className="px-2 py-1 text-center font-medium">{t("league.colGoalsAgainst")}</th>
-                        <th className="px-2 py-1 text-center font-medium">{t("league.colGoalDiff")}</th>
-                        <th className="px-2 py-1 text-center font-semibold">{t("league.colPoints")}</th>
+                        <th className="px-1.5 py-1 text-start font-medium sm:px-2">{t("league.colPos")}</th>
+                        <th className="px-1.5 py-1 text-start font-medium sm:px-2">{t("league.colTeam")}</th>
+                        <th className="px-1.5 py-1 text-center font-medium sm:px-2">{t("league.colPlayed")}</th>
+                        <th className="hidden px-2 py-1 text-center font-medium sm:table-cell">{t("league.colWon")}</th>
+                        <th className="hidden px-2 py-1 text-center font-medium sm:table-cell">{t("league.colDrawn")}</th>
+                        <th className="hidden px-2 py-1 text-center font-medium sm:table-cell">{t("league.colLost")}</th>
+                        <th className="hidden px-2 py-1 text-center font-medium sm:table-cell">{t("league.colGoalsFor")}</th>
+                        <th className="hidden px-2 py-1 text-center font-medium sm:table-cell">{t("league.colGoalsAgainst")}</th>
+                        <th className="hidden px-2 py-1 text-center font-medium sm:table-cell">{t("league.colGoalDiff")}</th>
+                        <th className="px-1.5 py-1 text-center font-semibold sm:px-2">{t("league.colPoints")}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -158,16 +171,16 @@ export default async function DashboardPage() {
                           key={row.teamId}
                           className={cn("border-b last:border-0", row.teamId === team?.id && "bg-accent/60 font-medium")}
                         >
-                          <td className="px-2 py-1">{i + 1}</td>
-                          <td className="px-2 py-1">{row.teamName}</td>
-                          <td className="px-2 py-1 text-center">{row.played}</td>
-                          <td className="px-2 py-1 text-center">{row.won}</td>
-                          <td className="px-2 py-1 text-center">{row.drawn}</td>
-                          <td className="px-2 py-1 text-center">{row.lost}</td>
-                          <td className="px-2 py-1 text-center">{row.goalsFor}</td>
-                          <td className="px-2 py-1 text-center">{row.goalsAgainst}</td>
-                          <td className="px-2 py-1 text-center">{row.goalDiff}</td>
-                          <td className="px-2 py-1 text-center font-semibold">{row.points}</td>
+                          <td className="px-1.5 py-1 sm:px-2">{i + 1}</td>
+                          <td className="max-w-24 truncate px-1.5 py-1 sm:max-w-none sm:px-2">{row.teamName}</td>
+                          <td className="px-1.5 py-1 text-center sm:px-2">{row.played}</td>
+                          <td className="hidden px-2 py-1 text-center sm:table-cell">{row.won}</td>
+                          <td className="hidden px-2 py-1 text-center sm:table-cell">{row.drawn}</td>
+                          <td className="hidden px-2 py-1 text-center sm:table-cell">{row.lost}</td>
+                          <td className="hidden px-2 py-1 text-center sm:table-cell">{row.goalsFor}</td>
+                          <td className="hidden px-2 py-1 text-center sm:table-cell">{row.goalsAgainst}</td>
+                          <td className="hidden px-2 py-1 text-center sm:table-cell">{row.goalDiff}</td>
+                          <td className="px-1.5 py-1 text-center font-semibold sm:px-2">{row.points}</td>
                         </tr>
                       ))}
                     </tbody>
