@@ -9,7 +9,6 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { signIn } from "next-auth/react"
 import { Eye, EyeOff, Loader2 } from "lucide-react"
 import { makeSignInSchema, type SignInInput } from "@/lib/validation"
-import { markLoginRemember } from "@/lib/remember-me"
 import { isAuthErrorCode } from "@/lib/auth-errors"
 import { useT } from "@/lib/i18n/locale-context"
 import type { TranslationKey } from "@/lib/i18n/translations"
@@ -55,6 +54,7 @@ function SignInForm() {
       const result = await signIn("credentials", {
         email: data.email,
         password: data.password,
+        remember: String(rememberMe),
         redirect: false,
       })
 
@@ -67,7 +67,6 @@ function SignInForm() {
         return
       }
 
-      markLoginRemember(rememberMe)
       router.push(callbackUrl)
       router.refresh()
     } catch {

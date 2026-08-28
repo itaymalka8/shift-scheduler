@@ -16,7 +16,6 @@ import {
   type TeamDetailsInput,
   type TeamIdentityInput,
 } from "@/lib/validation"
-import { markLoginRemember } from "@/lib/remember-me"
 import { isAuthErrorCode } from "@/lib/auth-errors"
 import { useLocale, useT } from "@/lib/i18n/locale-context"
 import type { TranslationKey } from "@/lib/i18n/translations"
@@ -253,6 +252,7 @@ export default function SignUpPage() {
       const signInResult = await signIn("credentials", {
         email: account.email,
         password: account.password,
+        remember: String(rememberMe),
         redirect: false,
       })
 
@@ -262,7 +262,6 @@ export default function SignUpPage() {
         return
       }
 
-      markLoginRemember(rememberMe)
       setStep(4)
     } finally {
       setIsSubmitting(false)

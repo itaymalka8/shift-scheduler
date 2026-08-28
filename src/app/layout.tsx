@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { Geist, Geist_Mono } from "next/font/google";
 import { AuthSessionProvider } from "@/components/session-provider";
-import { SessionGuard } from "@/components/session-guard";
 import { LegacyCacheCleanup } from "@/components/legacy-cache-cleanup";
 import { CrestDefs } from "@/components/team-crest";
 import { LocaleProvider } from "@/lib/i18n/locale-context";
@@ -46,7 +45,6 @@ export default async function RootLayout({
         <LegacyCacheCleanup />
         <LocaleProvider initialLocale={locale}>
           <AuthSessionProvider>
-            <SessionGuard />
             {children}
           </AuthSessionProvider>
         </LocaleProvider>

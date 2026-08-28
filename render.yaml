@@ -23,8 +23,21 @@ services:
       # transaction, use the direct (non "-pooler") host for it.
       - key: DATABASE_URL
         sync: false
+      # A fixed secret you set once in the Render dashboard - Environment tab,
+      # not a Blueprint-generated value. Every signed-in session's JWT is
+      # signed with this; if it ever changed, every existing session would
+      # stop validating at once, indistinguishable from a mass logout.
+      # Generate one with: openssl rand -base64 32
+      #
+      # Changing this line from `generateValue: true` does NOT reset or
+      # rotate whatever value Render already generated for this service -
+      # that value stays exactly as it is; this only stops the Blueprint
+      # from ever being able to touch it going forward.
       - key: NEXTAUTH_SECRET
-        generateValue: true
+        sync: false
+      # Must exactly match this service's real production URL (protocol,
+      # host, no trailing slash) - e.g. https://goalx-manager.onrender.com,
+      # or your custom domain if one is configured instead.
       - key: NEXTAUTH_URL
         sync: false
       - key: GOOGLE_CLIENT_ID

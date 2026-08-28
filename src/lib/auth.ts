@@ -8,12 +8,24 @@ import { prisma } from "@/lib/prisma"
 import { ensureTeamForUser } from "@/lib/team-setup"
 import { isRateLimited, recordFailedAttempt, clearAttempts } from "@/lib/rate-limit"
 
+// The single place to change how long a "remembered" sign-in lasts. Also
+// used as the ceiling for a non-remembered one (see the [...nextauth] route
+// handler) - what actually ends a non-remembered session is the browser
+// discarding a true session cookie on close, not this number.
+export const REMEMBER_ME_MAX_AGE_DAYS = 30
+const REMEMBER_ME_MAX_AGE_SECONDS = REMEMBER_ME_MAX_AGE_DAYS * 24 * 60 * 60
+
 const providers: NextAuthOptions["providers"] = [
   CredentialsProvider({
     name: "credentials",
     credentials: {
       email: { label: "אימייל", type: "email" },
       password: { label: "סיסמה", type: "password" },
+      // A plain string, not a checkbox - credentials providers only ever
+      // receive string form fields. "true" unless explicitly "false", so a
+      // sign-in that omits it (there isn't one today, but future callers)
+      // defaults to the safer, persistent behavior.
+      remember: { label: "Remember me", type: "text" },
     },
     // Throws a distinct error code per failure reason instead of returning
     // null for everything - NextAuth passes a thrown Error's message straight
@@ -57,7 +69,7 @@ const providers: NextAuthOptions["providers"] = [
       }
 
       clearAttempts(rateLimitKey)
-      return { id: user.id, email: user.email, name: user.name }
+      return { id: user.id, email: user.email, name: user.name, remember: credentials.remember !== "false" }
     },
   }),
 ]
@@ -86,7 +98,14 @@ export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
   session: {
     strategy: "jwt",
-    maxAge: 60 * 24 * 60 * 60, // 60 days - users stay signed in automatically
+    maxAge: REMEMBER_ME_MAX_AGE_SECONDS,
+  },
+  jwt: {
+    // NextAuth defaults this independently of session.maxAge (30 days,
+    // regardless of what session.maxAge says) - without setting it
+    // explicitly here, the token itself would silently stop validating
+    // before a long-lived cookie actually expires.
+    maxAge: REMEMBER_ME_MAX_AGE_SECONDS,
   },
   pages: {
     signIn: "/signin",
@@ -110,7 +129,12 @@ export const authOptions: NextAuthOptions = {
   },
   callbacks: {
     async jwt({ token, user }) {
-      if (user) token.sub = user.id
+      if (user) {
+        token.sub = user.id
+        // Only ever set at sign-in (when `user` is present) - stays fixed
+        // for the life of this token across every later refresh.
+        token.remember = user.remember ?? true
+      }
 
       if (token.sub && (!token.teamId || user)) {
         const team = await prisma.team.findUnique({ where: { userId: token.sub } })
