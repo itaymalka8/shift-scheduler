@@ -140,3 +140,8 @@
 .animate-goalx-float {
   animation: goalx-float 4s ease-in-out infinite;
 }
+
+@keyframes goalx-loading-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.04); opacity: 0.92; }
+}
