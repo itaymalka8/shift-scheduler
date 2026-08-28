@@ -108,6 +108,10 @@ export const DEFAULT_MATCH_EXPENSE_CONFIG: MatchExpenseConfig = {
 // --- Payroll ------------------------------------------------------------------------
 
 // Every club pays wages on the same weekday, at a fixed server hour - never
-// derived from a viewer's local clock.
-export const PAYROLL_WEEKDAY = 1 // Monday (JS Date#getDay(): 0=Sunday)
-export const PAYROLL_HOUR_UTC = 6
+// derived from a viewer's local clock. 13:00 UTC = 15:00 Israel Standard
+// Time (UTC+2); Israel Daylight Time (UTC+3, roughly Mar-Oct) shifts the
+// actual local payroll time to 16:00 during that period, since this fixed
+// UTC hour isn't DST-aware (matching the rest of the schedule, e.g.
+// src/lib/match/schedule.ts).
+export const PAYROLL_WEEKDAY = 4 // Thursday (JS Date#getDay(): 0=Sunday)
+export const PAYROLL_HOUR_UTC = 13
