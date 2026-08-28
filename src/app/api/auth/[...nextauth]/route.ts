@@ -1,15 +1,14 @@
 import NextAuth from "next-auth"
 import { decode } from "next-auth/jwt"
 import { authOptions } from "@/lib/auth"
+import { AUTH_DEBUG, SESSION_COOKIE_NAME } from "@/lib/auth-cookies"
 
 const handler = NextAuth(authOptions)
 
-const SESSION_COOKIE_NAMES = ["next-auth.session-token", "__Secure-next-auth.session-token"]
-
-function sessionCookieName(setCookie: string): string | null {
+function isSessionCookie(setCookie: string): boolean {
   const name = setCookie.slice(0, setCookie.indexOf("=")).trim()
-  const match = SESSION_COOKIE_NAMES.find((n) => name === n || name.startsWith(`${n}.`))
-  return match ?? null
+  // NextAuth splits an oversized token into `<name>.0`, `<name>.1`, ...
+  return name === SESSION_COOKIE_NAME || name.startsWith(`${SESSION_COOKIE_NAME}.`)
 }
 
 function cookieTokenValue(setCookie: string): string {
@@ -29,19 +28,18 @@ function stripExpiry(setCookie: string): string {
 }
 
 /**
- * NextAuth always issues the session cookie with an explicit Expires/Max-Age
- * computed from session.maxAge - there is no built-in option to opt out of
- * that per sign-in. "Remember me" = false is enforced here instead, after
- * the fact: decode whatever session cookie a response is about to set, and
- * if the token says it isn't meant to be remembered, strip Expires/Max-Age
- * so the browser treats it as a true session cookie - gone once the browser
- * itself (not the tab, not backgrounding the app) actually closes.
+ * NextAuth always issues the session cookie with an explicit Expires
+ * computed from session.maxAge - there is no built-in way to opt out of that
+ * for a single sign-in. "Remember me" = false is enforced here instead:
+ * decode the session cookie a response is about to set, and if the token
+ * says it isn't meant to be remembered, drop Expires/Max-Age so the browser
+ * keeps it only until the browser itself closes.
  *
- * This runs on every response through this route, not just sign-in, because
- * NextAuth also re-issues the cookie on its own periodic refresh
- * (session.updateAge) - without rewriting that response too, a "not
- * remembered" cookie would quietly turn persistent again the next time it
- * refreshed.
+ * Runs on every response through this route, not just sign-in, because
+ * NextAuth re-issues the cookie on its own periodic refresh too - otherwise
+ * a non-remembered session would quietly become persistent on first refresh.
+ *
+ * A remembered sign-in is passed through completely untouched.
  */
 async function enforceRememberMe(response: Response): Promise<Response> {
   const setCookies = response.headers.getSetCookie?.() ?? []
@@ -50,10 +48,26 @@ async function enforceRememberMe(response: Response): Promise<Response> {
   let rewrote = false
   const rewritten = await Promise.all(
     setCookies.map(async (raw) => {
-      const name = sessionCookieName(raw)
-      if (!name) return raw
+      if (!isSessionCookie(raw)) return raw
 
-      const token = await decode({ token: cookieTokenValue(raw), secret: process.env.NEXTAUTH_SECRET! }).catch(() => null)
+      const value = cookieTokenValue(raw)
+      const token = value
+        ? await decode({ token: value, secret: process.env.NEXTAUTH_SECRET ?? "" }).catch(() => null)
+        : null
+
+      if (AUTH_DEBUG) {
+        console.info(
+          "[auth] issuing session cookie",
+          JSON.stringify({
+            cookieName: SESSION_COOKIE_NAME,
+            tokenDecoded: !!token,
+            remember: token?.remember ?? null,
+            hasExpiry: /(?:^|;)\s*(expires|max-age)=/i.test(raw),
+            isClearing: value === "",
+          })
+        )
+      }
+
       if (token && token.remember === false) {
         rewrote = true
         return stripExpiry(raw)

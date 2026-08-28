@@ -7,6 +7,7 @@ import bcrypt from "bcryptjs"
 import { prisma } from "@/lib/prisma"
 import { ensureTeamForUser } from "@/lib/team-setup"
 import { isRateLimited, recordFailedAttempt, clearAttempts } from "@/lib/rate-limit"
+import { SESSION_COOKIE_NAME, USE_SECURE_AUTH_COOKIES } from "@/lib/auth-cookies"
 
 // The single place to change how long a "remembered" sign-in lasts. Also
 // used as the ceiling for a non-remembered one (see the [...nextauth] route
@@ -106,6 +107,16 @@ export const authOptions: NextAuthOptions = {
     // explicitly here, the token itself would silently stop validating
     // before a long-lived cookie actually expires.
     maxAge: REMEMBER_ME_MAX_AGE_SECONDS,
+  },
+  // Pinned rather than inferred - see lib/auth-cookies.ts for why leaving
+  // this to NextAuth lets the route handler and the middleware disagree
+  // about which cookie the session even lives in.
+  useSecureCookies: USE_SECURE_AUTH_COOKIES,
+  cookies: {
+    sessionToken: {
+      name: SESSION_COOKIE_NAME,
+      options: { httpOnly: true, sameSite: "lax", path: "/", secure: USE_SECURE_AUTH_COOKIES },
+    },
   },
   pages: {
     signIn: "/signin",
