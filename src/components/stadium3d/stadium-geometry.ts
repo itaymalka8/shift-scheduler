@@ -18,6 +18,10 @@ const VOMITORY_COLOR = "#181430"
 // blend into it at a distance, reading as bare gaps rather than blocks.
 const CONCRETE_COLOR = "#A6A199"
 const CONCRETE_DARK = "#878177"
+// A distinct metallic tone (handrails/dividers, roof beams, light fixture
+// bodies) - visually separate from both the warm concrete and the cool
+// seat colors, so those elements read as "metal structure" at a glance.
+const METAL_COLOR = "#767C87"
 
 /** How much of each corner's bounding square the rounding circle eats into - grows with cornerFill (1 = large radius, closer to a continuous oval; 0 = tight, small radius). */
 function cornerRadiusFor(halfLength: number, halfWidth: number, cornerFill: number): number {
@@ -307,6 +311,59 @@ export interface InstancedBlockData {
 }
 
 /**
+ * A low handrail that follows the actual rake of the stand along a section
+ * boundary - built from the same per-row steps as the seating (a series of
+ * short segments, each capping one row's back edge) rather than one single
+ * box. A single box tall/deep enough to span the whole stand would show its
+ * full tangential side face to this camera angle, reading as one huge dark
+ * wedge cutting across the neighboring section instead of a thin divider.
+ */
+export function computeSectionDividerInstances(structure: Stadium3DStructure): THREE.Matrix4[] {
+  const { innerHalfLength, innerHalfWidth, standDepth, standHeight, cornerFill, visualRowCount } = structure
+  const slots = buildSectionLayout(structure)
+  const vomitoryAngleSet = new Set(computeVomitoryAngles(slots).map((a) => a.toFixed(4)))
+  const matrices: THREE.Matrix4[] = []
+  const effectiveRowCount = Math.max(1, visualRowCount)
+  const railCapHeight = Math.max(0.3, standHeight * 0.012)
+
+  for (let i = 0; i < slots.length; i++) {
+    const a = slots[i]
+    const b = slots[(i + 1) % slots.length]
+    const gapAngle = a.centerAngle + a.halfSpan + (b.centerAngle - b.halfSpan - (a.centerAngle + a.halfSpan)) / 2
+    if (vomitoryAngleSet.has(gapAngle.toFixed(4))) continue
+
+    const [cx, cz] = boundaryPoint(gapAngle, innerHalfLength, innerHalfWidth, cornerFill)
+    const closeness = cornerCloseness(cx, cz, innerHalfLength, innerHalfWidth)
+    const localScale = 1 - closeness * (1 - cornerFill) * 0.85
+    const depthHere = standDepth * localScale
+    const heightHere = standHeight * localScale
+    const len = Math.hypot(cx, cz) || 1
+    const dirX = cx / len
+    const dirZ = cz / len
+    const tangentAngle = gapAngle + Math.PI / 2
+    const quat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -tangentAngle)
+
+    for (let r = 0; r < effectiveRowCount; r++) {
+      const t0 = r / effectiveRowCount
+      const t1 = (r + 1) / effectiveRowCount
+      const radiusOffset = depthHere * t0
+      const stepDepth = depthHere * (t1 - t0)
+      const rowTop = heightHere * t1
+
+      const posX = cx + dirX * (radiusOffset + stepDepth * 0.5)
+      const posZ = cz + dirZ * (radiusOffset + stepDepth * 0.5)
+      const posY = rowTop + railCapHeight * 0.5
+
+      const m = new THREE.Matrix4()
+      m.compose(new THREE.Vector3(posX, posY, posZ), quat, new THREE.Vector3(0.3, railCapHeight, stepDepth * 0.98))
+      matrices.push(m)
+    }
+  }
+
+  return matrices
+}
+
+/**
  * The actual seating - one instanced box per (section, row, tier), each row
  * nearly filling its section's full angular and radial slot (seats should
  * dominate the stand, concrete should only show at aisles/stairs/tunnels -
@@ -349,13 +406,19 @@ export function computeSeatingBlockInstances(structure: Stadium3DStructure): Ins
 
     slots.forEach((slot, slotIndex) => {
       const isVip = vipIndices.has(slotIndex)
-      const color = isVip ? vipColor : slot.isCorner ? accentColor : primaryColor
       const centerAngle = slot.centerAngle
       const angularHalfSpan = slot.halfSpan
 
       const [cx, cz] = boundaryPoint(centerAngle, innerHalfLength, innerHalfWidth, cornerFill)
       const closeness = cornerCloseness(cx, cz, innerHalfLength, innerHalfWidth)
       const localScale = 1 - closeness * (1 - cornerFill) * 0.85
+
+      // Blend by this slot's own geometric closeness to the true corner,
+      // not by a hard "isCorner" switch - the purple-to-white transition
+      // follows the same smooth curve the boundary itself sweeps through,
+      // instead of one block suddenly turning white next to a purple one.
+      const cornerBlend = slot.isCorner ? Math.min(1, closeness * 1.6) : 0
+      const color = isVip ? vipColor : primaryColor.clone().lerp(accentColor, cornerBlend)
       const depthHere = standDepth * localScale * (tierEnd - tierStart)
       const heightHere = standHeight * localScale * (tierEnd - tierStart)
       const baseY = standHeight * localScale * tierStart
@@ -395,7 +458,11 @@ export function computeSeatingBlockInstances(structure: Stadium3DStructure): Ins
           new THREE.Vector3(blockWidth, Math.max(0.35, stepRise * 0.92), Math.max(0.4, stepDepth * 0.94))
         )
         matrices.push(m)
-        colors.push(color)
+        // A subtle alternating shade per row - a deterministic depth/
+        // separation cue that reads at any camera angle, unlike relying on
+        // lighting alone to differentiate one thin row from the next.
+        const rowShade = r % 2 === 0 ? 1 : 0.86
+        colors.push(color.clone().multiplyScalar(rowShade))
       }
     })
   }
@@ -407,6 +474,7 @@ export function computeSeatingBlockInstances(structure: Stadium3DStructure): Ins
   const vomitoryDepthFrac = 0.4
   const vomitoryHeightFrac = 0.22
   const vomitoryAngularHalfSpan = ((Math.PI * 2) / Math.max(8, slots.length)) * 0.32
+  const frameColor = new THREE.Color(CONCRETE_DARK)
 
   for (const angle of vomitoryAngles) {
     const [cx, cz] = boundaryPoint(angle, innerHalfLength, innerHalfWidth, cornerFill)
@@ -426,8 +494,25 @@ export function computeSeatingBlockInstances(structure: Stadium3DStructure): Ins
     const posY = heightHere * 0.5
 
     const quat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -tangentAngle)
+
+    // A slightly larger, lighter frame sitting just behind the dark opening -
+    // reads as a real built portal (an arch/lintel around the tunnel mouth)
+    // instead of a flat dark patch dropped onto the seating.
+    const frameM = new THREE.Matrix4()
+    frameM.compose(
+      new THREE.Vector3(posX, posY + heightHere * 0.08, posZ),
+      quat,
+      new THREE.Vector3(blockWidth * 1.22, heightHere * 1.18, depthHere * 1.1)
+    )
+    matrices.push(frameM)
+    colors.push(frameColor)
+
     const m = new THREE.Matrix4()
-    m.compose(new THREE.Vector3(posX, posY, posZ), quat, new THREE.Vector3(blockWidth, heightHere, depthHere))
+    m.compose(
+      new THREE.Vector3(posX + dirX * 0.15, posY, posZ + dirZ * 0.15),
+      quat,
+      new THREE.Vector3(blockWidth, heightHere, depthHere)
+    )
     matrices.push(m)
     colors.push(vomitoryColor)
   }
@@ -478,6 +563,63 @@ export function buildRoofGeometry(structure: Stadium3DStructure): THREE.BufferGe
       const d = a + 3
       const prevAngle = ((i - 1) / ANGULAR_STEPS) * Math.PI * 2
       if (isCovered(prevAngle)) indices.push(a, c, b, c, d, b)
+    }
+    vertCount++
+  }
+
+  if (positions.length === 0) return null
+
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3))
+  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2))
+  geometry.setIndex(indices)
+  geometry.computeVertexNormals()
+  return geometry
+}
+
+/** The roof's underside face, offset down by a real thickness from the top deck - gives the roof actual visual mass instead of a single infinitely-thin plate. */
+export function buildRoofUndersideGeometry(structure: Stadium3DStructure): THREE.BufferGeometry | null {
+  if (structure.roofCoverage <= 0.02) return null
+
+  const thickness = Math.max(1.2, structure.standDepth * 0.045)
+  const overhang = Math.max(4, structure.standDepth * 0.18)
+  const positions: number[] = []
+  const uvs: number[] = []
+  const indices: number[] = []
+
+  const halfArcPerSide = (Math.PI / 4) * structure.roofCoverage
+  const sideCenters = [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2]
+  function isCovered(angle: number): boolean {
+    return sideCenters.some((c) => {
+      let d = Math.abs(angle - c)
+      if (d > Math.PI) d = 2 * Math.PI - d
+      return d <= halfArcPerSide
+    })
+  }
+
+  let vertCount = 0
+  for (let i = 0; i <= ANGULAR_STEPS; i++) {
+    const angle = (i / ANGULAR_STEPS) * Math.PI * 2
+    if (!isCovered(angle)) continue
+
+    const { x: ix, z: iz, height } = outerEdgeAt(angle, structure)
+    const roofY = height * 1.06 - thickness
+    const len = Math.hypot(ix, iz) || 1
+    const dirX = ix / len
+    const dirZ = iz / len
+    const ox = ix + dirX * overhang
+    const oz = iz + dirZ * overhang
+
+    positions.push(ix, roofY, iz, ox, roofY, oz)
+    uvs.push(i / ANGULAR_STEPS, 0, i / ANGULAR_STEPS, 1)
+
+    if (vertCount > 0) {
+      const a = vertCount * 2 - 2
+      const b = a + 1
+      const c = a + 2
+      const d = a + 3
+      const prevAngle = ((i - 1) / ANGULAR_STEPS) * Math.PI * 2
+      if (isCovered(prevAngle)) indices.push(a, b, c, c, b, d)
     }
     vertCount++
   }
@@ -611,15 +753,31 @@ export function createPitchTexture(): THREE.CanvasTexture {
   canvas.height = PITCH_WIDTH * scale
   const ctx = canvas.getContext("2d")!
 
-  ctx.fillStyle = "#1F7A34"
+  ctx.fillStyle = "#1B7031"
   ctx.fillRect(0, 0, canvas.width, canvas.height)
 
   // Mow stripes, richer contrast than a flat fill.
   const stripeCount = 14
   for (let i = 0; i < stripeCount; i++) {
-    ctx.fillStyle = i % 2 === 0 ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)"
+    ctx.fillStyle = i % 2 === 0 ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.06)"
     ctx.fillRect((i / stripeCount) * canvas.width, 0, canvas.width / stripeCount, canvas.height)
   }
+
+  // Subtle vignette toward the touchlines/end-lines - a flat fill read as
+  // thin and synthetic; a little darkening at the edges gives the grass
+  // real depth instead of looking like a solid color card.
+  const vignette = ctx.createRadialGradient(
+    canvas.width / 2,
+    canvas.height / 2,
+    canvas.height * 0.15,
+    canvas.width / 2,
+    canvas.height / 2,
+    canvas.height * 0.75
+  )
+  vignette.addColorStop(0, "rgba(0,0,0,0)")
+  vignette.addColorStop(1, "rgba(0,20,6,0.16)")
+  ctx.fillStyle = vignette
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
 
   ctx.strokeStyle = "#F5FFF7"
   ctx.lineWidth = scale * 0.2
@@ -703,3 +861,4 @@ export function computeSeatingDebugInfo(structure: Stadium3DStructure): SeatingD
 
 export const CONCRETE_MATERIAL_COLOR = CONCRETE_COLOR
 export const CONCRETE_MATERIAL_DARK = CONCRETE_DARK
+export const METAL_MATERIAL_COLOR = METAL_COLOR

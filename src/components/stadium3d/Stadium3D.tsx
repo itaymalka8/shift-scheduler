@@ -17,13 +17,16 @@ import {
   buildPodiumWallGeometry,
   buildRoofFasciaGeometry,
   buildRoofGeometry,
+  buildRoofUndersideGeometry,
   buildStandShellGeometry,
   computeRoofBeamInstances,
   computeRoofLightInstances,
   computeSeatingBlockInstances,
+  computeSectionDividerInstances,
   createPitchTexture,
   CONCRETE_MATERIAL_COLOR,
   CONCRETE_MATERIAL_DARK,
+  METAL_MATERIAL_COLOR,
 } from "./stadium-geometry"
 
 /** One tier's concrete shell (aisles/underside) - plain, unlit-neutral so it never competes with the seat colors. */
@@ -31,7 +34,7 @@ function StandShell({ structure, tier }: { structure: Stadium3DStructure; tier: 
   const geometry = useMemo(() => buildStandShellGeometry(structure, tier), [structure, tier])
   return (
     <mesh geometry={geometry} receiveShadow>
-      <meshStandardMaterial color={CONCRETE_MATERIAL_COLOR} side={THREE.DoubleSide} roughness={0.95} metalness={0} />
+      <meshStandardMaterial color={CONCRETE_MATERIAL_COLOR} side={THREE.DoubleSide} roughness={1} metalness={0} />
     </mesh>
   )
 }
@@ -40,7 +43,7 @@ function StandShell({ structure, tier }: { structure: Stadium3DStructure; tier: 
 function SeatingBlocks({ structure }: { structure: Stadium3DStructure }) {
   const { matrices, colors } = useMemo(() => computeSeatingBlockInstances(structure), [structure])
   const geometry = useMemo(() => new THREE.BoxGeometry(1, 1, 1), [])
-  const material = useMemo(() => new THREE.MeshStandardMaterial({ roughness: 0.8, metalness: 0.02 }), [])
+  const material = useMemo(() => new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.05 }), [])
 
   return (
     <instancedMesh
@@ -61,10 +64,29 @@ function SeatingBlocks({ structure }: { structure: Stadium3DStructure }) {
   )
 }
 
+/** Thin metal dividers at every section boundary - a physical handrail-like separation between adjacent blocks. */
+function SectionDividers({ matrices }: { matrices: THREE.Matrix4[] }) {
+  const geometry = useMemo(() => new THREE.BoxGeometry(1, 1, 1), [])
+  const material = useMemo(() => new THREE.MeshStandardMaterial({ color: METAL_MATERIAL_COLOR, roughness: 0.35, metalness: 0.7 }), [])
+  if (matrices.length === 0) return null
+  return (
+    <instancedMesh
+      key={matrices.length}
+      args={[geometry, material, matrices.length]}
+      castShadow
+      ref={(mesh) => {
+        if (!mesh) return
+        matrices.forEach((m, i) => mesh.setMatrixAt(i, m))
+        mesh.instanceMatrix.needsUpdate = true
+      }}
+    />
+  )
+}
+
 /** Thin radial beams under the roof deck - a basic visible frame instead of a plain floating plate. */
 function RoofBeams({ matrices }: { matrices: THREE.Matrix4[] }) {
   const geometry = useMemo(() => new THREE.BoxGeometry(1, 1, 1), [])
-  const material = useMemo(() => new THREE.MeshStandardMaterial({ color: "#33383F", roughness: 0.5, metalness: 0.4 }), [])
+  const material = useMemo(() => new THREE.MeshStandardMaterial({ color: METAL_MATERIAL_COLOR, roughness: 0.32, metalness: 0.75 }), [])
   if (matrices.length === 0) return null
   return (
     <instancedMesh
@@ -116,9 +138,11 @@ function StadiumScene({ capacity }: { capacity: number }) {
   const podiumGeometry = useMemo(() => buildPodiumWallGeometry(structure), [structure])
   const facadeGeometry = useMemo(() => buildOuterFacadeGeometry(structure), [structure])
   const roofGeometry = useMemo(() => buildRoofGeometry(structure), [structure])
+  const roofUndersideGeometry = useMemo(() => buildRoofUndersideGeometry(structure), [structure])
   const roofFasciaGeometry = useMemo(() => buildRoofFasciaGeometry(structure), [structure])
   const roofBeamMatrices = useMemo(() => computeRoofBeamInstances(structure), [structure])
   const roofLightMatrices = useMemo(() => computeRoofLightInstances(structure), [structure])
+  const dividerMatrices = useMemo(() => computeSectionDividerInstances(structure), [structure])
 
   return (
     <group>
@@ -136,6 +160,7 @@ function StadiumScene({ capacity }: { capacity: number }) {
       ))}
 
       <SeatingBlocks structure={structure} />
+      <SectionDividers matrices={dividerMatrices} />
 
       <mesh geometry={podiumGeometry} receiveShadow>
         <meshStandardMaterial color={CONCRETE_MATERIAL_DARK} side={THREE.DoubleSide} roughness={0.95} />
@@ -146,8 +171,13 @@ function StadiumScene({ capacity }: { capacity: number }) {
       </mesh>
 
       {roofGeometry && (
-        <mesh geometry={roofGeometry}>
-          <meshStandardMaterial color="#454C58" side={THREE.DoubleSide} roughness={0.5} metalness={0.15} transparent opacity={0.95} />
+        <mesh geometry={roofGeometry} castShadow>
+          <meshStandardMaterial color="#3D4450" side={THREE.DoubleSide} roughness={0.4} metalness={0.25} />
+        </mesh>
+      )}
+      {roofUndersideGeometry && (
+        <mesh geometry={roofUndersideGeometry}>
+          <meshStandardMaterial color="#2A2E36" side={THREE.DoubleSide} roughness={0.75} metalness={0.1} />
         </mesh>
       )}
       {roofFasciaGeometry && (
