@@ -53,6 +53,7 @@ export default async function SquadPage() {
 
   const teamTotalQuality = calculateTeamTotalQuality(players)
   const squadMarketValue = calculateSquadMarketValue(players)
+  const totalWeeklyPlayerSalaries = players.reduce((sum, p) => sum + p.weeklySalary, 0)
 
   return (
     <div className="min-h-screen bg-background">
@@ -80,6 +81,7 @@ export default async function SquadPage() {
             fitness: p.fitness,
             status: p.status as "available" | "injured" | "suspended" | "unavailable",
             marketValue: p.marketValue,
+            weeklySalary: p.weeklySalary,
             preferredFoot: p.preferredFoot as "left" | "right" | "both",
             nationality: p.nationality,
             shirtNumber: p.shirtNumber,
@@ -97,6 +99,7 @@ export default async function SquadPage() {
           accentColor={team.crestColor ?? "#3B2F7A"}
           teamTotalQuality={teamTotalQuality}
           squadMarketValue={squadMarketValue}
+          totalWeeklyPlayerSalaries={totalWeeklyPlayerSalaries}
         />
       </main>
     </div>

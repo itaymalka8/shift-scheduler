@@ -7,5 +7,12 @@ export default withAuth({
 })
 
 export const config = {
-  matcher: ["/dashboard/:path*", "/league/:path*", "/match/:path*", "/squad/:path*", "/stadium/:path*"],
+  matcher: [
+    "/dashboard/:path*",
+    "/league/:path*",
+    "/match/:path*",
+    "/squad/:path*",
+    "/stadium/:path*",
+    "/economy/:path*",
+  ],
 }

@@ -31,6 +31,7 @@ interface PlayerDTO {
   fitness: number
   status: PlayerStatus
   marketValue: number
+  weeklySalary: number
   preferredFoot: "left" | "right" | "both"
   nationality: string
   shirtNumber: number
@@ -112,6 +113,7 @@ export function SquadTacticsApp({
   accentColor,
   teamTotalQuality,
   squadMarketValue,
+  totalWeeklyPlayerSalaries,
 }: {
   players: PlayerDTO[]
   initialAssignments: Assignment[]
@@ -127,6 +129,7 @@ export function SquadTacticsApp({
   accentColor: string
   teamTotalQuality: number
   squadMarketValue: number
+  totalWeeklyPlayerSalaries: number
 }) {
   const t = useT()
   const byId = useMemo(() => new Map(players.map((p) => [p.id, p])), [players])
@@ -258,7 +261,7 @@ export function SquadTacticsApp({
         </span>
       </div>
 
-      <div className="mb-6 grid grid-cols-3 gap-2 rounded-lg border bg-card p-3 text-center sm:gap-4">
+      <div className="mb-6 grid grid-cols-2 gap-2 rounded-lg border bg-card p-3 text-center sm:grid-cols-4 sm:gap-4">
         <div>
           <div className="text-lg font-bold text-primary">{teamTotalQuality}</div>
           <div className="text-xs text-muted-foreground">{t("squad.summaryQuality")}</div>
@@ -266,6 +269,10 @@ export function SquadTacticsApp({
         <div>
           <div className="text-lg font-bold text-primary">{formatMarketValueCompact(squadMarketValue)}</div>
           <div className="text-xs text-muted-foreground">{t("squad.summaryValue")}</div>
+        </div>
+        <div>
+          <div className="text-lg font-bold text-primary">{formatMarketValueCompact(totalWeeklyPlayerSalaries)}</div>
+          <div className="text-xs text-muted-foreground">{t("squad.summarySalaries")}</div>
         </div>
         <div>
           <div className="text-lg font-bold text-primary">{players.length}</div>
@@ -482,6 +489,10 @@ export function SquadTacticsApp({
                   )}
                 />
                 <Row label={t("squad.colMarketValue")} value={formatMarketValue(expandedPlayer.marketValue)} />
+                <Row
+                  label={t("squad.colWeeklySalary")}
+                  value={`${formatMarketValue(expandedPlayer.weeklySalary)} ${t("economy.perWeek")}`}
+                />
                 <Row label={t("squad.colFoot")} value={t(`squad.foot.${expandedPlayer.preferredFoot}` as TranslationKey)} />
               </div>
             </>

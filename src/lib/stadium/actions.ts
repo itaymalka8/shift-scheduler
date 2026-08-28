@@ -1,6 +1,6 @@
 import { Prisma } from "@/generated/prisma"
 import { prisma } from "@/lib/prisma"
-import { adjustClubBalance, InsufficientFundsError } from "@/lib/finance/balance"
+import { createFinancialTransaction, InsufficientFundsError } from "@/lib/economy/service"
 import {
   DEFAULT_STADIUM_CONFIG,
   DEFAULT_STARTING_SEATS,
@@ -61,9 +61,7 @@ export async function startStadiumConstruction(
       const startedAt = new Date()
       const endsAt = new Date(startedAt.getTime() + days * 24 * 60 * 60 * 1000)
 
-      await adjustClubBalance(tx, teamId, -totalCost)
-
-      return tx.stadiumConstructionJob.create({
+      const job = await tx.stadiumConstructionJob.create({
         data: {
           stadiumId: stadium.id,
           regularSeatsAdded: seatsToAdd.regular,
@@ -76,6 +74,20 @@ export async function startStadiumConstruction(
           endsAt,
         },
       })
+
+      // Discretionary spend - this is the user's own choice, so unlike
+      // mandatory recurring costs it must block (and roll the job creation
+      // back) rather than push the balance negative.
+      await createFinancialTransaction(tx, {
+        teamId,
+        type: "stadiumConstruction",
+        amount: -totalCost,
+        description: `שדרוג אצטדיון: ${totalNew.toLocaleString()} מקומות חדשים`,
+        referenceId: `STADIUM_CONSTRUCTION_${job.id}`,
+        allowNegative: false,
+      })
+
+      return job
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
   )

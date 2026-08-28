@@ -88,6 +88,7 @@ model Team {
   lineupSlots         LineupSlot[]
   matchEvents         MatchEvent[]
   stadium             Stadium?
+  financialTransactions FinancialTransaction[]
   captainId           String?        @unique
   captain             Player?        @relation("TeamCaptain", fields: [captainId], references: [id], onDelete: SetNull)
   penaltyTakerId      String?        @unique
@@ -112,6 +113,7 @@ model Player {
   fitness             Int         @default(100)
   status              String      @default("available")
   marketValue         Int
+  weeklySalary        Int         @default(0)
   injuryStatus        String?
   suspensionMatches   Int         @default(0)
   preferredFoot       String
@@ -162,6 +164,27 @@ model StadiumConstructionJob {
   startedAt           DateTime  @default(now())
   endsAt              DateTime
   completedAt         DateTime?
+}
+
+// The club's financial journal - every balance change, ever, with no
+// deletions. type is one of the FinancialTransactionType values (see
+// src/lib/economy/service.ts); amount is signed (positive = income,
+// negative = expense) so it can be summed directly. referenceId is the
+// idempotency key for whatever caused this transaction (a specific match,
+// a specific payroll week, a specific construction job) - the unique
+// constraint below is what actually stops a double-charge, not just an
+// application-level check.
+model FinancialTransaction {
+  id          String   @id @default(cuid())
+  teamId      String
+  team        Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  type        String
+  amount      Int
+  description String
+  referenceId String
+  createdAt   DateTime @default(now())
+
+  @@unique([teamId, referenceId])
 }
 
 // A player's spot in their team's current starting XI. slotIndex points at
@@ -231,6 +254,7 @@ model Fixture {
   awayScore   Int?
   attendance  Int?
   homeRevenue Int?
+  homeMatchExpense Int?
   scheduledAt DateTime?
   playedAt    DateTime?
   createdAt   DateTime     @default(now())

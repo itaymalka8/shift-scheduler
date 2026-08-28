@@ -17,6 +17,7 @@ import { computeRecommendedLineup } from "@/lib/players/recommend"
 import { DEFAULT_FORMATION, isFormationId } from "@/lib/players/formations"
 import { getSeasonStartMonday, computeMatchdayDate } from "@/lib/match/schedule"
 import { DEFAULT_STARTING_SEATS, toSeatColumns } from "@/lib/stadium/config"
+import { calculatePlayerSalary } from "@/lib/economy/salary"
 
 const COUNTRY_CODE = "IL"
 const SEASON_NUMBER = 1
@@ -74,6 +75,18 @@ async function backfillMissingGameData(tx: Prisma.TransactionClient, seasonId: s
       await tx.stadium.create({
         data: { teamId: team.id, name: `אצטדיון ${team.name}`, ...toSeatColumns(DEFAULT_STARTING_SEATS) },
       })
+    }
+
+    // Squads generated before player salaries existed still carry the
+    // column's default of 0 - a real generated player's salary is always
+    // at least SALARY_MIN, so 0 unambiguously means "not backfilled yet".
+    for (const player of team.players) {
+      if (player.weeklySalary === 0) {
+        await tx.player.update({
+          where: { id: player.id },
+          data: { weeklySalary: calculatePlayerSalary(player) },
+        })
+      }
     }
 
     if (team.players.length === 0) {

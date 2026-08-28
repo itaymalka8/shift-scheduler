@@ -3,8 +3,14 @@ import { POSITION_GROUP, isPlayerPosition, type PositionGroup } from "@/lib/play
 import { calculateTeamTotalQuality } from "@/lib/players/quality"
 import { ensureStadiumForTeam } from "@/lib/stadium/actions"
 import { calculateAttendance, calculateMatchStadiumRevenue } from "@/lib/stadium/attendance"
+import { calculateStadiumCapacity } from "@/lib/stadium/metrics"
 import { toSeatCounts } from "@/lib/stadium/config"
-import { adjustClubBalance } from "@/lib/finance/balance"
+import { calculateHomeMatchExpenses, calculateAwayTravelCost } from "@/lib/economy/match-expenses"
+import { createFinancialTransaction } from "@/lib/economy/service"
+
+// Only a domestic league exists so far - cup/international competitions
+// (and their higher cost modifiers) plug in here once they're built.
+const CURRENT_COMPETITION = "league" as const
 
 const BASE_GOAL_RATE = 1.35
 const HOME_ADVANTAGE = 1.15
@@ -115,17 +121,20 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
     ...Array.from({ length: awayGoals }, () => ({ minute: randomMinute(), teamId: fixture.awayTeamId })),
   ].sort((a, b) => a.minute - b.minute)
 
-  // Gate attendance/revenue for the home side - self-heals a missing Stadium
-  // row (e.g. a team created before the stadium system existed) the same way
-  // generateSquad backfills a missing squad.
+  // Gate attendance/revenue/expenses for the home side - self-heals a missing
+  // Stadium row (e.g. a team created before the stadium system existed) the
+  // same way generateSquad backfills a missing squad.
   const homeStadium = await ensureStadiumForTeam(fixture.homeTeamId)
   const homePlayers = await prisma.player.findMany({ where: { teamId: fixture.homeTeamId } })
+  const capacity = calculateStadiumCapacity(toSeatCounts(homeStadium))
   const attendance = calculateAttendance(
     { isHome: true },
     { teamTotalQuality: calculateTeamTotalQuality(homePlayers) },
     { seats: toSeatCounts(homeStadium) }
   )
   const revenue = calculateMatchStadiumRevenue(attendance.bySeatType)
+  const expenses = calculateHomeMatchExpenses({ capacity }, attendance.total, CURRENT_COMPETITION)
+  const awayTravelCost = calculateAwayTravelCost(CURRENT_COMPETITION)
 
   await prisma.$transaction(async (tx) => {
     const fresh = await tx.fixture.findUnique({ where: { id: fixtureId } })
@@ -142,9 +151,35 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
         playedAt: new Date(),
         attendance: attendance.total,
         homeRevenue: revenue.total,
+        homeMatchExpense: expenses.total,
       },
     })
-    await adjustClubBalance(tx, fixture.homeTeamId, revenue.total, { allowNegative: true })
+
+    // Mandatory match-day costs/income - these must go through even if the
+    // club's balance goes negative as a result; that pressure is the point.
+    await createFinancialTransaction(tx, {
+      teamId: fixture.homeTeamId,
+      type: "matchRevenue",
+      amount: revenue.total,
+      description: "הכנסות קהל ממשחק בית",
+      referenceId: `MATCH_${fixtureId}_HOME_REVENUE`,
+    })
+    await createFinancialTransaction(tx, {
+      teamId: fixture.homeTeamId,
+      type: "matchExpense",
+      amount: -expenses.total,
+      description: "הוצאות אירוח משחק בית",
+      referenceId: `MATCH_${fixtureId}_HOME_EXPENSE`,
+    })
+    if (awayTravelCost > 0) {
+      await createFinancialTransaction(tx, {
+        teamId: fixture.awayTeamId,
+        type: "matchExpense",
+        amount: -awayTravelCost,
+        description: "הוצאות נסיעה למשחק חוץ",
+        referenceId: `MATCH_${fixtureId}_AWAY_TRAVEL`,
+      })
+    }
   })
 }
 

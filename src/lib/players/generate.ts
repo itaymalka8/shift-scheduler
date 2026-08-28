@@ -4,6 +4,8 @@ import { DEFAULT_FORMATION } from "./formations"
 import { computeRecommendedLineup } from "./recommend"
 import { SECONDARY_POSITIONS, type PlayerPosition } from "./positions"
 import { calculatePlayerMarketValue } from "./market-value"
+import { calculatePlayerSalary } from "@/lib/economy/salary"
+import { DEFAULT_SALARY_CONFIG, INITIAL_SQUAD_SALARY_RANGE, type SalaryConfig } from "@/lib/economy/config"
 import {
   BROAD_GROUP_POSITIONS,
   DEFAULT_SQUAD_GENERATION_CONFIG,
@@ -29,6 +31,7 @@ export interface GeneratedPlayer {
   fitness: number
   status: "available"
   marketValue: number
+  weeklySalary: number
   preferredFoot: "left" | "right" | "both"
   nationality: string
   shirtNumber: number
@@ -155,7 +158,7 @@ export function generateInitialSquad(config: SquadGenerationConfig = DEFAULT_SQU
 
   const shirtNumbers = shuffle(Array.from({ length: positions.length }, (_, i) => i + 1))
 
-  return positions.map((primaryPosition, i) => {
+  const squad = positions.map((primaryPosition, i) => {
     const overall = Math.max(quality.overallRange.min, Math.min(quality.overallRange.max, overalls[i]))
     const ageBand = pickWeighted(ageBands.map((b) => ({ value: b, weight: b.weight })))
     const age = randomInt(ageBand.min, ageBand.max)
@@ -178,13 +181,40 @@ export function generateInitialSquad(config: SquadGenerationConfig = DEFAULT_SQU
       primaryPosition,
       secondaryPositions,
       fitness: 100,
-      status: "available",
+      status: "available" as const,
       marketValue: calculatePlayerMarketValue({ overall, age, potential, primaryPosition, fitness: 100 }, marketValue),
+      weeklySalary: calculatePlayerSalary({ overall, age, potential, primaryPosition }, DEFAULT_SALARY_CONFIG),
       preferredFoot,
       nationality,
       shirtNumber: shirtNumbers[i],
     }
   })
+
+  scaleSquadSalariesToRange(squad, INITIAL_SQUAD_SALARY_RANGE, DEFAULT_SALARY_CONFIG)
+  return squad
+}
+
+/**
+ * A new squad's combined weekly wage bill must land in the configured
+ * range regardless of how the quality/tier roll happened to shake out -
+ * without this, a lucky high-overall generation could saddle a brand-new
+ * manager with a wage bill their starting budget can't sustain. Scales
+ * every player's already-computed salary by the same factor rather than
+ * recomputing from scratch, so relative pay between players is preserved.
+ */
+function scaleSquadSalariesToRange(
+  squad: GeneratedPlayer[],
+  range: { min: number; max: number },
+  config: SalaryConfig
+): void {
+  const total = squad.reduce((sum, p) => sum + p.weeklySalary, 0)
+  if (total >= range.min && total <= range.max) return
+
+  const target = (range.min + range.max) / 2
+  const factor = total > 0 ? target / total : 1
+  for (const player of squad) {
+    player.weeklySalary = Math.max(config.minSalary, Math.round((player.weeklySalary * factor) / config.roundingUnit) * config.roundingUnit)
+  }
 }
 
 /**
