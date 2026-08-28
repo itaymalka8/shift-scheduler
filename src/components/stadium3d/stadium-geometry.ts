@@ -2,27 +2,76 @@ import * as THREE from "three"
 import { PITCH_LENGTH, PITCH_WIDTH, type Stadium3DStructure } from "@/lib/stadium/stadium3d-config"
 
 const ANGULAR_STEPS = 96
-const SQUIRCLE_EXPONENT = 6 // 2 = pure ellipse, higher = closer to a sharp rectangle
 
-// GoalX brand tokens only, per the brief - deep purple, brand-accent purple,
-// white, light lavender-gray for seats; neutral grays for concrete/roof/metal
-// so those materials read as structure, not brand color.
-const SEAT_PALETTE = ["#2A2158", "#FFFFFF", "#EDEAF7", "#3B2F7A"]
+// GoalX brand tokens only, per the brief. Seating uses a deliberately
+// PLANNED pattern, not a per-section random cycle: most of the bowl is deep
+// navy-purple, the four corners are a white accent block (a real "wing"
+// marking, like many real grounds), and VIP sections get their own distinct
+// mid-purple. Concrete/roof/metal stay neutral so those materials read as
+// structure, not brand color.
+const SEAT_PRIMARY = "#241B4D"
+const SEAT_CORNER_ACCENT = "#FFFFFF"
 const VIP_COLOR = "#6C4FD9"
-// Warm-neutral (not blue-leaning) so it stays visually distinct from every
-// entry in SEAT_PALETTE, all of which are cool/blue-family hues - a
-// cool-gray concrete let the white/lavender seat blocks blend into it at a
-// distance, reading as bare gaps in the seating rather than actual blocks.
+const VOMITORY_COLOR = "#181430"
+// Warm-neutral (not blue-leaning) so it stays visually distinct from the
+// cool/blue-family seat colors - a cool-gray concrete let light seat blocks
+// blend into it at a distance, reading as bare gaps rather than blocks.
 const CONCRETE_COLOR = "#A6A199"
 const CONCRETE_DARK = "#878177"
 
-/** A point on a "squircle" (superellipse) boundary - a fixed rounded-rectangle-like footprint every stand shares. */
-function squirclePoint(angle: number, halfLength: number, halfWidth: number): [number, number] {
+/** How much of each corner's bounding square the rounding circle eats into - grows with cornerFill (1 = large radius, closer to a continuous oval; 0 = tight, small radius). */
+function cornerRadiusFor(halfLength: number, halfWidth: number, cornerFill: number): number {
+  return Math.min(halfLength, halfWidth) * (0.12 + 0.3 * cornerFill)
+}
+
+/**
+ * A point on the stand's actual boundary at a given angle: a true rounded
+ * RECTANGLE (straight run along each side, quarter-circle at each corner) -
+ * not a smooth superellipse, which has no genuinely straight segment
+ * anywhere and reads as a diamond/oval, not "four stands with corners."
+ * Found via ray-from-origin intersection against the two straight walls and
+ * the two corner circles, taking whichever is actually inside its own valid
+ * span.
+ */
+function boundaryPoint(angle: number, halfLength: number, halfWidth: number, cornerFill: number): [number, number] {
+  const r = cornerRadiusFor(halfLength, halfWidth, cornerFill)
   const c = Math.cos(angle)
   const s = Math.sin(angle)
-  const x = Math.sign(c) * Math.pow(Math.abs(c), 2 / SQUIRCLE_EXPONENT) * halfLength
-  const z = Math.sign(s) * Math.pow(Math.abs(s), 2 / SQUIRCLE_EXPONENT) * halfWidth
-  return [x, z]
+  const ac = Math.abs(c)
+  const as_ = Math.abs(s)
+
+  if (ac > 1e-9) {
+    const t = halfLength / ac
+    const zCandidate = s * t
+    if (Math.abs(zCandidate) <= halfWidth - r + 1e-6) return [Math.sign(c) * halfLength, zCandidate]
+  }
+  if (as_ > 1e-9) {
+    const t = halfWidth / as_
+    const xCandidate = c * t
+    if (Math.abs(xCandidate) <= halfLength - r + 1e-6) return [xCandidate, Math.sign(s) * halfWidth]
+  }
+
+  const cx = (Math.sign(c) || 1) * (halfLength - r)
+  const cz = (Math.sign(s) || 1) * (halfWidth - r)
+  const b = -2 * (c * cx + s * cz)
+  const cCoef = cx * cx + cz * cz - r * r
+  const disc = Math.max(0, b * b - 4 * cCoef)
+  const t = (-b + Math.sqrt(disc)) / 2
+  return [c * t, s * t]
+}
+
+/** The pitch's own sharp-rectangle boundary - used only for the concourse floor loft, which spans from this real edge out to the stand's rounded inner edge. */
+function pitchBoundaryPoint(angle: number): [number, number] {
+  const halfLength = PITCH_LENGTH / 2
+  const halfWidth = PITCH_WIDTH / 2
+  const c = Math.cos(angle)
+  const s = Math.sin(angle)
+  if (Math.abs(c) < 1e-9) return [0, Math.sign(s) * halfWidth]
+  if (Math.abs(s) < 1e-9) return [Math.sign(c) * halfLength, 0]
+  const zAtX = s * (halfLength / Math.abs(c))
+  if (Math.abs(zAtX) <= halfWidth) return [Math.sign(c) * halfLength, zAtX]
+  const xAtZ = c * (halfWidth / Math.abs(s))
+  return [xAtZ, Math.sign(s) * halfWidth]
 }
 
 /** 0 along the middle of a straight side, 1 at a true corner of the bounding rectangle - used to taper the corner stand height/depth down as cornerFill drops. */
@@ -31,16 +80,14 @@ function cornerCloseness(x: number, z: number, halfLength: number, halfWidth: nu
 }
 
 /**
- * The stand's true outer-rim point at a given angle - same corner-tapering
+ * The stand's true outer-rim point at a given angle - the same corner-taper
  * math buildLoftedRing uses at its far (t=1) edge, factored out so anything
- * that needs to sit flush against the actual outer edge (the facade wall,
- * entrance portals) agrees with where the ramp really ends, instead of
- * assuming a fixed outerHalfLength/outerHalfWidth squircle that only holds
- * along the straight sides, not at the tapered corners.
+ * that needs to sit flush against the actual outer edge (facade, roof,
+ * vomitories) agrees with where the ramp really ends.
  */
 function outerEdgeAt(angle: number, structure: Stadium3DStructure): { x: number; z: number; height: number } {
   const { innerHalfLength, innerHalfWidth, standDepth, standHeight, cornerFill } = structure
-  const [ix, iz] = squirclePoint(angle, innerHalfLength, innerHalfWidth)
+  const [ix, iz] = boundaryPoint(angle, innerHalfLength, innerHalfWidth, cornerFill)
   const closeness = cornerCloseness(ix, iz, innerHalfLength, innerHalfWidth)
   const localScale = 1 - closeness * (1 - cornerFill) * 0.85
   const len = Math.hypot(ix, iz) || 1
@@ -51,12 +98,11 @@ function outerEdgeAt(angle: number, structure: Stadium3DStructure): { x: number;
 }
 
 /**
- * One continuous lofted ramp surface, plain concrete-colored - this is the
- * stand's structural shell: it's what actually shows through in the aisle
- * gaps between seating blocks (see computeSeatingBlockInstances), and gives
- * the whole ring a solid base even where a seating block's corners round
- * off. Not the seats themselves - those are separate instanced blocks on
- * top of this shell.
+ * One continuous lofted ramp surface, plain concrete-colored - the stand's
+ * structural shell: it's what shows through in the thin aisle gaps between
+ * seating blocks and at vomitory openings, and gives the whole ring a solid
+ * base even where a block's corner rounds off. Not the seats themselves -
+ * those are separate instanced blocks on top of this shell.
  */
 function buildLoftedRing(
   innerHalfLength: number,
@@ -73,7 +119,7 @@ function buildLoftedRing(
 
   for (let i = 0; i <= ANGULAR_STEPS; i++) {
     const angle = (i / ANGULAR_STEPS) * Math.PI * 2
-    const [ix, iz] = squirclePoint(angle, innerHalfLength, innerHalfWidth)
+    const [ix, iz] = boundaryPoint(angle, innerHalfLength, innerHalfWidth, cornerFill)
     const closeness = cornerCloseness(ix, iz, innerHalfLength, innerHalfWidth)
     const localScale = 1 - closeness * (1 - cornerFill) * 0.85
 
@@ -129,25 +175,24 @@ export function buildPodiumWallGeometry(structure: Stadium3DStructure): THREE.Bu
 }
 
 /**
- * A vertical outer wall from the ground up to the ramp's actual outer-top
- * edge, following the same corner taper as the shell. Without this, the
- * space beneath the sloped ramp is an open void - anything placed at ground
- * level near the outer radius (entrance portals) reads as floating debris
- * because there is nothing there for it to attach to. This wall also gives
- * the stand the "clear outer edge" the reference photo has.
+ * The flat concourse floor between the pitch's own edge and the stand's
+ * rounded inner edge (the standOffset gap) - a real dark surface instead of
+ * empty space that showed the pale canvas background through it, which read
+ * as a huge stray white void between the grass and the stands.
  */
-export function buildOuterFacadeGeometry(structure: Stadium3DStructure): THREE.BufferGeometry {
+export function buildConcourseFloorGeometry(structure: Stadium3DStructure): THREE.BufferGeometry {
+  const { innerHalfLength, innerHalfWidth, cornerFill } = structure
   const positions: number[] = []
   const uvs: number[] = []
   const indices: number[] = []
 
   for (let i = 0; i <= ANGULAR_STEPS; i++) {
     const angle = (i / ANGULAR_STEPS) * Math.PI * 2
-    const { x, z, height } = outerEdgeAt(angle, structure)
-    positions.push(x, 0, z, x, height, z)
+    const [ix, iz] = pitchBoundaryPoint(angle)
+    const [ox, oz] = boundaryPoint(angle, innerHalfLength, innerHalfWidth, cornerFill)
+    positions.push(ix, 0.05, iz, ox, 0.05, oz)
     uvs.push(i / ANGULAR_STEPS, 0, i / ANGULAR_STEPS, 1)
   }
-
   for (let i = 0; i < ANGULAR_STEPS; i++) {
     const a = i * 2
     const b = a + 1
@@ -164,55 +209,151 @@ export function buildOuterFacadeGeometry(structure: Stadium3DStructure): THREE.B
   return geometry
 }
 
+/**
+ * A vertical outer wall from the ground up to the ramp's actual outer-top
+ * edge, following the same corner taper as the shell - anchors the facade,
+ * entrances and roof to real geometry instead of an open void, and gives
+ * the bowl its "clear outer edge." Kept in the lighter (not dark) concrete
+ * tone and lower than the full stand height so it reads as a base, not the
+ * dominant element of the top-down view.
+ */
+export function buildOuterFacadeGeometry(structure: Stadium3DStructure): THREE.BufferGeometry {
+  const positions: number[] = []
+  const uvs: number[] = []
+  const indices: number[] = []
+  const heightFrac = 0.55
+
+  for (let i = 0; i <= ANGULAR_STEPS; i++) {
+    const angle = (i / ANGULAR_STEPS) * Math.PI * 2
+    const { x, z, height } = outerEdgeAt(angle, structure)
+    positions.push(x, 0, z, x, height * heightFrac, z)
+    uvs.push(i / ANGULAR_STEPS, 0, i / ANGULAR_STEPS, 1)
+  }
+  for (let i = 0; i < ANGULAR_STEPS; i++) {
+    const a = i * 2
+    const b = a + 1
+    const c = a + 2
+    const d = a + 3
+    indices.push(a, c, b, c, d, b)
+  }
+
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3))
+  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2))
+  geometry.setIndex(indices)
+  geometry.computeVertexNormals()
+  return geometry
+}
+
+// --- Section layout ---------------------------------------------------------
+
+export interface SectionSlot {
+  centerAngle: number
+  halfSpan: number
+  isCorner: boolean
+}
+
+/**
+ * Lays sections out per SIDE - more, narrower sections along the two long
+ * (touchline) sides, fewer along the two short (behind-goal) sides, plus a
+ * few dedicated sections in each corner - instead of dividing the whole
+ * ring evenly by angle. This is what makes "long side: 8-12 sections, short
+ * side: 5-8" an actual property of the model, and gives every corner its
+ * own sections rather than leaving it as empty space between two sides.
+ */
+export function buildSectionLayout(structure: Stadium3DStructure): SectionSlot[] {
+  const { innerHalfLength: L, innerHalfWidth: W, cornerFill, longSideSections, shortSideSections, cornerSections } = structure
+  const r = cornerRadiusFor(L, W, cornerFill)
+  const cornerStart = Math.atan2(W - r, L)
+  const cornerEnd = Math.atan2(W, L - r)
+  const slots: SectionSlot[] = []
+
+  function fillRange(a0: number, a1: number, count: number, isCorner: boolean) {
+    const span = a1 - a0
+    const step = span / count
+    for (let i = 0; i < count; i++) {
+      slots.push({ centerAngle: a0 + step * (i + 0.5), halfSpan: (step / 2) * 0.88, isCorner })
+    }
+  }
+
+  fillRange(-cornerStart, cornerStart, shortSideSections, false) // short side, right (angle ~0)
+  fillRange(cornerStart, cornerEnd, cornerSections, true) // corner
+  fillRange(cornerEnd, Math.PI - cornerEnd, longSideSections, false) // long side, top (angle ~90°)
+  fillRange(Math.PI - cornerEnd, Math.PI - cornerStart, cornerSections, true) // corner
+  fillRange(Math.PI - cornerStart, Math.PI + cornerStart, shortSideSections, false) // short side, left (angle ~180°)
+  fillRange(Math.PI + cornerStart, Math.PI + cornerEnd, cornerSections, true) // corner
+  fillRange(Math.PI + cornerEnd, 2 * Math.PI - cornerEnd, longSideSections, false) // long side, bottom (angle ~270°)
+  fillRange(2 * Math.PI - cornerEnd, 2 * Math.PI - cornerStart, cornerSections, true) // corner
+
+  return slots
+}
+
+/** Gap center angles between consecutive non-corner sections, every 3rd one - candidate spots for a vomitory tunnel. */
+function computeVomitoryAngles(slots: SectionSlot[]): number[] {
+  const angles: number[] = []
+  for (let i = 0; i < slots.length; i++) {
+    const a = slots[i]
+    const b = slots[(i + 1) % slots.length]
+    if (a.isCorner || b.isCorner) continue
+    if (i % 3 !== 1) continue
+    angles.push(a.centerAngle + a.halfSpan + (b.centerAngle - b.halfSpan - (a.centerAngle + a.halfSpan)) / 2)
+  }
+  return angles
+}
+
 export interface InstancedBlockData {
   matrices: THREE.Matrix4[]
   colors: THREE.Color[]
 }
 
 /**
- * The actual seating - one instanced box per (section, row, tier), colored
- * per section (a genuine color-by-block palette, not color-by-row), with a
- * gap left between adjacent sections' angular slots so the concrete shell
- * shows through as an aisle. VIP sections cluster near the two halfway-line
- * points (touchline stands), like a real ground.
+ * The actual seating - one instanced box per (section, row, tier), each row
+ * nearly filling its section's full angular and radial slot (seats should
+ * dominate the stand, concrete should only show at aisles/stairs/tunnels -
+ * not as large bare surfaces). Colored per section in a planned pattern
+ * (deep purple by default, white corner sections, a distinct VIP shade near
+ * the two halfway-line sections) rather than a per-section random cycle.
+ * A handful of aisle gaps get a dark recessed vomitory block instead of
+ * plain concrete, reading as a real tunnel mouth into the lower rows.
  */
 export function computeSeatingBlockInstances(structure: Stadium3DStructure): InstancedBlockData {
-  const { innerHalfLength, innerHalfWidth, standDepth, standHeight, sectionCount, visualRowCount, cornerFill, vipSections, tierCount } =
-    structure
+  const { innerHalfLength, innerHalfWidth, standDepth, standHeight, visualRowCount, cornerFill, vipSections, tierCount } = structure
   const matrices: THREE.Matrix4[] = []
   const colors: THREE.Color[] = []
-  const seatFraction = 0.85 // rest of each section's angular slot is the aisle gap
 
-  const palette = SEAT_PALETTE.map((c) => new THREE.Color(c))
+  const slots = buildSectionLayout(structure)
+  const primaryColor = new THREE.Color(SEAT_PRIMARY)
+  const accentColor = new THREE.Color(SEAT_CORNER_ACCENT)
   const vipColor = new THREE.Color(VIP_COLOR)
-  const sectionAngularSpan = (Math.PI * 2) / sectionCount
-  const vipAnchorAngles = [Math.PI / 2, (3 * Math.PI) / 2]
+  const vomitoryColor = new THREE.Color(VOMITORY_COLOR)
 
-  const sectionAngle = (s: number) => (s + 0.5) * sectionAngularSpan
-  const distToNearestVipAnchor = (s: number) => {
-    const a = sectionAngle(s)
-    return Math.min(...vipAnchorAngles.map((va) => Math.min(Math.abs(a - va), Math.PI * 2 - Math.abs(a - va))))
-  }
-  const vipSectionIndices = new Set(
-    Array.from({ length: sectionCount }, (_, s) => s)
-      .sort((a, b) => distToNearestVipAnchor(a) - distToNearestVipAnchor(b))
+  const vipAnchorAngles = [Math.PI / 2, (3 * Math.PI) / 2]
+  const nonCornerIndices = slots.map((slot, i) => ({ slot, i })).filter(({ slot }) => !slot.isCorner)
+  const distToNearestVipAnchor = (angle: number) =>
+    Math.min(...vipAnchorAngles.map((va) => Math.min(Math.abs(angle - va), Math.PI * 2 - Math.abs(angle - va))))
+  const vipIndices = new Set(
+    nonCornerIndices
+      .slice()
+      .sort((a, b) => distToNearestVipAnchor(a.slot.centerAngle) - distToNearestVipAnchor(b.slot.centerAngle))
       .slice(0, vipSections)
+      .map(({ i }) => i)
   )
 
   const concourseGap = tierCount > 1 ? 0.1 : 0
   const tierSpan = 1 / tierCount
+  const effectiveRowCount = Math.max(1, visualRowCount)
 
   for (let tier = 0; tier < tierCount; tier++) {
     const tierStart = tier * tierSpan
     const tierEnd = tierStart + tierSpan * (1 - concourseGap)
 
-    for (let s = 0; s < sectionCount; s++) {
-      const isVip = vipSectionIndices.has(s)
-      const color = isVip ? vipColor : palette[s % palette.length]
-      const centerAngle = sectionAngle(s)
-      const angularHalfSpan = (sectionAngularSpan * seatFraction) / 2
+    slots.forEach((slot, slotIndex) => {
+      const isVip = vipIndices.has(slotIndex)
+      const color = isVip ? vipColor : slot.isCorner ? accentColor : primaryColor
+      const centerAngle = slot.centerAngle
+      const angularHalfSpan = slot.halfSpan
 
-      const [cx, cz] = squirclePoint(centerAngle, innerHalfLength, innerHalfWidth)
+      const [cx, cz] = boundaryPoint(centerAngle, innerHalfLength, innerHalfWidth, cornerFill)
       const closeness = cornerCloseness(cx, cz, innerHalfLength, innerHalfWidth)
       const localScale = 1 - closeness * (1 - cornerFill) * 0.85
       const depthHere = standDepth * localScale * (tierEnd - tierStart)
@@ -228,91 +369,70 @@ export function computeSeatingBlockInstances(structure: Stadium3DStructure): Ins
       const avgRadius = len + baseRadiusOffset + depthHere * 0.5
       const blockWidth = Math.max(1, 2 * avgRadius * Math.sin(angularHalfSpan))
 
-      // Individual rows are grouped into thicker "bands" of ROWS_PER_BAND for
-      // the actual instanced step - one instance per row, at this angle and
-      // distance, reads as fine hatching/wireframe rather than real steps.
-      // Fewer, taller bands read as an actual staircase instead.
-      const ROWS_PER_BAND = 2
-      const bandCount = Math.max(1, Math.ceil(visualRowCount / ROWS_PER_BAND))
+      const liftY = Math.max(0.3, standHeight * 0.015)
+      const liftOut = Math.max(0.25, standDepth * 0.01)
 
-      // A real horizontal walkway (concourse) cutting across the stand partway
-      // up - the shell shows through here as a bare concrete strip, breaking
-      // the seating into a lower and upper block instead of one continuous
-      // field of rows, even for a single-tier stand.
-      const walkwayBand = bandCount >= 4 ? Math.round(bandCount * 0.55) : -1
-
-      for (let band = 0; band < bandCount; band++) {
-        if (band === walkwayBand) continue
-        const r0 = band * ROWS_PER_BAND
-        const r1 = Math.min(visualRowCount, r0 + ROWS_PER_BAND)
-        const t0 = r0 / visualRowCount
-        const t1 = r1 / visualRowCount
+      for (let r = 0; r < effectiveRowCount; r++) {
+        const t0 = r / effectiveRowCount
+        const t1 = (r + 1) / effectiveRowCount
         const radiusOffset = baseRadiusOffset + depthHere * t0
         const stepDepth = depthHere * (t1 - t0)
         const y0 = baseY + heightHere * t0
         const stepRise = heightHere * (t1 - t0)
 
-        // Seat blocks sit clearly ON the shell, not coincident with it - a
-        // small lift (up + slightly forward, toward the pitch) keeps their
-        // faces from z-fighting the shell surface right underneath them,
-        // which otherwise washes every section color out to the shell's gray.
-        const liftY = Math.max(0.35, standHeight * 0.02)
-        const liftOut = Math.max(0.3, standDepth * 0.015)
-
         const posX = cx + dirX * (radiusOffset + stepDepth * 0.5 - liftOut)
         const posZ = cz + dirZ * (radiusOffset + stepDepth * 0.5 - liftOut)
         const posY = y0 + stepRise * 0.5 + liftY
 
-        // A visible gap between one row's top and the next row's bottom -
-        // the concrete shell shows through it as a riser line, which is
-        // what actually reads as "many distinct rows rising" instead of one
-        // solid sloped panel per section.
+        // Thin rows with only a subtle gap between them - dense/close up
+        // reads as real individual rows, but from a distance they merge
+        // into one clean block of color instead of a wireframe of stripes.
         const quat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -tangentAngle)
         const m = new THREE.Matrix4()
         m.compose(
           new THREE.Vector3(posX, posY, posZ),
           quat,
-          new THREE.Vector3(blockWidth, Math.max(0.5, stepRise * 0.8), Math.max(0.5, stepDepth * 0.85))
+          new THREE.Vector3(blockWidth, Math.max(0.35, stepRise * 0.92), Math.max(0.4, stepDepth * 0.94))
         )
         matrices.push(m)
         colors.push(color)
       }
-    }
+    })
+  }
+
+  // Vomitories - real recessed tunnel openings cut into a handful of aisle
+  // gaps, not floating markers outside the bowl. Only the lower rows are
+  // affected; seats continue normally above and to both sides.
+  const vomitoryAngles = computeVomitoryAngles(slots)
+  const vomitoryDepthFrac = 0.4
+  const vomitoryHeightFrac = 0.22
+  const vomitoryAngularHalfSpan = ((Math.PI * 2) / Math.max(8, slots.length)) * 0.32
+
+  for (const angle of vomitoryAngles) {
+    const [cx, cz] = boundaryPoint(angle, innerHalfLength, innerHalfWidth, cornerFill)
+    const closeness = cornerCloseness(cx, cz, innerHalfLength, innerHalfWidth)
+    const localScale = 1 - closeness * (1 - cornerFill) * 0.85
+    const depthHere = standDepth * localScale * vomitoryDepthFrac
+    const heightHere = standHeight * localScale * vomitoryHeightFrac
+    const len = Math.hypot(cx, cz) || 1
+    const dirX = cx / len
+    const dirZ = cz / len
+    const tangentAngle = angle + Math.PI / 2
+    const avgRadius = len + depthHere * 0.5
+    const blockWidth = Math.max(1.5, 2 * avgRadius * Math.sin(vomitoryAngularHalfSpan))
+
+    const posX = cx + dirX * depthHere * 0.5
+    const posZ = cz + dirZ * depthHere * 0.5
+    const posY = heightHere * 0.5
+
+    const quat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -tangentAngle)
+    const m = new THREE.Matrix4()
+    m.compose(new THREE.Vector3(posX, posY, posZ), quat, new THREE.Vector3(blockWidth, heightHere, depthHere))
+    matrices.push(m)
+    colors.push(vomitoryColor)
   }
 
   return { matrices, colors }
-}
-
-/**
- * One entry-block per aisle, built flush against the outer facade wall (see
- * buildOuterFacadeGeometry) at ground level, protruding outward from it -
- * like a real gatehouse attached to the stadium's outer wall, not a chip
- * floating in the open void the sloped ramp leaves underneath itself.
- */
-export function computeEntranceInstances(structure: Stadium3DStructure): THREE.Matrix4[] {
-  const { standHeight, entranceCount } = structure
-  const matrices: THREE.Matrix4[] = []
-  const portalHeight = Math.max(3, standHeight * 0.28)
-  const portalDepth = 5
-  for (let i = 0; i < entranceCount; i++) {
-    const angle = (i / entranceCount) * Math.PI * 2
-    const { x, z } = outerEdgeAt(angle, structure)
-    const len = Math.hypot(x, z) || 1
-    const dirX = x / len
-    const dirZ = z / len
-    const tangentAngle = angle + Math.PI / 2
-    const quat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -tangentAngle)
-    const m = new THREE.Matrix4()
-    m.compose(
-      // Center the block ON the wall (half embedded, half protruding out),
-      // at ground level, so it's always attached to solid geometry.
-      new THREE.Vector3(x + dirX * (portalDepth * 0.4), portalHeight * 0.5, z + dirZ * (portalDepth * 0.4)),
-      quat,
-      new THREE.Vector3(5, portalHeight, portalDepth)
-    )
-    matrices.push(m)
-  }
-  return matrices
 }
 
 /** A partial roof ring over the outer edge, growing out from the middle of each side as roofCoverage increases. */
@@ -340,10 +460,6 @@ export function buildRoofGeometry(structure: Stadium3DStructure): THREE.BufferGe
     const angle = (i / ANGULAR_STEPS) * Math.PI * 2
     if (!isCovered(angle)) continue
 
-    // The roof's inner edge must sit exactly on the stand's real (corner-
-    // tapered) rim - using the untapered outerHalfLength/outerHalfWidth
-    // squircle here instead left a growing gap away from each side's center,
-    // where the actual rim (shorter near corners) fell inside of it.
     const { x: ix, z: iz, height } = outerEdgeAt(angle, structure)
     const roofY = height * 1.06
     const len = Math.hypot(ix, iz) || 1
@@ -404,9 +520,6 @@ export function buildRoofFasciaGeometry(structure: Stadium3DStructure): THREE.Bu
     const angle = (i / ANGULAR_STEPS) * Math.PI * 2
     if (!isCovered(angle)) continue
 
-    // Same corner-tapered rim as the roof plate's inner edge (outerEdgeAt) -
-    // must match exactly, or this wall's top and the roof's inner edge sit
-    // at different radii/heights and visibly fail to meet.
     const { x: ix, z: iz, height } = outerEdgeAt(angle, structure)
     const roofY = height * 1.06
     positions.push(ix, height, iz, ix, roofY, iz)
@@ -433,20 +546,61 @@ export function buildRoofFasciaGeometry(structure: Stadium3DStructure): THREE.Bu
   return geometry
 }
 
-/**
- * Fixed floodlight tower base positions, at GROUND level just outside the
- * facade wall - a previous version anchored these at y=standHeight (already
- * near the roofline), leaving only the tiny emissive head poking out above
- * the bowl as a small disconnected box with no visible tower beneath it.
- * Few enough (4) that individual meshes are fine; no instancing needed here.
- */
-export function computeFloodlightPositions(structure: Stadium3DStructure): [number, number, number][] {
-  const { outerHalfLength, outerHalfWidth } = structure
-  const corners = [Math.PI / 4, (3 * Math.PI) / 4, (5 * Math.PI) / 4, (7 * Math.PI) / 4]
-  return corners.map((angle) => {
-    const [x, z] = squirclePoint(angle, outerHalfLength * 1.12, outerHalfWidth * 1.12)
-    return [x, 0, z] as [number, number, number]
-  })
+/** Thin radial support beams under the roof deck, from the fascia to the outer overhang edge - a basic visible metal frame instead of a plain floating plate. */
+export function computeRoofBeamInstances(structure: Stadium3DStructure): THREE.Matrix4[] {
+  if (structure.roofCoverage <= 0.02) return []
+  const overhang = Math.max(4, structure.standDepth * 0.18)
+  const halfArcPerSide = (Math.PI / 4) * structure.roofCoverage
+  const sideCenters = [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2]
+  const matrices: THREE.Matrix4[] = []
+  const stepRad = (6 * Math.PI) / 180
+
+  for (const c of sideCenters) {
+    for (let d = -halfArcPerSide; d <= halfArcPerSide + 1e-6; d += stepRad) {
+      const angle = c + d
+      const { x: ix, z: iz, height } = outerEdgeAt(angle, structure)
+      const roofY = height * 1.06
+      const len = Math.hypot(ix, iz) || 1
+      const dirX = ix / len
+      const dirZ = iz / len
+      const midX = ix + dirX * overhang * 0.5
+      const midZ = iz + dirZ * overhang * 0.5
+      const tangentAngle = angle + Math.PI / 2
+      const quat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -tangentAngle)
+      const m = new THREE.Matrix4()
+      m.compose(new THREE.Vector3(midX, roofY - 0.35, midZ), quat, new THREE.Vector3(0.45, 0.5, overhang))
+      matrices.push(m)
+    }
+  }
+  return matrices
+}
+
+/** Small emissive light fixtures mounted under the roof edge, replacing free-standing floodlight poles entirely - always physically attached to the roof structure, never floating in open space. */
+export function computeRoofLightInstances(structure: Stadium3DStructure): THREE.Matrix4[] {
+  if (structure.roofCoverage <= 0.05) return []
+  const overhang = Math.max(4, structure.standDepth * 0.18)
+  const halfArcPerSide = (Math.PI / 4) * structure.roofCoverage
+  const sideCenters = [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2]
+  const matrices: THREE.Matrix4[] = []
+
+  for (const c of sideCenters) {
+    for (const frac of [-0.6, 0, 0.6]) {
+      const angle = c + frac * halfArcPerSide
+      const { x: ix, z: iz, height } = outerEdgeAt(angle, structure)
+      const roofY = height * 1.06
+      const len = Math.hypot(ix, iz) || 1
+      const dirX = ix / len
+      const dirZ = iz / len
+      const lightX = ix + dirX * overhang * 0.3
+      const lightZ = iz + dirZ * overhang * 0.3
+      const tangentAngle = angle + Math.PI / 2
+      const quat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -tangentAngle)
+      const m = new THREE.Matrix4()
+      m.compose(new THREE.Vector3(lightX, roofY - 0.9, lightZ), quat, new THREE.Vector3(2.4, 0.8, 1.2))
+      matrices.push(m)
+    }
+  }
+  return matrices
 }
 
 /** Procedural pitch texture (lines only - the pitch's own size/color never changes with capacity). */
@@ -495,6 +649,56 @@ export function createPitchTexture(): THREE.CanvasTexture {
   const texture = new THREE.CanvasTexture(canvas)
   texture.colorSpace = THREE.SRGBColorSpace
   return texture
+}
+
+// --- Debug / consistency check ----------------------------------------------
+
+export interface SeatingDebugInfo {
+  sectionCount: number
+  longSideSections: number
+  shortSideSections: number
+  cornerSections: number
+  rowCount: number
+  visualRowCount: number
+  instanceCount: number
+  estimatedSeats: number
+}
+
+/**
+ * A real geometry-derived seat estimate (section width / an assumed seat
+ * pitch, times the true row count), so we can check the visual model is
+ * actually in the right ballpark for the capacity it claims - not just
+ * trust the config number while the render shows a few thousand seats.
+ */
+export function computeSeatingDebugInfo(structure: Stadium3DStructure): SeatingDebugInfo {
+  const SEAT_WIDTH_M = 0.55
+  const slots = buildSectionLayout(structure)
+  const { innerHalfLength, innerHalfWidth, standDepth, cornerFill, rowCount, visualRowCount, tierCount } = structure
+
+  let estimatedSeats = 0
+  for (const slot of slots) {
+    const [cx, cz] = boundaryPoint(slot.centerAngle, innerHalfLength, innerHalfWidth, cornerFill)
+    const closeness = cornerCloseness(cx, cz, innerHalfLength, innerHalfWidth)
+    const localScale = 1 - closeness * (1 - cornerFill) * 0.85
+    const depthHere = standDepth * localScale
+    const len = Math.hypot(cx, cz) || 1
+    const avgRadius = len + depthHere * 0.5
+    const blockWidth = 2 * avgRadius * Math.sin(slot.halfSpan)
+    const seatsPerRow = Math.max(1, Math.round(blockWidth / SEAT_WIDTH_M))
+    estimatedSeats += seatsPerRow * rowCount
+  }
+  estimatedSeats *= tierCount
+
+  return {
+    sectionCount: structure.sectionCount,
+    longSideSections: structure.longSideSections,
+    shortSideSections: structure.shortSideSections,
+    cornerSections: structure.cornerSections,
+    rowCount,
+    visualRowCount,
+    instanceCount: slots.length * visualRowCount * tierCount,
+    estimatedSeats: Math.round(estimatedSeats),
+  }
 }
 
 export const CONCRETE_MATERIAL_COLOR = CONCRETE_COLOR

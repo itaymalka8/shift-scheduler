@@ -12,13 +12,14 @@ import {
   type Stadium3DStructure,
 } from "@/lib/stadium/stadium3d-config"
 import {
+  buildConcourseFloorGeometry,
   buildOuterFacadeGeometry,
   buildPodiumWallGeometry,
   buildRoofFasciaGeometry,
   buildRoofGeometry,
   buildStandShellGeometry,
-  computeEntranceInstances,
-  computeFloodlightPositions,
+  computeRoofBeamInstances,
+  computeRoofLightInstances,
   computeSeatingBlockInstances,
   createPitchTexture,
   CONCRETE_MATERIAL_COLOR,
@@ -35,11 +36,11 @@ function StandShell({ structure, tier }: { structure: Stadium3DStructure; tier: 
   )
 }
 
-/** The actual seating - real stepped rows, colored by section (block), not by row. */
+/** The actual seating - real stepped rows, colored by section (block), not by row. Includes recessed vomitory blocks in the same instanced mesh. */
 function SeatingBlocks({ structure }: { structure: Stadium3DStructure }) {
   const { matrices, colors } = useMemo(() => computeSeatingBlockInstances(structure), [structure])
   const geometry = useMemo(() => new THREE.BoxGeometry(1, 1, 1), [])
-  const material = useMemo(() => new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.05 }), [])
+  const material = useMemo(() => new THREE.MeshStandardMaterial({ roughness: 0.8, metalness: 0.02 }), [])
 
   return (
     <instancedMesh
@@ -60,10 +61,11 @@ function SeatingBlocks({ structure }: { structure: Stadium3DStructure }) {
   )
 }
 
-function EntrancePortals({ matrices }: { matrices: THREE.Matrix4[] }) {
+/** Thin radial beams under the roof deck - a basic visible frame instead of a plain floating plate. */
+function RoofBeams({ matrices }: { matrices: THREE.Matrix4[] }) {
   const geometry = useMemo(() => new THREE.BoxGeometry(1, 1, 1), [])
-  const material = useMemo(() => new THREE.MeshStandardMaterial({ color: CONCRETE_MATERIAL_DARK, roughness: 0.9 }), [])
-
+  const material = useMemo(() => new THREE.MeshStandardMaterial({ color: "#33383F", roughness: 0.5, metalness: 0.4 }), [])
+  if (matrices.length === 0) return null
   return (
     <instancedMesh
       key={matrices.length}
@@ -78,22 +80,24 @@ function EntrancePortals({ matrices }: { matrices: THREE.Matrix4[] }) {
   )
 }
 
-// Rises from the ground (position.y is always 0 - see computeFloodlightPositions)
-// to comfortably above the roofline, scaled to this stadium's own height so a
-// 70,000-seat bowl gets a genuinely taller tower, not the same 4m post.
-function Floodlight({ position, standHeight }: { position: [number, number, number]; standHeight: number }) {
-  const poleHeight = standHeight * 1.35
+/** Small emissive fixtures mounted under the roof edge - lighting attached to the structure, never a free-floating pole. */
+function RoofLights({ matrices }: { matrices: THREE.Matrix4[] }) {
+  const geometry = useMemo(() => new THREE.BoxGeometry(1, 1, 1), [])
+  const material = useMemo(
+    () => new THREE.MeshStandardMaterial({ color: "#EDEAF7", emissive: "#FFF8DE", emissiveIntensity: 0.4 }),
+    []
+  )
+  if (matrices.length === 0) return null
   return (
-    <group position={position}>
-      <mesh position={[0, poleHeight / 2, 0]} castShadow>
-        <cylinderGeometry args={[0.5, 0.7, poleHeight, 8]} />
-        <meshStandardMaterial color="#B9BEC9" metalness={0.6} roughness={0.4} />
-      </mesh>
-      <mesh position={[0, poleHeight + 1.2, 0]} castShadow>
-        <boxGeometry args={[3, 1.6, 2.2]} />
-        <meshStandardMaterial color="#EDEAF7" emissive="#FFF8DE" emissiveIntensity={0.35} />
-      </mesh>
-    </group>
+    <instancedMesh
+      key={matrices.length}
+      args={[geometry, material, matrices.length]}
+      ref={(mesh) => {
+        if (!mesh) return
+        matrices.forEach((m, i) => mesh.setMatrixAt(i, m))
+        mesh.instanceMatrix.needsUpdate = true
+      }}
+    />
   )
 }
 
@@ -101,25 +105,30 @@ function Floodlight({ position, standHeight }: { position: [number, number, numb
  * The whole 3D structure for one capacity, as a THREE.Group - everything
  * below is derived from `capacity` through computeStadium3DStructure(), not
  * hardcoded, so a different capacity produces a genuinely different
- * structure (deeper/taller/more-tiered stand, more roof, more entrances),
+ * structure (deeper/taller/more-tiered stand, more roof, more sections),
  * not the same model with more seats painted on.
  */
 function StadiumScene({ capacity }: { capacity: number }) {
   const structure = useMemo(() => computeStadium3DStructure(capacity), [capacity])
 
   const pitchTexture = useMemo(() => createPitchTexture(), [])
+  const concourseGeometry = useMemo(() => buildConcourseFloorGeometry(structure), [structure])
   const podiumGeometry = useMemo(() => buildPodiumWallGeometry(structure), [structure])
   const facadeGeometry = useMemo(() => buildOuterFacadeGeometry(structure), [structure])
   const roofGeometry = useMemo(() => buildRoofGeometry(structure), [structure])
   const roofFasciaGeometry = useMemo(() => buildRoofFasciaGeometry(structure), [structure])
-  const entranceMatrices = useMemo(() => computeEntranceInstances(structure), [structure])
-  const floodlights = useMemo(() => computeFloodlightPositions(structure), [structure])
+  const roofBeamMatrices = useMemo(() => computeRoofBeamInstances(structure), [structure])
+  const roofLightMatrices = useMemo(() => computeRoofLightInstances(structure), [structure])
 
   return (
     <group>
       <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
         <planeGeometry args={[105, 68]} />
         <meshStandardMaterial map={pitchTexture} roughness={0.95} />
+      </mesh>
+
+      <mesh geometry={concourseGeometry} receiveShadow>
+        <meshStandardMaterial color={CONCRETE_MATERIAL_DARK} side={THREE.DoubleSide} roughness={0.95} />
       </mesh>
 
       {Array.from({ length: structure.tierCount }, (_, tier) => (
@@ -133,7 +142,7 @@ function StadiumScene({ capacity }: { capacity: number }) {
       </mesh>
 
       <mesh geometry={facadeGeometry} receiveShadow castShadow>
-        <meshStandardMaterial color={CONCRETE_MATERIAL_DARK} side={THREE.DoubleSide} roughness={0.9} />
+        <meshStandardMaterial color={CONCRETE_MATERIAL_COLOR} side={THREE.DoubleSide} roughness={0.9} />
       </mesh>
 
       {roofGeometry && (
@@ -146,12 +155,8 @@ function StadiumScene({ capacity }: { capacity: number }) {
           <meshStandardMaterial color="#3A3F49" side={THREE.DoubleSide} roughness={0.6} metalness={0.2} />
         </mesh>
       )}
-
-      <EntrancePortals matrices={entranceMatrices} />
-
-      {floodlights.map((pos, i) => (
-        <Floodlight key={i} position={pos} standHeight={structure.standHeight} />
-      ))}
+      <RoofBeams matrices={roofBeamMatrices} />
+      <RoofLights matrices={roofLightMatrices} />
     </group>
   )
 }
@@ -165,10 +170,6 @@ function CameraRig({ structure, capacity }: { structure: Stadium3DStructure; cap
     const framing = computeCameraFraming(structure, capacity)
     const polarRad = (framing.polarAngleDeg * Math.PI) / 180
     const azimuthRad = (CAMERA_AZIMUTH_DEG * Math.PI) / 180
-    // Real spherical->cartesian conversion - a previous version reused one
-    // value for both X and Z, which silently made the true camera-to-target
-    // distance ~16% longer than `framing.distance` (sqrt(1+sin^2) fudge),
-    // undercutting the deliberate per-capacity frame-fill tuning.
     const horizontalRadius = framing.distance * Math.sin(polarRad)
     const camX = horizontalRadius * Math.cos(azimuthRad)
     const camZ = horizontalRadius * Math.sin(azimuthRad)

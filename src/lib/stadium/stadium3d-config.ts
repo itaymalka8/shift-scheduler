@@ -58,13 +58,17 @@ interface Stadium3DAnchor {
   roofCoverage: number // 0-1, fraction of the ring's circumference roofed
 }
 
+// rowCount is sized so the geometry's own estimated seat count (see
+// computeSeatingDebugInfo) actually lands near the tier's real capacity at
+// a realistic ~0.55m seat pitch - not picked for looks and left to imply
+// a much smaller ground than the capacity number claims.
 const STADIUM_3D_ANCHORS: Stadium3DAnchor[] = [
-  { capacity: 10_000, standOffset: 6, standDepth: 14, standHeight: 9, rowCount: 10, cornerFill: 0.3, roofCoverage: 0 },
-  { capacity: 20_000, standOffset: 7, standDepth: 20, standHeight: 13, rowCount: 16, cornerFill: 0.55, roofCoverage: 0.15 },
-  { capacity: 30_000, standOffset: 8, standDepth: 28, standHeight: 18, rowCount: 22, cornerFill: 0.75, roofCoverage: 0.35 },
-  { capacity: 45_000, standOffset: 9, standDepth: 36, standHeight: 24, rowCount: 28, cornerFill: 0.9, roofCoverage: 0.55 },
-  { capacity: 60_000, standOffset: 10, standDepth: 44, standHeight: 32, rowCount: 34, cornerFill: 1, roofCoverage: 0.75 },
-  { capacity: 80_000, standOffset: 11, standDepth: 54, standHeight: 42, rowCount: 42, cornerFill: 1, roofCoverage: 0.9 },
+  { capacity: 10_000, standOffset: 4, standDepth: 15, standHeight: 10, rowCount: 16, cornerFill: 0.3, roofCoverage: 0 },
+  { capacity: 20_000, standOffset: 4.5, standDepth: 22, standHeight: 15, rowCount: 28, cornerFill: 0.55, roofCoverage: 0.15 },
+  { capacity: 30_000, standOffset: 5, standDepth: 32, standHeight: 20, rowCount: 40, cornerFill: 0.75, roofCoverage: 0.35 },
+  { capacity: 45_000, standOffset: 6, standDepth: 38, standHeight: 26, rowCount: 48, cornerFill: 0.9, roofCoverage: 0.55 },
+  { capacity: 60_000, standOffset: 7, standDepth: 46, standHeight: 34, rowCount: 54, cornerFill: 1, roofCoverage: 0.75 },
+  { capacity: 80_000, standOffset: 8, standDepth: 56, standHeight: 44, rowCount: 60, cornerFill: 1, roofCoverage: 0.9 },
 ]
 
 // Step counts per tier - deliberately not interpolated (see file header).
@@ -93,16 +97,35 @@ const ENTRANCE_COUNT: Record<Stadium3DTierId, number> = {
   elite: 16,
 }
 
-// Visible seating blocks around the ring, separated by aisle gaps - two
-// blocks per entrance reads as "an aisle leads up to the gap between these
-// two sections," which is how real stands are actually laid out.
-const SECTION_COUNT: Record<Stadium3DTierId, number> = {
-  compact: 10,
-  small: 14,
-  medium: 20,
-  large: 24,
-  major: 28,
-  elite: 32,
+// Seating is laid out per SIDE, not as one uniform ring divided evenly by
+// angle - a real ground has more, narrower sections along its two long
+// (touchline) sides than along its two short (behind-goal) sides, plus a
+// few dedicated corner sections so the corners read as genuinely filled
+// rather than as a gap between two side's sections. Total displayed
+// sectionCount is derived from these three counts (see computeStadium3DStructure).
+const LONG_SIDE_SECTIONS: Record<Stadium3DTierId, number> = {
+  compact: 6,
+  small: 8,
+  medium: 10,
+  large: 11,
+  major: 12,
+  elite: 14,
+}
+const SHORT_SIDE_SECTIONS: Record<Stadium3DTierId, number> = {
+  compact: 4,
+  small: 5,
+  medium: 6,
+  large: 7,
+  major: 7,
+  elite: 8,
+}
+const CORNER_SECTIONS: Record<Stadium3DTierId, number> = {
+  compact: 1,
+  small: 1,
+  medium: 2,
+  large: 2,
+  major: 2,
+  elite: 3,
 }
 
 // Geometric row cap - rowCount keeps growing for display/stat purposes, but
@@ -110,7 +133,7 @@ const SECTION_COUNT: Record<Stadium3DTierId, number> = {
 // many (they'd be a few centimeters tall each) and starts costing real
 // instance count for nothing, so the geometry caps here while rowCount
 // (the number shown as a stat) does not.
-const MAX_VISUAL_ROWS = 22
+const MAX_VISUAL_ROWS = 60
 
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t
@@ -152,7 +175,10 @@ export interface Stadium3DStructure {
   roofCoverage: number
   vipSections: number
   entranceCount: number
-  sectionCount: number
+  longSideSections: number // sections per long (touchline) side
+  shortSideSections: number // sections per short (behind-goal) side
+  cornerSections: number // sections per corner, x4 corners
+  sectionCount: number // 2*longSideSections + 2*shortSideSections + 4*cornerSections
   innerHalfLength: number // PITCH_LENGTH/2 + standOffset
   innerHalfWidth: number // PITCH_WIDTH/2 + standOffset
   outerHalfLength: number // innerHalfLength + standDepth
@@ -176,7 +202,10 @@ export function computeStadium3DStructure(capacity: number): Stadium3DStructure 
     roofCoverage,
     vipSections: VIP_SECTIONS[tier],
     entranceCount: ENTRANCE_COUNT[tier],
-    sectionCount: SECTION_COUNT[tier],
+    longSideSections: LONG_SIDE_SECTIONS[tier],
+    shortSideSections: SHORT_SIDE_SECTIONS[tier],
+    cornerSections: CORNER_SECTIONS[tier],
+    sectionCount: 2 * LONG_SIDE_SECTIONS[tier] + 2 * SHORT_SIDE_SECTIONS[tier] + 4 * CORNER_SECTIONS[tier],
     innerHalfLength: PITCH_LENGTH / 2 + standOffset,
     innerHalfWidth: PITCH_WIDTH / 2 + standOffset,
     outerHalfLength: PITCH_LENGTH / 2 + standOffset + standDepth,
@@ -191,7 +220,7 @@ export function computeStadium3DStructure(capacity: number): Stadium3DStructure 
 export const CAMERA_FOV_DEG = 40
 // A small tilt off straight-down, so raked rows and tier steps read as
 // height rather than flattening into a pure map view.
-export const CAMERA_POLAR_ANGLE_DEG = 36
+export const CAMERA_POLAR_ANGLE_DEG = 42
 // Corner-on azimuth (45°) - the classic broadcast-graphic stadium angle,
 // showing all four sides at once instead of staring straight down one side.
 export const CAMERA_AZIMUTH_DEG = 45

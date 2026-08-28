@@ -1,6 +1,7 @@
 "use client"
 
 import { Stadium3D } from "@/components/stadium3d/Stadium3D"
+import { computeSeatingDebugInfo } from "@/components/stadium3d/stadium-geometry"
 import { computeStadium3DStructure } from "@/lib/stadium/stadium3d-config"
 
 // Temporary, unlinked review page - currently showing ONLY the 30,000
@@ -10,16 +11,25 @@ const REFERENCE_CAPACITY = 30_000
 
 export default function Stadium3DDemoPage() {
   const s = computeStadium3DStructure(REFERENCE_CAPACITY)
+  const debug = computeSeatingDebugInfo(s)
+  const coveragePct = Math.round((debug.estimatedSeats / REFERENCE_CAPACITY) * 100)
 
   return (
     <div className="min-h-screen bg-background p-4">
-      <h1 className="mb-1 text-xl font-bold">Stadium3D - 30,000 reference (visual pass 2)</h1>
+      <h1 className="mb-1 text-xl font-bold">Stadium3D - 30,000 reference (visual pass 3)</h1>
       <p className="mb-1 text-sm text-muted-foreground">
-        tier {s.tier} · sections {s.sectionCount} · visual rows {s.visualRowCount} (of {s.rowCount}) · depth{" "}
-        {Math.round(s.standDepth)}m · height {Math.round(s.standHeight)}m · roof {Math.round(s.roofCoverage * 100)}% ·
-        corner {Math.round(s.cornerFill * 100)}% · vip sections {s.vipSections} · entrances {s.entranceCount}
+        tier {s.tier} · depth {Math.round(s.standDepth)}m · height {Math.round(s.standHeight)}m · roof{" "}
+        {Math.round(s.roofCoverage * 100)}% · corner {Math.round(s.cornerFill * 100)}%
       </p>
-      <p className="mb-4 text-sm text-muted-foreground">Not connected to any real club yet.</p>
+      <p className="mb-1 text-sm text-muted-foreground">
+        sections: {debug.longSideSections}×2 long side + {debug.shortSideSections}×2 short side + {debug.cornerSections}×4
+        corner = {debug.sectionCount} total · rows: {debug.rowCount} (visual {debug.visualRowCount}) · instances{" "}
+        {debug.instanceCount}
+      </p>
+      <p className="mb-4 text-sm font-medium">
+        estimated visual capacity: {debug.estimatedSeats.toLocaleString()} seats vs. target {REFERENCE_CAPACITY.toLocaleString()}{" "}
+        ({coveragePct}%)
+      </p>
 
       <div className="space-y-6">
         <div>
