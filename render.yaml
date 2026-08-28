@@ -14,6 +14,13 @@ services:
       # on free-tier cold starts too), silently deleting every registered
       # account. Paste the connection string in the Render dashboard -
       # Environment tab for this service.
+      #
+      # Either Neon endpoint works. Writes are deliberately kept to short,
+      # bulk transactions (see src/lib/leagues/seed.ts) precisely so the
+      # pooled endpoint is safe: a long-running interactive transaction is
+      # what a pooler terminates mid-flight, surfacing as Prisma P2028
+      # "Transaction not found". If you ever add a genuinely long
+      # transaction, use the direct (non "-pooler") host for it.
       - key: DATABASE_URL
         sync: false
       - key: NEXTAUTH_SECRET
