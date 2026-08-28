@@ -15,7 +15,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { StadiumIllustration } from "@/components/stadium-illustration"
+import { Stadium3DHero } from "@/components/stadium3d/Stadium3DHero"
 import { formatMarketValue, formatMarketValueCompact } from "@/lib/players/currency"
 import { SEAT_TYPES, TICKET_PRICES, CONSTRUCTION_COST_PER_SEAT, type SeatCounts, type SeatType } from "@/lib/stadium/config"
 import { calculateConstructionCost, calculateConstructionTime, totalSeats } from "@/lib/stadium/construction"
@@ -227,12 +227,8 @@ function MainView({
       {/* Hero + key stats: side by side from lg:, stacked (hero first) below it */}
       <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
         <div className="goalx-hero-gradient overflow-hidden rounded-2xl p-4 sm:p-6">
-          <div className="overflow-hidden rounded-xl bg-white/95 p-2 shadow-lg sm:p-3">
-            <StadiumIllustration
-              style={stadiumStyle}
-              capacity={capacity}
-              className="h-48 w-full rounded-lg sm:h-56 lg:h-64"
-            />
+          <div className="overflow-hidden rounded-xl shadow-lg">
+            <Stadium3DHero capacity={capacity} className="block h-72 w-full sm:h-80 lg:h-[440px]" />
           </div>
           <div className="mt-4 text-white">
             <div className="flex items-center gap-2">
