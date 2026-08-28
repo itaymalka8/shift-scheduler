@@ -66,9 +66,13 @@ const STADIUM_3D_ANCHORS: Stadium3DAnchor[] = [
   { capacity: 10_000, standOffset: 4, standDepth: 15, standHeight: 10, rowCount: 16, cornerFill: 0.3, roofCoverage: 0 },
   { capacity: 20_000, standOffset: 4.5, standDepth: 22, standHeight: 15, rowCount: 28, cornerFill: 0.55, roofCoverage: 0.15 },
   { capacity: 30_000, standOffset: 5, standDepth: 32, standHeight: 20, rowCount: 40, cornerFill: 0.75, roofCoverage: 0.35 },
-  { capacity: 45_000, standOffset: 6, standDepth: 38, standHeight: 26, rowCount: 48, cornerFill: 0.9, roofCoverage: 0.55 },
-  { capacity: 60_000, standOffset: 7, standDepth: 46, standHeight: 34, rowCount: 54, cornerFill: 1, roofCoverage: 0.75 },
-  { capacity: 80_000, standOffset: 8, standDepth: 56, standHeight: 44, rowCount: 60, cornerFill: 1, roofCoverage: 0.9 },
+  // rowCount here is PER TIER (tierCount from TIER_COUNT below multiplies
+  // it) - large/major/elite split their depth across 2-3 tiers, so each
+  // tier legitimately has fewer rows than 30k's single deep tier while the
+  // *total* (rowCount x tierCount) still comes out well above it.
+  { capacity: 45_000, standOffset: 6, standDepth: 38, standHeight: 26, rowCount: 30, cornerFill: 0.9, roofCoverage: 0.55 },
+  { capacity: 60_000, standOffset: 7, standDepth: 46, standHeight: 34, rowCount: 42, cornerFill: 1, roofCoverage: 0.75 },
+  { capacity: 80_000, standOffset: 8, standDepth: 56, standHeight: 44, rowCount: 38, cornerFill: 1, roofCoverage: 0.9 },
 ]
 
 // Step counts per tier - deliberately not interpolated (see file header).
