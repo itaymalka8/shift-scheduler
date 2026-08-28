@@ -3,11 +3,11 @@
 import Image from "next/image"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
-import { Suspense, useState } from "react"
+import { Suspense, useEffect, useRef, useState } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { signIn } from "next-auth/react"
-import { Eye, EyeOff, Loader2 } from "lucide-react"
+import { Eye, EyeOff } from "lucide-react"
 import { makeSignInSchema, type SignInInput } from "@/lib/validation"
 import { isAuthErrorCode } from "@/lib/auth-errors"
 import { useT } from "@/lib/i18n/locale-context"
@@ -25,16 +25,52 @@ import {
 } from "@/components/ui/card"
 import { OAuthButtons } from "@/components/oauth-buttons"
 import { LanguageSwitcher } from "@/components/language-switcher"
+import { GoalXLoadingScreen } from "@/components/goalx-loading-screen"
+
+// Status copy shown, in order, while a sign-in is in flight. There's no
+// per-stage signal from the server for a single credentials call, so this is
+// a fixed, time-advanced sequence rather than real backend progress - it
+// holds on the last message until the request actually resolves.
+const LOGIN_STATUS_KEYS: TranslationKey[] = [
+  "loading.login.step1",
+  "loading.login.step2",
+  "loading.login.step3",
+  "loading.login.step4",
+  "loading.login.step5",
+  "loading.login.step6",
+]
+
+// Same reasoning as the status sequence: no real progress signal for a
+// single sign-in call, so this eases toward (never reaching) the cap and
+// only ever jumps to 100 once the request has genuinely succeeded.
+const PROGRESS_CAP = 90
+const PROGRESS_TICK_MS = 150
+const STATUS_ADVANCE_MS = 900
 
 function SignInForm() {
   const router = useRouter()
   const t = useT()
   const searchParams = useSearchParams()
   const callbackUrl = searchParams.get("callbackUrl") ?? "/dashboard"
-  const [serverError, setServerError] = useState<string | null>(null)
-  const [isSubmitting, setIsSubmitting] = useState(false)
   const [rememberMe, setRememberMe] = useState(true)
   const [showPassword, setShowPassword] = useState(false)
+
+  const [isLoading, setIsLoading] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [statusIndex, setStatusIndex] = useState(0)
+  const [loadingError, setLoadingError] = useState<string | null>(null)
+  const pendingDataRef = useRef<SignInInput | null>(null)
+  const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const statusTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const stopTimers = () => {
+    if (progressTimerRef.current) clearInterval(progressTimerRef.current)
+    if (statusTimerRef.current) clearInterval(statusTimerRef.current)
+    progressTimerRef.current = null
+    statusTimerRef.current = null
+  }
+
+  useEffect(() => stopTimers, [])
 
   const {
     register,
@@ -46,10 +82,24 @@ function SignInForm() {
     defaultValues: { email: searchParams.get("email") ?? "" },
   })
 
-  const onSubmit = async (data: SignInInput) => {
-    if (isSubmitting) return
-    setServerError(null)
-    setIsSubmitting(true)
+  const startLoadingAnimation = () => {
+    setProgress(0)
+    setStatusIndex(0)
+    progressTimerRef.current = setInterval(() => {
+      setProgress((p) => {
+        const next = p + (PROGRESS_CAP - p) * 0.06
+        return next >= PROGRESS_CAP - 0.5 ? PROGRESS_CAP : next
+      })
+    }, PROGRESS_TICK_MS)
+    statusTimerRef.current = setInterval(() => {
+      setStatusIndex((i) => Math.min(i + 1, LOGIN_STATUS_KEYS.length - 1))
+    }, STATUS_ADVANCE_MS)
+  }
+
+  const performSignIn = async (data: SignInInput) => {
+    setLoadingError(null)
+    setIsLoading(true)
+    startLoadingAnimation()
     try {
       const result = await signIn("credentials", {
         email: data.email,
@@ -59,21 +109,44 @@ function SignInForm() {
       })
 
       if (result?.error) {
+        stopTimers()
         const key = (isAuthErrorCode(result.error) ? `error.${result.error}` : "error.UNKNOWN_ERROR") as TranslationKey
-        setServerError(t(key))
+        setLoadingError(t(key))
         // Deliberately never clear the email field on failure - re-typing a
         // correct email after a wrong password is a real, common complaint.
         setValue("password", "")
         return
       }
 
+      stopTimers()
+      setProgress(100)
+      // Let the ring actually finish and "ready" register before navigating -
+      // jumping straight to the dashboard would make the 100% state invisible.
+      await new Promise((resolve) => setTimeout(resolve, 600))
       router.push(callbackUrl)
       router.refresh()
     } catch {
-      setServerError(t("error.NETWORK_ERROR"))
-    } finally {
-      setIsSubmitting(false)
+      stopTimers()
+      setLoadingError(t("error.NETWORK_ERROR"))
     }
+  }
+
+  const onSubmit = async (data: SignInInput) => {
+    if (isLoading) return
+    pendingDataRef.current = data
+    await performSignIn(data)
+  }
+
+  const handleRetry = () => {
+    if (pendingDataRef.current) void performSignIn(pendingDataRef.current)
+  }
+
+  const handleBack = () => {
+    stopTimers()
+    setIsLoading(false)
+    setLoadingError(null)
+    setProgress(0)
+    setStatusIndex(0)
   }
 
   return (
@@ -143,13 +216,8 @@ function SignInForm() {
             </Label>
           </div>
 
-          {serverError && (
-            <p className="text-sm text-destructive text-center">{serverError}</p>
-          )}
-
-          <Button type="submit" className="w-full gap-2" disabled={isSubmitting}>
-            {isSubmitting && <Loader2 className="size-4 animate-spin" />}
-            {isSubmitting ? t("signin.submitting") : t("signin.submit")}
+          <Button type="submit" className="w-full gap-2" disabled={isLoading}>
+            {t("signin.submit")}
           </Button>
         </form>
 
@@ -160,6 +228,17 @@ function SignInForm() {
           </Link>
         </p>
       </CardContent>
+
+      {isLoading && (
+        <GoalXLoadingScreen
+          mode="login"
+          progress={progress}
+          status={t(LOGIN_STATUS_KEYS[statusIndex])}
+          error={loadingError}
+          onRetry={handleRetry}
+          onBack={handleBack}
+        />
+      )}
     </Card>
   )
 }

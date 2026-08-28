@@ -29,7 +29,7 @@ const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS
 // If neither progress nor status has moved in this long, and we're not done
 // or errored, show the "taking longer than usual" reassurance instead of
 // leaving the user staring at a frozen-looking number.
-const SLOW_HINT_DELAY_MS = 6000
+const SLOW_HINT_DELAY_MS = 12000
 
 /**
  * The one loading screen for any full-page async wait in the app (currently
