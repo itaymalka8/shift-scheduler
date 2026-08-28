@@ -93,6 +93,25 @@ const ENTRANCE_COUNT: Record<Stadium3DTierId, number> = {
   elite: 16,
 }
 
+// Visible seating blocks around the ring, separated by aisle gaps - two
+// blocks per entrance reads as "an aisle leads up to the gap between these
+// two sections," which is how real stands are actually laid out.
+const SECTION_COUNT: Record<Stadium3DTierId, number> = {
+  compact: 10,
+  small: 14,
+  medium: 20,
+  large: 24,
+  major: 28,
+  elite: 32,
+}
+
+// Geometric row cap - rowCount keeps growing for display/stat purposes, but
+// building one instanced step per row stops paying off visually past this
+// many (they'd be a few centimeters tall each) and starts costing real
+// instance count for nothing, so the geometry caps here while rowCount
+// (the number shown as a stat) does not.
+const MAX_VISUAL_ROWS = 22
+
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t
 }
@@ -127,11 +146,13 @@ export interface Stadium3DStructure {
   standDepth: number
   standHeight: number
   rowCount: number
+  visualRowCount: number // rowCount capped for geometry - see MAX_VISUAL_ROWS
   tierCount: number
   cornerFill: number
   roofCoverage: number
   vipSections: number
   entranceCount: number
+  sectionCount: number
   innerHalfLength: number // PITCH_LENGTH/2 + standOffset
   innerHalfWidth: number // PITCH_WIDTH/2 + standOffset
   outerHalfLength: number // innerHalfLength + standDepth
@@ -149,11 +170,13 @@ export function computeStadium3DStructure(capacity: number): Stadium3DStructure 
     standDepth,
     standHeight,
     rowCount,
+    visualRowCount: Math.min(rowCount, MAX_VISUAL_ROWS),
     tierCount: TIER_COUNT[tier],
     cornerFill,
     roofCoverage,
     vipSections: VIP_SECTIONS[tier],
     entranceCount: ENTRANCE_COUNT[tier],
+    sectionCount: SECTION_COUNT[tier],
     innerHalfLength: PITCH_LENGTH / 2 + standOffset,
     innerHalfWidth: PITCH_WIDTH / 2 + standOffset,
     outerHalfLength: PITCH_LENGTH / 2 + standOffset + standDepth,
@@ -163,24 +186,64 @@ export function computeStadium3DStructure(capacity: number): Stadium3DStructure 
 
 // --- Camera framing ---------------------------------------------------------
 
+// The vertical FOV Stadium3D's camera actually uses - kept in sync here
+// because the framing math below needs the real angle, not a guess at it.
+export const CAMERA_FOV_DEG = 40
+// A small tilt off straight-down, so raked rows and tier steps read as
+// height rather than flattening into a pure map view.
+export const CAMERA_POLAR_ANGLE_DEG = 36
+// Corner-on azimuth (45°) - the classic broadcast-graphic stadium angle,
+// showing all four sides at once instead of staring straight down one side.
+export const CAMERA_AZIMUTH_DEG = 45
+
+// How much of the frame the stadium should actually occupy at each capacity
+// - this is the deliberate opposite of "auto-fit everything to look the
+// same size": a bigger stadium is framed tighter (fills more of the shot),
+// a smaller one is framed looser (more empty space around it), so the
+// capacity difference is felt in the shot, not just in the geometry.
+const FILL_ANCHORS: { capacity: number; fill: number }[] = [
+  { capacity: 10_000, fill: 0.55 },
+  { capacity: 20_000, fill: 0.7 },
+  { capacity: 30_000, fill: 0.82 },
+  { capacity: 45_000, fill: 0.92 },
+  { capacity: 60_000, fill: 0.98 },
+  { capacity: 80_000, fill: 1.05 },
+]
+
+function interpolateFillFraction(capacity: number): number {
+  if (capacity <= FILL_ANCHORS[0].capacity) return FILL_ANCHORS[0].fill
+  if (capacity >= FILL_ANCHORS[FILL_ANCHORS.length - 1].capacity) return FILL_ANCHORS[FILL_ANCHORS.length - 1].fill
+  for (let i = 0; i < FILL_ANCHORS.length - 1; i++) {
+    const a = FILL_ANCHORS[i]
+    const b = FILL_ANCHORS[i + 1]
+    if (capacity >= a.capacity && capacity <= b.capacity) {
+      const t = (capacity - a.capacity) / (b.capacity - a.capacity)
+      return lerp(a.fill, b.fill, t)
+    }
+  }
+  return FILL_ANCHORS[FILL_ANCHORS.length - 1].fill
+}
+
 export interface CameraFraming {
   distance: number
   polarAngleDeg: number // from vertical (0 = straight down)
 }
 
 /**
- * Distance and tilt for a near-top-down view that keeps the whole structure
- * in frame regardless of size - a 70,000-seat stadium needs a visibly wider
- * framing than a 10,000-seat one, never the same zoom. polarAngle is fixed
- * (a slight tilt, not a straight-down map view) so height differences
- * between tiers actually read as height.
+ * Distance and tilt for a near-top-down view. Deliberately NOT a "keep
+ * everything the same apparent size" auto-fit - distance is derived so the
+ * stadium's outer radius fills a capacity-dependent fraction of the frame
+ * (see FILL_ANCHORS): apparentSize = 2*radius/distance must equal
+ * fill*2*tan(fov/2), so distance = radius / (fill*tan(fov/2)). Because fill
+ * grows faster than radius does across the capacity range, a 70,000-seat
+ * stadium ends up both physically bigger AND framed tighter than a
+ * 10,000-seat one - the two effects compound instead of one masking the
+ * other.
  */
-export function computeCameraFraming(structure: Stadium3DStructure): CameraFraming {
+export function computeCameraFraming(structure: Stadium3DStructure, capacity: number): CameraFraming {
   const outerRadius = Math.max(structure.outerHalfLength, structure.outerHalfWidth)
-  // A perspective camera at this polar angle needs roughly this multiple of
-  // the outer radius as distance to keep the full bowl (plus its height) in
-  // frame with a standard ~50 deg vertical FOV - tuned empirically, not a
-  // physically exact formula.
-  const distance = outerRadius * 2.35 + structure.standHeight * 1.2
-  return { distance, polarAngleDeg: 32 }
+  const fill = interpolateFillFraction(capacity)
+  const halfFovRad = (CAMERA_FOV_DEG / 2) * (Math.PI / 180)
+  const distance = outerRadius / (fill * Math.tan(halfFovRad)) + structure.standHeight * 0.6
+  return { distance, polarAngleDeg: CAMERA_POLAR_ANGLE_DEG }
 }
