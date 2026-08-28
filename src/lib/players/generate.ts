@@ -279,18 +279,22 @@ export async function generateSquad(
 ): Promise<void> {
   const squad = generateInitialSquad(config)
 
-  const created: { id: string; primaryPosition: string; overall: number; fitness: number; status: string }[] = []
-  for (const player of squad) {
-    const row = await db.player.create({ data: { teamId, ...player } })
-    created.push({ id: row.id, primaryPosition: row.primaryPosition, overall: row.overall, fitness: row.fitness, status: row.status })
-  }
+  // Batched into a single round trip each (instead of one per player/slot -
+  // up to ~34 sequential awaits before this) so seeding many teams in one
+  // transaction (a fresh league, or a brand-new signup) stays well inside
+  // Prisma's transaction timeout against a remote/serverless Postgres
+  // (Neon), where per-query latency - and occasional cold-start latency -
+  // makes dozens of sequential round trips the real cost, not the writes
+  // themselves.
+  const created = await db.player.createManyAndReturn({
+    data: squad.map((player) => ({ teamId, ...player })),
+    select: { id: true, primaryPosition: true, overall: true, fitness: true, status: true },
+  })
 
   const assignments = computeRecommendedLineup(FORMATIONS[DEFAULT_FORMATION], created)
-  for (const assignment of assignments) {
-    await db.lineupSlot.create({
-      data: { teamId, playerId: assignment.playerId, slotIndex: assignment.slotIndex },
-    })
-  }
+  await db.lineupSlot.createMany({
+    data: assignments.map((assignment) => ({ teamId, playerId: assignment.playerId, slotIndex: assignment.slotIndex })),
+  })
 
   await db.team.update({
     where: { id: teamId },

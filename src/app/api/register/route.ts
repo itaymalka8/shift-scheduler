@@ -23,6 +23,21 @@ import { pickBotTeamForNewSignup } from "@/lib/leagues/assign"
 import { generateSquad } from "@/lib/players/generate"
 import { DEFAULT_STARTING_SEATS, toSeatColumns } from "@/lib/stadium/config"
 
+// Tags exactly where inside the registration transaction a failure happened,
+// so the catch block can return a specific error code instead of collapsing
+// every failure into one generic message - the underlying cause always still
+// goes to the server log (see the catch block), never to the client.
+class LeagueSetupError extends Error {
+  constructor(public readonly cause: unknown) {
+    super("League setup failed")
+  }
+}
+class SquadGenerationError extends Error {
+  constructor(public readonly cause: unknown) {
+    super("Squad generation failed")
+  }
+}
+
 const MAX_CREST_SIZE = 2 * 1024 * 1024 // 2MB
 const ALLOWED_CREST_TYPES: Record<string, string> = {
   "image/png": "png",
@@ -146,10 +161,6 @@ export async function POST(request: Request) {
   const resolvedCrowdStyle = CROWD_STYLES.includes(crowdStyle) ? crowdStyle : "calm"
   const resolvedStadiumStyle = isStadiumStyle(stadiumStyle) ? stadiumStyle : DEFAULT_STADIUM_STYLE
 
-  if (countryCode === "IL") {
-    await ensureIsraelSeasonSeeded()
-  }
-
   const teamData = {
     name: teamName,
     crestShape: resolvedShape,
@@ -165,31 +176,53 @@ export async function POST(request: Request) {
   }
 
   try {
-    await prisma.$transaction(async (tx) => {
-      const user = await tx.user.create({ data: { name, email, passwordHash } })
-
-      // Real signups take over an existing bot team's slot (and fixtures)
-      // instead of joining without a division - see pickBotTeamForNewSignup.
-      const botTeamId = countryCode === "IL" ? await pickBotTeamForNewSignup(tx) : null
-
-      if (botTeamId) {
-        // Inherits the bot's already-generated squad, fixtures, and stadium
-        // seats as-is - only the stadium's name changes to the one picked at signup.
-        await tx.team.update({ where: { id: botTeamId }, data: { ...teamData, userId: user.id, isBot: false } })
-        await tx.stadium.update({ where: { teamId: botTeamId }, data: { name: stadiumName } })
-      } else {
-        const team = await tx.team.create({ data: { ...teamData, userId: user.id } })
-        await generateSquad(tx, team.id)
-        await tx.stadium.create({ data: { teamId: team.id, name: stadiumName, ...toSeatColumns(DEFAULT_STARTING_SEATS) } })
+    // Runs before the user/team transaction and manages its own (idempotent)
+    // transaction internally - if it fails, nothing below has been written
+    // yet, so a retry (e.g. the user submitting again) starts clean.
+    if (countryCode === "IL") {
+      try {
+        await ensureIsraelSeasonSeeded()
+      } catch (cause) {
+        throw new LeagueSetupError(cause)
       }
-    })
+    }
+
+    await prisma.$transaction(
+      async (tx) => {
+        const user = await tx.user.create({ data: { name, email, passwordHash } })
+
+        // Real signups take over an existing bot team's slot (and fixtures)
+        // instead of joining without a division - see pickBotTeamForNewSignup.
+        const botTeamId = countryCode === "IL" ? await pickBotTeamForNewSignup(tx) : null
+
+        if (botTeamId) {
+          // Inherits the bot's already-generated squad, fixtures, and stadium
+          // seats as-is - only the stadium's name changes to the one picked at signup.
+          await tx.team.update({ where: { id: botTeamId }, data: { ...teamData, userId: user.id, isBot: false } })
+          await tx.stadium.update({ where: { teamId: botTeamId }, data: { name: stadiumName } })
+        } else {
+          const team = await tx.team.create({ data: { ...teamData, userId: user.id } })
+          try {
+            await generateSquad(tx, team.id)
+          } catch (cause) {
+            throw new SquadGenerationError(cause)
+          }
+          await tx.stadium.create({ data: { teamId: team.id, name: stadiumName, ...toSeatColumns(DEFAULT_STARTING_SEATS) } })
+        }
+      },
+      // The default 5s transaction timeout is tight for a multi-step write
+      // against a remote/serverless Postgres (Neon) - a cold-started compute
+      // alone can eat a meaningful chunk of that. This is still one atomic
+      // transaction: any failure below rolls back user.create too, so there
+      // is never a half-registered user (a user row without a team) left
+      // behind by this path.
+      { timeout: 15000 }
+    )
   } catch (error) {
     // Two concurrent requests can both pass the `existing` check above and
     // then race into user.create - the DB's unique constraint on email is
     // the real guard, so a P2002 violation here still means "already
-    // registered", not a server error. Since user+team creation is one
-    // transaction, any other failure rolls back user.create too - there is
-    // no half-registered user left behind by this path.
+    // registered", not a server error.
     if (
       error &&
       typeof error === "object" &&
@@ -198,8 +231,18 @@ export async function POST(request: Request) {
     ) {
       return NextResponse.json({ error: "EMAIL_ALREADY_EXISTS" }, { status: 409 })
     }
-    console.error("Registration failed", error)
-    return NextResponse.json({ error: "UNKNOWN_ERROR" }, { status: 500 })
+    if (error instanceof LeagueSetupError) {
+      console.error("Registration failed: league setup error", error.cause)
+      return NextResponse.json({ error: "LEAGUE_SETUP_FAILED" }, { status: 500 })
+    }
+    if (error instanceof SquadGenerationError) {
+      console.error("Registration failed: squad generation error", error.cause)
+      return NextResponse.json({ error: "SQUAD_GENERATION_FAILED" }, { status: 500 })
+    }
+    // Full detail always goes to the server log for debugging - never to the
+    // client, which only ever sees the stable code below.
+    console.error("Registration failed: database error", error)
+    return NextResponse.json({ error: "DATABASE_ERROR" }, { status: 500 })
   }
 
   return NextResponse.json({ ok: true })

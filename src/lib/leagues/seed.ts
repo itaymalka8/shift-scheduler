@@ -174,12 +174,17 @@ export async function ensureIsraelSeasonSeeded(): Promise<void> {
     where: { countryCode_number: { countryCode: COUNTRY_CODE, number: SEASON_NUMBER } },
   })
   if (existing) {
+    // Generous on purpose: this can touch every team/player in the season
+    // (name refresh + attribute/lineup backfill), each a real round trip
+    // against a remote/serverless Postgres (Neon) - a rare, occasional cost,
+    // not a hot path, so it's worth the margin over risking a timeout that
+    // leaves a registering user's request failing with no useful cause.
     await prisma.$transaction(
       async (tx) => {
         await refreshBotTeamNames(tx)
         await backfillMissingGameData(tx, existing.id)
       },
-      { timeout: 30000 }
+      { timeout: 60000 }
     )
     return
   }
@@ -251,6 +256,13 @@ export async function ensureIsraelSeasonSeeded(): Promise<void> {
         }
       }
     },
-    { timeout: 30000 }
+    // The one-time bootstrap of a whole country's league (60 bot teams x a
+    // full 22-player squad each) - the heaviest write this app does. Even
+    // after batching player/lineup-slot inserts (see generateSquad), it's
+    // still a few hundred round trips against a remote/serverless Postgres
+    // (Neon), where a cold-started compute alone can eat seconds - a
+    // generous timeout here is the difference between the very first
+    // registration on a fresh deployment succeeding or failing.
+    { timeout: 60000 }
   )
 }

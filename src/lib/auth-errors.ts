@@ -13,6 +13,9 @@ export const AUTH_ERROR_CODES = [
   "ACCOUNT_SETUP_INCOMPLETE",
   "VALIDATION_ERROR",
   "UNKNOWN_ERROR",
+  "DATABASE_ERROR",
+  "SQUAD_GENERATION_FAILED",
+  "LEAGUE_SETUP_FAILED",
 ] as const
 
 export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number]
