@@ -29,7 +29,7 @@ async function computeTeamStrength(teamId: string): Promise<TeamStrength> {
 
   if (slots.length === 0) {
     const players = await prisma.player.findMany({ where: { teamId } })
-    const avg = players.length ? players.reduce((sum, p) => sum + p.rating, 0) / players.length : 55
+    const avg = players.length ? players.reduce((sum, p) => sum + p.overall, 0) / players.length : 55
     attack = avg
     defense = avg
   } else {
@@ -38,9 +38,9 @@ async function computeTeamStrength(teamId: string): Promise<TeamStrength> {
     let defenseSum = 0
     let defenseWeight = 0
     for (const slot of slots) {
-      const group = isPlayerPosition(slot.player.position) ? POSITION_GROUP[slot.player.position] : "MF"
+      const group = isPlayerPosition(slot.player.primaryPosition) ? POSITION_GROUP[slot.player.primaryPosition] : "MF"
       const weights = GROUP_WEIGHTS[group]
-      const effectiveRating = slot.player.rating * (slot.player.fitness / 100)
+      const effectiveRating = slot.player.overall * (slot.player.fitness / 100)
       attackSum += effectiveRating * weights.attack
       attackWeight += weights.attack
       defenseSum += effectiveRating * weights.defense

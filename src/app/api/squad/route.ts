@@ -14,10 +14,11 @@ async function loadCandidates(teamId: string) {
   const players = await prisma.player.findMany({ where: { teamId } })
   return players.map((p) => ({
     id: p.id,
-    position: p.position,
-    rating: p.rating,
+    primaryPosition: p.primaryPosition,
+    secondaryPositions: p.secondaryPositions,
+    overall: p.overall,
     fitness: p.fitness,
-    availability: p.availability,
+    status: p.status,
   }))
 }
 

@@ -13,20 +13,27 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { FORMATIONS, isFormationId, type FormationId } from "@/lib/players/formations"
-import { getPositionFit, isPlayerPosition, type PlayerPosition } from "@/lib/players/positions"
+import type { PlayerPosition } from "@/lib/players/positions"
+import { calculatePositionSuitability, type PositionFit } from "@/lib/players/suitability"
+import { getPlayerTier, getFitnessLevel, getDisplayStatus, type PlayerStatus, type DisplayPlayerStatus } from "@/lib/players/tiers"
+import { formatMarketValue, formatMarketValueCompact } from "@/lib/players/currency"
 import { MENTALITY_OPTIONS, PRESSING_OPTIONS, TEMPO_OPTIONS, WIDTH_OPTIONS } from "@/lib/players/tactics"
-
-type Availability = "available" | "injured" | "suspended"
 
 interface PlayerDTO {
   id: string
-  name: string
-  position: string
+  firstName: string
+  lastName: string
+  primaryPosition: string
+  secondaryPositions: string[]
   age: number
-  rating: number
+  overall: number
+  potential: number
   fitness: number
-  availability: Availability
-  jerseyNumber: number
+  status: PlayerStatus
+  marketValue: number
+  preferredFoot: "left" | "right" | "both"
+  nationality: string
+  shirtNumber: number
 }
 
 interface Assignment {
@@ -38,16 +45,35 @@ type SortKey = "ability" | "position" | "age" | "fitness"
 
 const POSITION_ORDER: PlayerPosition[] = ["GK", "CB", "RB", "LB", "CDM", "CM", "CAM", "RM", "LM", "RW", "LW", "ST"]
 
-function positionLabelKey(position: string): TranslationKey {
-  return `squad.position.${position}` as TranslationKey
+// One Tailwind treatment per tier's cardStyle token (see config.ts's
+// PLAYER_TIERS) - the config stays framework-agnostic, only this map knows
+// what "premium" or "prestige" actually look like.
+const TIER_CARD_CLASSES: Record<string, string> = {
+  "plain-gray": "bg-card border-border",
+  "gray-outline": "bg-card border-muted-foreground/30",
+  "clean-light": "bg-card border-border",
+  "purple-subtle": "bg-card border-primary/30",
+  "purple-rich": "bg-primary/5 border-primary/50",
+  premium: "bg-gradient-to-br from-primary/10 to-amber-500/10 border-primary/60 shadow-sm",
+  prestige: "bg-gradient-to-br from-primary/15 via-amber-400/10 to-primary/15 border-amber-500/70 shadow-md",
 }
 
-function statusOf(
-  player: PlayerDTO,
-  startingIds: Set<string>
-): "starting" | "bench" | "injured" | "suspended" {
-  if (player.availability !== "available") return player.availability
-  return startingIds.has(player.id) ? "starting" : "bench"
+const TIER_BADGE_CLASSES: Record<string, string> = {
+  "plain-gray": "bg-muted text-muted-foreground",
+  "gray-outline": "bg-muted text-muted-foreground",
+  "clean-light": "bg-primary/10 text-primary",
+  "purple-subtle": "bg-primary/10 text-primary",
+  "purple-rich": "bg-primary/15 text-primary",
+  premium: "bg-primary text-primary-foreground",
+  prestige: "bg-gradient-to-r from-amber-500 to-primary text-white",
+}
+
+function fullName(p: PlayerDTO): string {
+  return `${p.firstName} ${p.lastName}`
+}
+
+function positionLabelKey(position: string): TranslationKey {
+  return `squad.position.${position}` as TranslationKey
 }
 
 async function patchSquad(body: Record<string, unknown>) {
@@ -84,6 +110,8 @@ export function SquadTacticsApp({
   initialFreeKickTakerId,
   initialCornerTakerId,
   accentColor,
+  teamTotalQuality,
+  squadMarketValue,
 }: {
   players: PlayerDTO[]
   initialAssignments: Assignment[]
@@ -97,6 +125,8 @@ export function SquadTacticsApp({
   initialFreeKickTakerId: string | null
   initialCornerTakerId: string | null
   accentColor: string
+  teamTotalQuality: number
+  squadMarketValue: number
 }) {
   const t = useT()
   const byId = useMemo(() => new Map(players.map((p) => [p.id, p])), [players])
@@ -201,10 +231,13 @@ export function SquadTacticsApp({
   const sortedSquad = useMemo(() => {
     const arr = [...players]
     arr.sort((a, b) => {
-      if (sortKey === "ability") return b.rating - a.rating
+      if (sortKey === "ability") return b.overall - a.overall
       if (sortKey === "age") return a.age - b.age
       if (sortKey === "fitness") return b.fitness - a.fitness
-      return POSITION_ORDER.indexOf(a.position as PlayerPosition) - POSITION_ORDER.indexOf(b.position as PlayerPosition)
+      return (
+        POSITION_ORDER.indexOf(a.primaryPosition as PlayerPosition) -
+        POSITION_ORDER.indexOf(b.primaryPosition as PlayerPosition)
+      )
     })
     return arr
   }, [players, sortKey])
@@ -213,7 +246,7 @@ export function SquadTacticsApp({
 
   return (
     <div>
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-4 flex items-center justify-between">
         <h1 className="text-2xl font-bold">{t("squad.title")}</h1>
         <span
           className={cn(
@@ -223,6 +256,21 @@ export function SquadTacticsApp({
         >
           {t("squad.saved")}
         </span>
+      </div>
+
+      <div className="mb-6 grid grid-cols-3 gap-2 rounded-lg border bg-card p-3 text-center sm:gap-4">
+        <div>
+          <div className="text-lg font-bold text-primary">{teamTotalQuality}</div>
+          <div className="text-xs text-muted-foreground">{t("squad.summaryQuality")}</div>
+        </div>
+        <div>
+          <div className="text-lg font-bold text-primary">{formatMarketValueCompact(squadMarketValue)}</div>
+          <div className="text-xs text-muted-foreground">{t("squad.summaryValue")}</div>
+        </div>
+        <div>
+          <div className="text-lg font-bold text-primary">{players.length}</div>
+          <div className="text-xs text-muted-foreground">{t("squad.summaryPlayers")}</div>
+        </div>
       </div>
 
       <div className="mb-6 flex gap-2 border-b">
@@ -272,7 +320,7 @@ export function SquadTacticsApp({
               <li key={player.id}>
                 <PlayerCard
                   player={player}
-                  status={statusOf(player, startingIds)}
+                  status={getDisplayStatus(player.status, startingIds.has(player.id))}
                   onClick={() => setExpandedPlayerId(player.id)}
                 />
               </li>
@@ -332,7 +380,7 @@ export function SquadTacticsApp({
                     <PlayerCard
                       compact
                       player={player}
-                      status={statusOf(player, startingIds)}
+                      status={getDisplayStatus(player.status, startingIds.has(player.id))}
                       onClick={() => setExpandedPlayerId(player.id)}
                       draggable
                     />
@@ -409,18 +457,32 @@ export function SquadTacticsApp({
             <>
               <DialogHeader>
                 <DialogTitle>
-                  #{expandedPlayer.jerseyNumber} {expandedPlayer.name}
+                  #{expandedPlayer.shirtNumber} {fullName(expandedPlayer)}
                 </DialogTitle>
               </DialogHeader>
               <div className="space-y-2 text-sm">
-                <Row label={t("squad.colAbility")} value={String(expandedPlayer.rating)} />
-                <Row label={t("squad.sortPosition")} value={t(positionLabelKey(expandedPlayer.position))} />
+                <Row label={t("squad.colAbility")} value={String(expandedPlayer.overall)} />
+                <Row label={t("squad.colPotential")} value={String(expandedPlayer.potential)} />
+                <Row label={t("squad.sortPosition")} value={t(positionLabelKey(expandedPlayer.primaryPosition))} />
+                {expandedPlayer.secondaryPositions.length > 0 && (
+                  <Row
+                    label={t("squad.secondaryPositionsList")}
+                    value={expandedPlayer.secondaryPositions.map((p) => t(positionLabelKey(p))).join(", ")}
+                  />
+                )}
                 <Row label={t("squad.colAge")} value={String(expandedPlayer.age)} />
-                <Row label={t("squad.colFitness")} value={String(expandedPlayer.fitness)} />
+                <Row
+                  label={t("squad.colFitness")}
+                  value={t(`squad.fitness.${getFitnessLevel(expandedPlayer.fitness)}` as TranslationKey)}
+                />
                 <Row
                   label={t("squad.status.starting")}
-                  value={t(`squad.status.${statusOf(expandedPlayer, startingIds)}` as TranslationKey)}
+                  value={t(
+                    `squad.status.${getDisplayStatus(expandedPlayer.status, startingIds.has(expandedPlayer.id))}` as TranslationKey
+                  )}
                 />
+                <Row label={t("squad.colMarketValue")} value={formatMarketValue(expandedPlayer.marketValue)} />
+                <Row label={t("squad.colFoot")} value={t(`squad.foot.${expandedPlayer.preferredFoot}` as TranslationKey)} />
               </div>
             </>
           )}
@@ -440,10 +502,10 @@ export function SquadTacticsApp({
                 .sort((a, b) => {
                   const slotRole = FORMATIONS[formation][pickerSlotIndex].role
                   const fitScore = (p: PlayerDTO) => {
-                    const fit = isPlayerPosition(p.position) ? getPositionFit(p.position, slotRole) : "unsuitable"
+                    const fit = fitOf(p, slotRole)
                     return fit === "natural" ? 2 : fit === "secondary" ? 1 : 0
                   }
-                  return fitScore(b) - fitScore(a) || b.rating - a.rating
+                  return fitScore(b) - fitScore(a) || b.overall - a.overall
                 })
                 .map((p) => (
                   <li key={p.id}>
@@ -453,10 +515,10 @@ export function SquadTacticsApp({
                       className="flex w-full items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-accent"
                     >
                       <span>
-                        #{p.jerseyNumber} {p.name}
+                        #{p.shirtNumber} {fullName(p)}
                       </span>
                       <span className="text-muted-foreground">
-                        {t(positionLabelKey(p.position))} · {p.rating}
+                        {t(positionLabelKey(p.primaryPosition))} · {p.overall}
                       </span>
                     </button>
                   </li>
@@ -484,6 +546,10 @@ export function SquadTacticsApp({
   )
 }
 
+function fitOf(player: PlayerDTO, position: PlayerPosition): PositionFit {
+  return calculatePositionSuitability(player, position)
+}
+
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center justify-between border-b py-1 last:border-0">
@@ -501,12 +567,13 @@ function PlayerCard({
   draggable,
 }: {
   player: PlayerDTO
-  status: "starting" | "bench" | "injured" | "suspended"
+  status: DisplayPlayerStatus
   onClick: () => void
   compact?: boolean
   draggable?: boolean
 }) {
   const t = useT()
+  const tier = getPlayerTier(player.overall)
   const statusColor =
     status === "starting"
       ? "bg-emerald-100 text-emerald-800"
@@ -514,7 +581,9 @@ function PlayerCard({
         ? "bg-red-100 text-red-800"
         : status === "suspended"
           ? "bg-amber-100 text-amber-800"
-          : "bg-muted text-muted-foreground"
+          : status === "unavailable"
+            ? "bg-muted text-muted-foreground"
+            : "bg-muted text-muted-foreground"
 
   return (
     <button
@@ -523,22 +592,27 @@ function PlayerCard({
       draggable={draggable}
       onDragStart={(e) => e.dataTransfer.setData("text/plain", player.id)}
       className={cn(
-        "flex w-full items-center justify-between gap-3 rounded-lg border bg-card px-3 text-start hover:bg-accent",
+        "flex w-full items-center justify-between gap-3 rounded-lg border px-3 text-start hover:brightness-[0.98]",
+        TIER_CARD_CLASSES[tier.cardStyle],
         compact ? "py-1.5" : "py-2.5"
       )}
     >
       <div className="flex items-center gap-3">
-        <span className="w-6 text-center text-xs text-muted-foreground">#{player.jerseyNumber}</span>
+        <span className="w-6 text-center text-xs text-muted-foreground">#{player.shirtNumber}</span>
         <div>
-          <div className="text-sm font-medium">{player.name}</div>
+          <div className="text-sm font-medium">{fullName(player)}</div>
           <div className="text-xs text-muted-foreground">
-            {t(positionLabelKey(player.position))} · {t("squad.colAge")} {player.age}
+            {t(positionLabelKey(player.primaryPosition))} · {t("squad.colAge")} {player.age}
           </div>
         </div>
       </div>
       <div className="flex items-center gap-2">
-        <span className="text-xs text-muted-foreground">{t("squad.colFitness")} {player.fitness}</span>
-        <span className="rounded-md bg-primary/10 px-2 py-0.5 text-sm font-bold text-primary">{player.rating}</span>
+        <span className="text-xs text-muted-foreground">
+          {t(`squad.fitness.${getFitnessLevel(player.fitness)}` as TranslationKey)}
+        </span>
+        <span className={cn("rounded-md px-2 py-0.5 text-sm font-bold", TIER_BADGE_CLASSES[tier.cardStyle])}>
+          {player.overall}
+        </span>
         <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", statusColor)}>
           {t(`squad.status.${status}` as TranslationKey)}
         </span>
@@ -549,19 +623,20 @@ function PlayerCard({
 
 function BenchChip({ player, onClick }: { player: PlayerDTO; onClick: () => void }) {
   const t = useT()
+  const tier = getPlayerTier(player.overall)
   return (
     <button
       type="button"
       draggable
       onDragStart={(e) => e.dataTransfer.setData("text/plain", player.id)}
       onClick={onClick}
-      className="flex items-center gap-1.5 rounded-full border bg-card px-3 py-1.5 text-xs hover:bg-accent"
-      title={player.name}
+      className={cn("flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs hover:brightness-[0.98]", TIER_CARD_CLASSES[tier.cardStyle])}
+      title={fullName(player)}
     >
-      <span className="text-muted-foreground">#{player.jerseyNumber}</span>
-      <span className="font-medium">{player.name}</span>
-      <span className="text-muted-foreground">{t(positionLabelKey(player.position))}</span>
-      <span className="font-bold text-primary">{player.rating}</span>
+      <span className="text-muted-foreground">#{player.shirtNumber}</span>
+      <span className="font-medium">{fullName(player)}</span>
+      <span className="text-muted-foreground">{t(positionLabelKey(player.primaryPosition))}</span>
+      <span className="font-bold text-primary">{player.overall}</span>
     </button>
   )
 }
@@ -607,8 +682,7 @@ function Pitch({
       {FORMATIONS[formation].map((slot, slotIndex) => {
         const playerId = assignments.get(slotIndex)
         const player = playerId ? byId.get(playerId) : undefined
-        const fit =
-          player && isPlayerPosition(player.position) ? getPositionFit(player.position, slot.role) : "natural"
+        const fit = player ? fitOf(player, slot.role) : "natural"
 
         return (
           <div
@@ -621,7 +695,7 @@ function Pitch({
             title={
               player && fit === "unsuitable"
                 ? t("squad.positionWarning", {
-                    playerPosition: t(positionLabelKey(player.position)),
+                    playerPosition: t(positionLabelKey(player.primaryPosition)),
                     slotPosition: t(positionLabelKey(slot.role)),
                   })
                 : undefined
@@ -636,7 +710,7 @@ function Pitch({
                   )}
                   style={{ backgroundColor: accentColor }}
                 >
-                  {player.jerseyNumber}
+                  {player.shirtNumber}
                 </div>
                 {fit === "secondary" && (
                   <span className="absolute -end-1 -top-1 size-3 rounded-full border border-white bg-orange-500" />
@@ -652,7 +726,7 @@ function Pitch({
                   ×
                 </button>
                 <div className="mt-0.5 max-w-16 truncate rounded bg-black/50 px-1 text-center text-[9px] text-white">
-                  {player.name}
+                  {fullName(player)}
                 </div>
               </div>
             ) : (
@@ -729,7 +803,7 @@ function RoleSelect({
         <option value="">{t("squad.selectPlayer")}</option>
         {players.map((p) => (
           <option key={p.id} value={p.id}>
-            #{p.jerseyNumber} {p.name}
+            #{p.shirtNumber} {fullName(p)}
           </option>
         ))}
       </select>

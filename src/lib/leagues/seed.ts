@@ -17,8 +17,6 @@ import { computeRecommendedLineup } from "@/lib/players/recommend"
 import { DEFAULT_FORMATION, isFormationId } from "@/lib/players/formations"
 import { getSeasonStartMonday, computeMatchdayDate } from "@/lib/match/schedule"
 
-const LEGACY_POSITION_REMAP: Record<string, string> = { DF: "CB", MF: "CM", FW: "ST" }
-
 const COUNTRY_CODE = "IL"
 const SEASON_NUMBER = 1
 
@@ -67,22 +65,6 @@ async function refreshBotTeamNames(tx: Prisma.TransactionClient): Promise<void> 
  * players or a schedule forever.
  */
 async function backfillMissingGameData(tx: Prisma.TransactionClient, seasonId: string): Promise<void> {
-  // Squads generated before granular positions existed still carry the old
-  // broad GK/DF/MF/FW codes - remap to a sensible granular default.
-  const legacyPlayers = await tx.player.findMany({
-    where: {
-      team: { divisionMemberships: { some: { division: { seasonId } } } },
-      position: { in: Object.keys(LEGACY_POSITION_REMAP) },
-    },
-    select: { id: true, position: true },
-  })
-  for (const player of legacyPlayers) {
-    await tx.player.update({
-      where: { id: player.id },
-      data: { position: LEGACY_POSITION_REMAP[player.position] },
-    })
-  }
-
   const teamsInSeason = await tx.team.findMany({
     where: { divisionMemberships: { some: { division: { seasonId } } } },
     include: { players: true, lineupSlots: true },
@@ -99,10 +81,11 @@ async function backfillMissingGameData(tx: Prisma.TransactionClient, seasonId: s
         formation,
         team.players.map((p) => ({
           id: p.id,
-          position: p.position,
-          rating: p.rating,
+          primaryPosition: p.primaryPosition,
+          secondaryPositions: p.secondaryPositions,
+          overall: p.overall,
           fitness: p.fitness,
-          availability: p.availability,
+          status: p.status,
         }))
       )
       await tx.lineupSlot.createMany({

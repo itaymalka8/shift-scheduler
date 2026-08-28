@@ -20,10 +20,11 @@ export async function POST() {
   const players = await prisma.player.findMany({ where: { teamId: team.id } })
   const candidates = players.map((p) => ({
     id: p.id,
-    position: p.position,
-    rating: p.rating,
+    primaryPosition: p.primaryPosition,
+    secondaryPositions: p.secondaryPositions,
+    overall: p.overall,
     fitness: p.fitness,
-    availability: p.availability,
+    status: p.status,
   }))
 
   const assignments = computeRecommendedLineup(formation, candidates)

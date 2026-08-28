@@ -1,12 +1,14 @@
 import { FORMATIONS, type FormationId } from "./formations"
-import { getPositionFit, isPlayerPosition } from "./positions"
+import { calculatePositionSuitability } from "./suitability"
+import { isPlayerPosition } from "./positions"
 
 export interface RecommendCandidate {
   id: string
-  position: string
-  rating: number
+  primaryPosition: string
+  secondaryPositions?: string[]
+  overall: number
   fitness: number
-  availability: string
+  status: string
 }
 
 export interface RecommendedAssignment {
@@ -18,7 +20,7 @@ export interface RecommendedAssignment {
  * Greedily fills each formation slot (in formation order - GK, then defense,
  * then midfield, then attack) with the best remaining candidate: natural fit
  * beats secondary fit beats unsuitable, and within the same fit tier, higher
- * rating*fitness wins - with a small bonus for `preferredIds` (pass the
+ * overall*fitness wins - with a small bonus for `preferredIds` (pass the
  * currently-starting XI when switching formations, so a player keeps a spot
  * if there's a reasonable one, without overriding a genuinely better fit).
  * Falls back to unavailable players only if there genuinely aren't enough
@@ -29,7 +31,7 @@ export function computeRecommendedLineup(
   players: RecommendCandidate[],
   preferredIds: Set<string> = new Set()
 ): RecommendedAssignment[] {
-  const available = players.filter((p) => p.availability === "available")
+  const available = players.filter((p) => p.status === "available")
   const pool = available.length >= FORMATIONS[formation].length ? available : players
 
   const remaining = new Map(pool.map((p) => [p.id, p]))
@@ -40,11 +42,15 @@ export function computeRecommendedLineup(
     let bestScore = -Infinity
 
     for (const candidate of remaining.values()) {
-      const naturalPosition = isPlayerPosition(candidate.position) ? candidate.position : slot.role
-      const fit = getPositionFit(naturalPosition, slot.role)
+      const fit = isPlayerPosition(candidate.primaryPosition)
+        ? calculatePositionSuitability(
+            { primaryPosition: candidate.primaryPosition, secondaryPositions: candidate.secondaryPositions ?? [] },
+            slot.role
+          )
+        : "natural"
       const fitScore = fit === "natural" ? 2 : fit === "secondary" ? 1 : 0
       const preferredBonus = preferredIds.has(candidate.id) ? 5 : 0
-      const score = fitScore * 1000 + preferredBonus * 10 + candidate.rating * (candidate.fitness / 100)
+      const score = fitScore * 1000 + preferredBonus * 10 + candidate.overall * (candidate.fitness / 100)
       if (score > bestScore) {
         bestScore = score
         best = candidate

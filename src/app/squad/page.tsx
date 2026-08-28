@@ -9,6 +9,7 @@ import { DEFAULT_LOCALE, getTranslator, isLocale } from "@/lib/i18n/translations
 import { LanguageSwitcher } from "@/components/language-switcher"
 import { DEFAULT_FORMATION, isFormationId } from "@/lib/players/formations"
 import { computeRecommendedLineup } from "@/lib/players/recommend"
+import { calculateTeamTotalQuality, calculateSquadMarketValue } from "@/lib/players/quality"
 import { SquadTacticsApp } from "./squad-tactics-app"
 
 export default async function SquadPage() {
@@ -29,20 +30,7 @@ export default async function SquadPage() {
   }
 
   let lineupSlots = await prisma.lineupSlot.findMany({ where: { teamId: team.id } })
-  let players = await prisma.player.findMany({ where: { teamId: team.id }, orderBy: { rating: "desc" } })
-
-  // Squads generated before granular positions existed still carry the old
-  // broad GK/DF/MF/FW codes - remap those to a sensible granular default.
-  const LEGACY_POSITION_REMAP: Record<string, string> = { DF: "CB", MF: "CM", FW: "ST" }
-  const legacyPlayers = players.filter((p) => p.position in LEGACY_POSITION_REMAP)
-  if (legacyPlayers.length > 0) {
-    await Promise.all(
-      legacyPlayers.map((p) =>
-        prisma.player.update({ where: { id: p.id }, data: { position: LEGACY_POSITION_REMAP[p.position] } })
-      )
-    )
-    players = await prisma.player.findMany({ where: { teamId: team.id }, orderBy: { rating: "desc" } })
-  }
+  const players = await prisma.player.findMany({ where: { teamId: team.id }, orderBy: { overall: "desc" } })
 
   // Self-heal: a team should never land on an empty pitch.
   if (lineupSlots.length === 0 && players.length > 0) {
@@ -50,10 +38,11 @@ export default async function SquadPage() {
       formation,
       players.map((p) => ({
         id: p.id,
-        position: p.position,
-        rating: p.rating,
+        primaryPosition: p.primaryPosition,
+        secondaryPositions: p.secondaryPositions,
+        overall: p.overall,
         fitness: p.fitness,
-        availability: p.availability,
+        status: p.status,
       }))
     )
     await prisma.lineupSlot.createMany({
@@ -61,6 +50,9 @@ export default async function SquadPage() {
     })
     lineupSlots = await prisma.lineupSlot.findMany({ where: { teamId: team.id } })
   }
+
+  const teamTotalQuality = calculateTeamTotalQuality(players)
+  const squadMarketValue = calculateSquadMarketValue(players)
 
   return (
     <div className="min-h-screen bg-background">
@@ -78,13 +70,19 @@ export default async function SquadPage() {
         <SquadTacticsApp
           players={players.map((p) => ({
             id: p.id,
-            name: p.name,
-            position: p.position,
+            firstName: p.firstName,
+            lastName: p.lastName,
+            primaryPosition: p.primaryPosition,
+            secondaryPositions: p.secondaryPositions,
             age: p.age,
-            rating: p.rating,
+            overall: p.overall,
+            potential: p.potential,
             fitness: p.fitness,
-            availability: p.availability as "available" | "injured" | "suspended",
-            jerseyNumber: p.jerseyNumber,
+            status: p.status as "available" | "injured" | "suspended" | "unavailable",
+            marketValue: p.marketValue,
+            preferredFoot: p.preferredFoot as "left" | "right" | "both",
+            nationality: p.nationality,
+            shirtNumber: p.shirtNumber,
           }))}
           initialAssignments={lineupSlots.map((s) => ({ slotIndex: s.slotIndex, playerId: s.playerId }))}
           initialFormation={formation}
@@ -97,6 +95,8 @@ export default async function SquadPage() {
           initialFreeKickTakerId={team.freeKickTakerId}
           initialCornerTakerId={team.cornerTakerId}
           accentColor={team.crestColor ?? "#3B2F7A"}
+          teamTotalQuality={teamTotalQuality}
+          squadMarketValue={squadMarketValue}
         />
       </main>
     </div>

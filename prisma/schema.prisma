@@ -102,13 +102,21 @@ model Player {
   id                  String      @id @default(cuid())
   teamId              String
   team                Team        @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  name                String
-  position            String
+  firstName           String
+  lastName            String
   age                 Int
-  rating              Int
+  overall             Int
+  potential           Int
+  primaryPosition     String
+  secondaryPositions  String[]    @default([])
   fitness             Int         @default(100)
-  availability        String      @default("available")
-  jerseyNumber        Int
+  status              String      @default("available")
+  marketValue         Int
+  injuryStatus        String?
+  suspensionMatches   Int         @default(0)
+  preferredFoot       String
+  nationality         String
+  shirtNumber         Int
   createdAt           DateTime    @default(now())
   lineupSlot          LineupSlot?
   captainOfTeam       Team?       @relation("TeamCaptain")

@@ -21,8 +21,11 @@ export const POSITION_GROUP: Record<PlayerPosition, PositionGroup> = {
   ST: "FW",
 }
 
-// A player's "secondary" positions - reasonable to field there without being
-// their specialty. Anything not natural and not listed here is unsuitable.
+// The plausible secondary-position pool a generated player's primary position
+// draws from (see generate.ts) - not consulted at runtime for suitability
+// checks, since each player's own secondaryPositions (picked from this pool
+// at generation time, and possibly edited later) is the real source of truth
+// there - see calculatePositionSuitability in suitability.ts.
 export const SECONDARY_POSITIONS: Record<PlayerPosition, PlayerPosition[]> = {
   GK: [],
   CB: ["RB", "LB", "CDM"],
@@ -36,14 +39,6 @@ export const SECONDARY_POSITIONS: Record<PlayerPosition, PlayerPosition[]> = {
   RW: ["RM", "ST"],
   LW: ["LM", "ST"],
   ST: ["RW", "LW", "CAM"],
-}
-
-export type PositionFit = "natural" | "secondary" | "unsuitable"
-
-export function getPositionFit(natural: PlayerPosition, slot: PlayerPosition): PositionFit {
-  if (natural === slot) return "natural"
-  if (SECONDARY_POSITIONS[natural]?.includes(slot)) return "secondary"
-  return "unsuitable"
 }
 
 export function isPlayerPosition(value: string | null | undefined): value is PlayerPosition {

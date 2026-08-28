@@ -236,6 +236,33 @@ const he = {
   "squad.freeKickTaker": "בועט חופשיות",
   "squad.cornerTaker": "בועט קרנות",
   "squad.selectPlayer": "בחרו שחקן",
+  "squad.status.unavailable": "לא זמין",
+
+  "squad.summaryQuality": "איכות סגל",
+  "squad.summaryValue": "שווי סגל",
+  "squad.summaryPlayers": "מספר שחקנים",
+
+  "squad.colPotential": "פוטנציאל",
+  "squad.colMarketValue": "שווי שוק",
+  "squad.colFoot": "רגל מועדפת",
+  "squad.secondaryPositionsList": "עמדות נוספות",
+
+  "squad.fitness.excellent": "מצוין",
+  "squad.fitness.good": "טוב",
+  "squad.fitness.average": "בינוני",
+  "squad.fitness.low": "נמוך",
+
+  "squad.foot.right": "ימין",
+  "squad.foot.left": "שמאל",
+  "squad.foot.both": "שתי הרגליים",
+
+  "player.tier.low": "רמה נמוכה",
+  "player.tier.weak": "שחקן חלש",
+  "player.tier.squad": "שחקן סגל",
+  "player.tier.starter": "שחקן הרכב טוב",
+  "player.tier.quality": "שחקן בכיר",
+  "player.tier.star": "כוכב",
+  "player.tier.superstar": "שחקן על",
 
   "common.close": "סגירה",
   "common.cancel": "ביטול",
@@ -493,6 +520,33 @@ const en: Record<keyof typeof he, string> = {
   "squad.freeKickTaker": "Free-kick taker",
   "squad.cornerTaker": "Corner taker",
   "squad.selectPlayer": "Select a player",
+  "squad.status.unavailable": "Unavailable",
+
+  "squad.summaryQuality": "Squad quality",
+  "squad.summaryValue": "Squad value",
+  "squad.summaryPlayers": "Players",
+
+  "squad.colPotential": "Potential",
+  "squad.colMarketValue": "Market value",
+  "squad.colFoot": "Preferred foot",
+  "squad.secondaryPositionsList": "Other positions",
+
+  "squad.fitness.excellent": "Excellent",
+  "squad.fitness.good": "Good",
+  "squad.fitness.average": "Average",
+  "squad.fitness.low": "Low",
+
+  "squad.foot.right": "Right",
+  "squad.foot.left": "Left",
+  "squad.foot.both": "Both",
+
+  "player.tier.low": "Low level",
+  "player.tier.weak": "Weak player",
+  "player.tier.squad": "Squad player",
+  "player.tier.starter": "Good starter",
+  "player.tier.quality": "Quality player",
+  "player.tier.star": "Star",
+  "player.tier.superstar": "Superstar",
 
   "common.close": "Close",
   "common.cancel": "Cancel",
@@ -747,6 +801,33 @@ const ar: Record<keyof typeof he, string> = {
   "squad.freeKickTaker": "ضارب الركلات الحرة",
   "squad.cornerTaker": "ضارب الركنيات",
   "squad.selectPlayer": "اختر لاعبًا",
+  "squad.status.unavailable": "غير متاح",
+
+  "squad.summaryQuality": "جودة التشكيلة",
+  "squad.summaryValue": "قيمة التشكيلة",
+  "squad.summaryPlayers": "عدد اللاعبين",
+
+  "squad.colPotential": "الإمكانات",
+  "squad.colMarketValue": "القيمة السوقية",
+  "squad.colFoot": "القدم المفضلة",
+  "squad.secondaryPositionsList": "مراكز إضافية",
+
+  "squad.fitness.excellent": "ممتازة",
+  "squad.fitness.good": "جيدة",
+  "squad.fitness.average": "متوسطة",
+  "squad.fitness.low": "منخفضة",
+
+  "squad.foot.right": "اليمنى",
+  "squad.foot.left": "اليسرى",
+  "squad.foot.both": "كلتاهما",
+
+  "player.tier.low": "مستوى منخفض",
+  "player.tier.weak": "لاعب ضعيف",
+  "player.tier.squad": "لاعب تشكيلة",
+  "player.tier.starter": "لاعب أساسي جيد",
+  "player.tier.quality": "لاعب متميز",
+  "player.tier.star": "نجم",
+  "player.tier.superstar": "لاعب نخبة",
 
   "common.close": "إغلاق",
   "common.cancel": "إلغاء",

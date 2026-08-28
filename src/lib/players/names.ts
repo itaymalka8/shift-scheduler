@@ -17,8 +17,8 @@ const LAST_NAMES = [
   "אביטן", "בכר", "גמליאל", "דיין",
 ]
 
-export function generatePlayerName(): string {
-  const first = FIRST_NAMES[Math.floor(Math.random() * FIRST_NAMES.length)]
-  const last = LAST_NAMES[Math.floor(Math.random() * LAST_NAMES.length)]
-  return `${first} ${last}`
+export function generatePlayerName(): { firstName: string; lastName: string } {
+  const firstName = FIRST_NAMES[Math.floor(Math.random() * FIRST_NAMES.length)]
+  const lastName = LAST_NAMES[Math.floor(Math.random() * LAST_NAMES.length)]
+  return { firstName, lastName }
 }
