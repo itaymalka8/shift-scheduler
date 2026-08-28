@@ -18,6 +18,15 @@ import { calculatePositionSuitability, type PositionFit } from "@/lib/players/su
 import { getPlayerTier, getFitnessLevel, getDisplayStatus, type PlayerStatus, type DisplayPlayerStatus } from "@/lib/players/tiers"
 import { formatMarketValue, formatMarketValueCompact } from "@/lib/players/currency"
 import { MENTALITY_OPTIONS, PRESSING_OPTIONS, TEMPO_OPTIONS, WIDTH_OPTIONS } from "@/lib/players/tactics"
+import {
+  ATTRIBUTE_CATEGORIES,
+  GOALKEEPER_ATTRIBUTE_CATEGORIES,
+  getAttributeScoreTier,
+  attributeLabelKey,
+  type AttributeKey,
+  type PlayerAttributes,
+} from "@/lib/players/attributes"
+import { calculatePositionOverall } from "@/lib/players/overall"
 
 interface PlayerDTO {
   id: string
@@ -35,6 +44,7 @@ interface PlayerDTO {
   preferredFoot: "left" | "right" | "both"
   nationality: string
   shirtNumber: number
+  attributes: PlayerAttributes
 }
 
 interface Assignment {
@@ -457,9 +467,9 @@ export function SquadTacticsApp({
         </div>
       )}
 
-      {/* expanded player modal */}
+      {/* expanded player modal / full profile */}
       <Dialog open={!!expandedPlayer} onOpenChange={(open) => !open && setExpandedPlayerId(null)}>
-        <DialogContent>
+        <DialogContent className="max-h-[85vh] overflow-y-auto">
           {expandedPlayer && (
             <>
               <DialogHeader>
@@ -469,6 +479,18 @@ export function SquadTacticsApp({
               </DialogHeader>
               <div className="space-y-2 text-sm">
                 <Row label={t("squad.colAbility")} value={String(expandedPlayer.overall)} />
+                {(() => {
+                  const slotEntry = [...assignments.entries()].find(([, playerId]) => playerId === expandedPlayer.id)
+                  if (!slotEntry) return null
+                  const role = FORMATIONS[formation][slotEntry[0]].role
+                  if (role === (expandedPlayer.primaryPosition as PlayerPosition)) return null
+                  return (
+                    <Row
+                      label={t("squad.currentPositionOverall")}
+                      value={String(calculatePositionOverall(expandedPlayer.attributes, role))}
+                    />
+                  )
+                })()}
                 <Row label={t("squad.colPotential")} value={String(expandedPlayer.potential)} />
                 <Row label={t("squad.sortPosition")} value={t(positionLabelKey(expandedPlayer.primaryPosition))} />
                 {expandedPlayer.secondaryPositions.length > 0 && (
@@ -495,6 +517,8 @@ export function SquadTacticsApp({
                 />
                 <Row label={t("squad.colFoot")} value={t(`squad.foot.${expandedPlayer.preferredFoot}` as TranslationKey)} />
               </div>
+
+              <AttributeCategories player={expandedPlayer} />
             </>
           )}
         </DialogContent>
@@ -566,6 +590,44 @@ function Row({ label, value }: { label: string; value: string }) {
     <div className="flex items-center justify-between border-b py-1 last:border-0">
       <span className="text-muted-foreground">{label}</span>
       <span className="font-medium">{value}</span>
+    </div>
+  )
+}
+
+function AttributeBar({ attrKey, value }: { attrKey: AttributeKey; value: number }) {
+  const t = useT()
+  const tier = getAttributeScoreTier(value)
+  return (
+    <div className="flex items-center gap-2 py-1 text-sm">
+      <span className="w-28 shrink-0 text-muted-foreground sm:w-36">{t(attributeLabelKey(attrKey) as TranslationKey)}</span>
+      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+        <div className={cn("h-full rounded-full", tier.colorClass)} style={{ width: `${value}%` }} />
+      </div>
+      <span className="w-6 shrink-0 text-end font-medium">{value}</span>
+    </div>
+  )
+}
+
+/** Full categorized attribute breakdown - the "profile" a player card opens into. */
+function AttributeCategories({ player }: { player: PlayerDTO }) {
+  const t = useT()
+  const isGoalkeeper = player.primaryPosition === "GK"
+  const categories = isGoalkeeper ? GOALKEEPER_ATTRIBUTE_CATEGORIES : ATTRIBUTE_CATEGORIES
+
+  return (
+    <div className="mt-4 space-y-4 border-t pt-4">
+      {categories.map((category) => (
+        <div key={category.id}>
+          <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {t(category.labelKey as TranslationKey)}
+          </h3>
+          {category.keys.map((key) => {
+            const value = player.attributes[key as AttributeKey]
+            if (value == null) return null
+            return <AttributeBar key={key} attrKey={key as AttributeKey} value={value} />
+          })}
+        </div>
+      ))}
     </div>
   )
 }

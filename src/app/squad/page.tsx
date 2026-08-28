@@ -10,6 +10,7 @@ import { LanguageSwitcher } from "@/components/language-switcher"
 import { DEFAULT_FORMATION, isFormationId } from "@/lib/players/formations"
 import { computeRecommendedLineup } from "@/lib/players/recommend"
 import { calculateTeamTotalQuality, calculateSquadMarketValue } from "@/lib/players/quality"
+import { extractPlayerAttributes } from "@/lib/players/attributes"
 import { SquadTacticsApp } from "./squad-tactics-app"
 
 export default async function SquadPage() {
@@ -85,6 +86,7 @@ export default async function SquadPage() {
             preferredFoot: p.preferredFoot as "left" | "right" | "both",
             nationality: p.nationality,
             shirtNumber: p.shirtNumber,
+            attributes: extractPlayerAttributes(p),
           }))}
           initialAssignments={lineupSlots.map((s) => ({ slotIndex: s.slotIndex, playerId: s.playerId }))}
           initialFormation={formation}

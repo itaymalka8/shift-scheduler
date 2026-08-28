@@ -6,6 +6,10 @@ import { SECONDARY_POSITIONS, type PlayerPosition } from "./positions"
 import { calculatePlayerMarketValue } from "./market-value"
 import { calculatePlayerSalary } from "@/lib/economy/salary"
 import { DEFAULT_SALARY_CONFIG, INITIAL_SQUAD_SALARY_RANGE, type SalaryConfig } from "@/lib/economy/config"
+import { generateAttributesForTargetOverall } from "./attribute-generation"
+import { calculatePositionOverall } from "./overall"
+import { POSITION_ATTRIBUTE_WEIGHTS } from "./position-weights"
+import type { PlayerAttributes } from "./attributes"
 import {
   BROAD_GROUP_POSITIONS,
   DEFAULT_SQUAD_GENERATION_CONFIG,
@@ -20,7 +24,7 @@ import {
 
 type DbClient = PrismaClient | Prisma.TransactionClient
 
-export interface GeneratedPlayer {
+export interface GeneratedPlayer extends PlayerAttributes {
   firstName: string
   lastName: string
   age: number
@@ -158,8 +162,26 @@ export function generateInitialSquad(config: SquadGenerationConfig = DEFAULT_SQU
 
   const shirtNumbers = shuffle(Array.from({ length: positions.length }, (_, i) => i + 1))
 
+  // These are targets fed into attribute generation, not the final stored
+  // Overall - Overall is never picked directly, only ever derived below from
+  // whatever attributes actually come out (see calculatePlayerOverall).
+  const targetOveralls = overalls.map((o) => Math.max(quality.overallRange.min, Math.min(quality.overallRange.max, o)))
+
+  const playerAttributes = positions.map((primaryPosition, i) =>
+    generateAttributesForTargetOverall(primaryPosition, targetOveralls[i])
+  )
+
+  // The per-player correction inside generateAttributesForTargetOverall
+  // gets each player's derived Overall very close to its target, but rarely
+  // exactly on it (integer rounding, occasional attribute clamping at 1/100)
+  // - this closes whatever's left so the squad-wide Total Quality still
+  // lands in the configured range, by nudging individual attribute points
+  // (never Overall itself) a handful of times.
+  nudgeSquadOverallToTarget(positions, playerAttributes, targetOveralls.reduce((sum, o) => sum + o, 0))
+
   const squad = positions.map((primaryPosition, i) => {
-    const overall = Math.max(quality.overallRange.min, Math.min(quality.overallRange.max, overalls[i]))
+    const attributes = playerAttributes[i]
+    const overall = calculatePositionOverall(attributes, primaryPosition)
     const ageBand = pickWeighted(ageBands.map((b) => ({ value: b, weight: b.weight })))
     const age = randomInt(ageBand.min, ageBand.max)
     const potential = Math.max(
@@ -173,6 +195,7 @@ export function generateInitialSquad(config: SquadGenerationConfig = DEFAULT_SQU
     const { firstName, lastName } = generatePlayerName()
 
     return {
+      ...attributes,
       firstName,
       lastName,
       age,
@@ -192,6 +215,34 @@ export function generateInitialSquad(config: SquadGenerationConfig = DEFAULT_SQU
 
   scaleSquadSalariesToRange(squad, INITIAL_SQUAD_SALARY_RANGE, DEFAULT_SALARY_CONFIG)
   return squad
+}
+
+/**
+ * Closes any small residual gap between a squad's actual (derived) Total
+ * Quality and its target by nudging individual attribute points on a few
+ * players - never Overall directly. Bounded well beyond what should ever be
+ * needed in practice (the per-player correction pass already gets very
+ * close), just to guarantee termination.
+ */
+function nudgeSquadOverallToTarget(
+  positions: PlayerPosition[],
+  attributesList: PlayerAttributes[],
+  targetTotal: number,
+  maxPasses = 300
+): void {
+  for (let pass = 0; pass < maxPasses; pass++) {
+    const overalls = positions.map((position, i) => calculatePositionOverall(attributesList[i], position))
+    const gap = targetTotal - overalls.reduce((sum, o) => sum + o, 0)
+    if (gap === 0) return
+
+    const i = pass % positions.length
+    const weights = POSITION_ATTRIBUTE_WEIGHTS[positions[i]]
+    const keys = Object.keys(weights) as (keyof PlayerAttributes)[]
+    if (keys.length === 0) continue
+    const key = keys[pass % keys.length]
+    const current = attributesList[i][key] ?? 50
+    attributesList[i][key] = Math.max(1, Math.min(100, current + Math.sign(gap)))
+  }
 }
 
 /**

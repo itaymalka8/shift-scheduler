@@ -18,6 +18,10 @@ import { DEFAULT_FORMATION, isFormationId } from "@/lib/players/formations"
 import { getSeasonStartMonday, computeMatchdayDate } from "@/lib/match/schedule"
 import { DEFAULT_STARTING_SEATS, toSeatColumns } from "@/lib/stadium/config"
 import { calculatePlayerSalary } from "@/lib/economy/salary"
+import { calculatePlayerMarketValue } from "@/lib/players/market-value"
+import { calculatePlayerOverall } from "@/lib/players/overall"
+import { generateAttributesForTargetOverall } from "@/lib/players/attribute-generation"
+import { isPlayerPosition } from "@/lib/players/positions"
 
 const COUNTRY_CODE = "IL"
 const SEASON_NUMBER = 1
@@ -77,11 +81,39 @@ async function backfillMissingGameData(tx: Prisma.TransactionClient, seasonId: s
       })
     }
 
-    // Squads generated before player salaries existed still carry the
-    // column's default of 0 - a real generated player's salary is always
-    // at least SALARY_MIN, so 0 unambiguously means "not backfilled yet".
+    // Squads generated before the attribute system existed have no
+    // attributes at all - a real generated goalkeeper always has Reflexes,
+    // a real outfield player always has Shooting, so a null there
+    // unambiguously means "not backfilled yet" regardless of position.
+    // Attributes are generated targeting the player's EXISTING Overall (so
+    // a 76-rated player stays roughly 76), then Overall itself is
+    // recomputed from those attributes - never left as the old
+    // independently-set number.
     for (const player of team.players) {
-      if (player.weeklySalary === 0) {
+      const position = isPlayerPosition(player.primaryPosition) ? player.primaryPosition : "CM"
+      const needsAttributes = position === "GK" ? player.reflexes == null : player.shooting == null
+      if (needsAttributes) {
+        const attributes = generateAttributesForTargetOverall(position, player.overall)
+        const overall = calculatePlayerOverall({ ...attributes, primaryPosition: position })
+        await tx.player.update({
+          where: { id: player.id },
+          data: {
+            ...attributes,
+            overall,
+            marketValue: calculatePlayerMarketValue({
+              overall,
+              age: player.age,
+              potential: player.potential,
+              primaryPosition: position,
+              fitness: player.fitness,
+            }),
+            weeklySalary: calculatePlayerSalary({ overall, age: player.age, potential: player.potential, primaryPosition: position }),
+          },
+        })
+      } else if (player.weeklySalary === 0) {
+        // Squads generated before player salaries existed (but after
+        // attributes) still carry the column's default of 0 - a real
+        // generated player's salary is always at least SALARY_MIN.
         await tx.player.update({
           where: { id: player.id },
           data: { weeklySalary: calculatePlayerSalary(player) },

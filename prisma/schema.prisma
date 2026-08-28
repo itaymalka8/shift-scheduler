@@ -120,6 +120,70 @@ model Player {
   nationality         String
   shirtNumber         Int
   createdAt           DateTime    @default(now())
+
+  // Attributes (1-100). Overall is never set directly - it's always
+  // calculatePlayerOverall(this) run at generation time and cached, per the
+  // explicit product requirement that Overall be a derived result of these,
+  // never an independently-editable number. Nullable because a goalkeeper's
+  // outfield-specific attributes (shooting, tackling, ...) and an outfield
+  // player's goalkeeping attributes are both genuinely not applicable, not
+  // just unset - see src/lib/players/attributes.ts for which position gets
+  // which fields.
+
+  // Attacking
+  shooting              Int?
+  finishing             Int?
+  longShots             Int?
+  heading               Int?
+  attackingPositioning  Int?
+
+  // Technical
+  passing               Int?
+  vision                Int?
+  technique             Int?
+  dribbling             Int?
+  ballControl           Int?
+  crossing              Int?
+  freeKicks             Int?
+  penalties             Int?
+  corners               Int?
+
+  // Defensive
+  tackling              Int?
+  marking               Int?
+  defensivePositioning  Int?
+  interceptions         Int?
+  aerialDuels           Int?
+
+  // Physical
+  pace                  Int?
+  acceleration          Int?
+  strength              Int?
+  stamina               Int?
+  agility               Int?
+  balance               Int?
+  jumping               Int?
+
+  // Mental
+  leadership            Int?
+  composure             Int?
+  decisions             Int?
+  anticipation           Int?
+  teamwork              Int?
+  workRate              Int?
+  concentration         Int?
+  aggression            Int?
+
+  // Goalkeeping (goalkeepers only)
+  goalkeeping            Int?
+  reflexes               Int?
+  handling               Int?
+  diving                 Int?
+  oneOnOne               Int?
+  aerialAbility          Int?
+  goalkeeperPositioning  Int?
+  distribution           Int?
+  penaltySaving          Int?
   lineupSlot          LineupSlot?
   captainOfTeam       Team?       @relation("TeamCaptain")
   penaltyTakerOfTeam  Team?       @relation("TeamPenaltyTaker")

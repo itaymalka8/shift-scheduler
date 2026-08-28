@@ -1,6 +1,14 @@
 import { prisma } from "@/lib/prisma"
 import { POSITION_GROUP, isPlayerPosition, type PositionGroup } from "@/lib/players/positions"
 import { calculateTeamTotalQuality } from "@/lib/players/quality"
+import {
+  calculatePlayerAttackRating,
+  calculatePlayerDefenseRating,
+  calculateTacticSynergyMultiplier,
+  averageAttribute,
+  WIDTH_SYNERGY_ATTRIBUTES,
+  PRESSING_SYNERGY_ATTRIBUTES,
+} from "./attribute-strength"
 import { ensureStadiumForTeam } from "@/lib/stadium/actions"
 import { calculateAttendance, calculateMatchStadiumRevenue } from "@/lib/stadium/attendance"
 import { calculateStadiumCapacity } from "@/lib/stadium/metrics"
@@ -51,14 +59,31 @@ async function computeTeamStrength(teamId: string): Promise<TeamStrength> {
     for (const slot of slots) {
       const group = isPlayerPosition(slot.player.primaryPosition) ? POSITION_GROUP[slot.player.primaryPosition] : "MF"
       const weights = GROUP_WEIGHTS[group]
-      const effectiveRating = slot.player.overall * (slot.player.fitness / 100)
-      attackSum += effectiveRating * weights.attack
+      const fitnessFactor = slot.player.fitness / 100
+      // Attack/defense contribution comes from the attributes that actually
+      // matter for each (see attribute-strength.ts) rather than a flat
+      // Overall - a defender and a striker at the same Overall now
+      // genuinely differ in how much they add to each side of the game.
+      attackSum += calculatePlayerAttackRating(slot.player) * fitnessFactor * weights.attack
       attackWeight += weights.attack
-      defenseSum += effectiveRating * weights.defense
+      defenseSum += calculatePlayerDefenseRating(slot.player) * fitnessFactor * weights.defense
       defenseWeight += weights.defense
     }
     attack = attackWeight ? attackSum / attackWeight : 55
     defense = defenseWeight ? defenseSum / defenseWeight : 55
+
+    // Tactic <-> attribute synergy: a dial only pays off if the starting XI
+    // actually has the attributes it calls for - previously width/pressing
+    // were stored but never affected a match at all.
+    const startingAttributes = slots.map((s) => s.player)
+    if (team?.width === "wide") {
+      attack *= calculateTacticSynergyMultiplier(averageAttribute(startingAttributes, WIDTH_SYNERGY_ATTRIBUTES))
+    }
+    if (team?.pressing === "high") {
+      const pressingSynergy = calculateTacticSynergyMultiplier(averageAttribute(startingAttributes, PRESSING_SYNERGY_ATTRIBUTES))
+      attack *= pressingSynergy
+      defense *= pressingSynergy
+    }
   }
 
   if (team?.mentality === "attacking") {
