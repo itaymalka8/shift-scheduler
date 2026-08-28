@@ -121,6 +121,7 @@ export function GoalXLoadingScreen({ mode, progress, status, error, onRetry, onB
                 strokeLinecap="round"
                 strokeDasharray={RING_CIRCUMFERENCE}
                 strokeDashoffset={RING_CIRCUMFERENCE * (1 - clamped / 100)}
+                className={cn(showSlowHint && !isDone && "motion-safe:animate-[goalx-loading-stall_1.8s_ease-in-out_infinite]")}
                 style={{ transition: "stroke-dashoffset 500ms cubic-bezier(0.4, 0, 0.2, 1)" }}
               />
             </svg>
@@ -141,7 +142,9 @@ export function GoalXLoadingScreen({ mode, progress, status, error, onRetry, onB
           </div>
 
           <div className="min-h-10 max-w-xs text-center" aria-live="polite" role="status">
-            <p className="text-sm font-medium text-foreground">{isDone ? t("loading.ready") : status}</p>
+            <p className="text-sm font-medium text-foreground">
+              {isDone ? t(mode === "createClub" ? "loading.createClub.ready" : "loading.ready") : status}
+            </p>
             {showSlowHint && !isDone && (
               <p className="mt-1 text-xs text-muted-foreground">{t("loading.slow")}</p>
             )}

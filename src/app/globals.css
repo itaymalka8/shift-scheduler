@@ -145,3 +145,11 @@
   0%, 100% { transform: scale(1); opacity: 1; }
   50% { transform: scale(1.04); opacity: 0.92; }
 }
+
+/* Signals "still working" on the progress ring once client-estimated
+   progress has settled at its cap during an unusually long wait - the
+   percentage stops moving, so the ring needs its own sign of life. */
+@keyframes goalx-loading-stall {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}

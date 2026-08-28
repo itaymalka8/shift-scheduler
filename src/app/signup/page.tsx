@@ -3,11 +3,11 @@
 import Image from "next/image"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Controller, useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { signIn } from "next-auth/react"
-import { CheckCircle2, Eye, EyeOff, Loader2, Upload, X } from "lucide-react"
+import { Eye, EyeOff, Upload, X } from "lucide-react"
 import {
   makeAccountSchema,
   makeTeamDetailsSchema,
@@ -48,6 +48,7 @@ import {
 } from "@/components/ui/card"
 import { OAuthButtons } from "@/components/oauth-buttons"
 import { LanguageSwitcher } from "@/components/language-switcher"
+import { GoalXLoadingScreen } from "@/components/goalx-loading-screen"
 import { cn } from "@/lib/utils"
 import {
   CREST_COLORS,
@@ -67,6 +68,24 @@ import {
 
 const MAX_CREST_SIZE = 2 * 1024 * 1024
 const ALLOWED_CREST_TYPES = ["image/png", "image/jpeg", "image/webp", "image/svg+xml"]
+
+// Same reasoning as the sign-in loading sequence: club creation is a single
+// request with no per-stage server signal, so this is a fixed, time-advanced
+// status sequence over client-side estimated progress - it holds on the last
+// message until the request actually resolves, and never claims 100% before
+// the server has confirmed success.
+const CREATE_CLUB_STATUS_KEYS: TranslationKey[] = [
+  "loading.createClub.step1",
+  "loading.createClub.step2",
+  "loading.createClub.step3",
+  "loading.createClub.step4",
+  "loading.createClub.step5",
+  "loading.createClub.step6",
+  "loading.createClub.step7",
+]
+const PROGRESS_CAP = 90
+const PROGRESS_TICK_MS = 150
+const STATUS_ADVANCE_MS = 900
 
 const SHAPE_LABEL_KEY: Record<CrestShapeId, TranslationKey> = {
   shield: "crest.shapeShield",
@@ -129,12 +148,24 @@ export default function SignUpPage() {
   const t = useT()
   const { locale } = useLocale()
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const [step, setStep] = useState<1 | 2 | 3 | 4>(1)
-  const [serverError, setServerError] = useState<string | null>(null)
-  const [emailExists, setEmailExists] = useState(false)
-  const [signupSucceededSigninFailed, setSignupSucceededSigninFailed] = useState(false)
-  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [step, setStep] = useState<1 | 2 | 3>(1)
   const [rememberMe, setRememberMe] = useState(true)
+
+  const [isLoading, setIsLoading] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [statusIndex, setStatusIndex] = useState(0)
+  const [loadingError, setLoadingError] = useState<string | null>(null)
+  const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const statusTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const stopTimers = () => {
+    if (progressTimerRef.current) clearInterval(progressTimerRef.current)
+    if (statusTimerRef.current) clearInterval(statusTimerRef.current)
+    progressTimerRef.current = null
+    statusTimerRef.current = null
+  }
+
+  useEffect(() => stopTimers, [])
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
 
@@ -195,82 +226,125 @@ export default function SignUpPage() {
     setStep(3)
   }
 
-  const onFinalSubmit = async (teamDetails: TeamDetailsInput) => {
-    const account = accountForm.getValues()
-    const identity = identityForm.getValues()
-    setServerError(null)
-    setEmailExists(false)
-    setSignupSucceededSigninFailed(false)
-    setIsSubmitting(true)
-    try {
-      const formData = new FormData()
-      formData.set("name", account.name)
-      formData.set("email", account.email)
-      formData.set("password", account.password)
-      formData.set("confirmPassword", account.confirmPassword)
-      formData.set("teamName", identity.teamName)
-      formData.set("crestShape", shape)
-      formData.set("crestBorderColor", borderColor)
-      formData.set("countryCode", teamDetails.countryCode)
-      formData.set("stadiumName", teamDetails.stadiumName)
-      formData.set("stadiumStyle", stadiumStyle)
-      formData.set("crowdStyle", teamDetails.crowdStyle)
-
-      if (crestFile) {
-        formData.set("crestImage", crestFile)
-      } else {
-        formData.set("crestPattern", pattern)
-        formData.set("crestIcon", icon)
-        formData.set("crestColor", color)
-        formData.set("crestSecondaryColor", secondaryColor)
-      }
-
-      let res: Response
-      try {
-        res = await fetch("/api/register", { method: "POST", body: formData })
-      } catch {
-        setServerError(t("error.NETWORK_ERROR"))
-        return
-      }
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => null)
-        const code = body?.error as string | undefined
-        if (code === "EMAIL_ALREADY_EXISTS") {
-          setEmailExists(true)
-          return
-        }
-        const key = (isAuthErrorCode(code) ? `error.${code}` : "error.UNKNOWN_ERROR") as TranslationKey
-        setServerError(t(key))
-        return
-      }
-
-      // Auto-sign-in right after a successful registration - never force the
-      // user back to a manual sign-in unless this itself fails, and even
-      // then we don't silently retry it (that's the one thing not to build
-      // here) - we just surface it and let them sign in themselves.
-      const signInResult = await signIn("credentials", {
-        email: account.email,
-        password: account.password,
-        remember: String(rememberMe),
-        redirect: false,
+  const startLoadingAnimation = () => {
+    setProgress(0)
+    setStatusIndex(0)
+    progressTimerRef.current = setInterval(() => {
+      setProgress((p) => {
+        const next = p + (PROGRESS_CAP - p) * 0.06
+        return next >= PROGRESS_CAP - 0.5 ? PROGRESS_CAP : next
       })
-
-      if (signInResult?.error) {
-        setServerError(t("signup.signupSucceededSigninFailed"))
-        setSignupSucceededSigninFailed(true)
-        return
-      }
-
-      setStep(4)
-    } finally {
-      setIsSubmitting(false)
-    }
+    }, PROGRESS_TICK_MS)
+    statusTimerRef.current = setInterval(() => {
+      setStatusIndex((i) => Math.min(i + 1, CREATE_CLUB_STATUS_KEYS.length - 1))
+    }, STATUS_ADVANCE_MS)
   }
 
-  const enterClub = () => {
+  // Attempts a sign-in with the credentials just submitted. Used both for the
+  // normal post-registration auto-sign-in AND as the recovery path when the
+  // server says the email is already registered - if that's true because our
+  // own previous attempt actually succeeded before its response reached us
+  // (a cut connection, a retry after a timeout), the account and password
+  // are exactly the ones we just tried, so signing in here completes the
+  // same flow instead of surfacing a false "duplicate" error.
+  const finishWithSignIn = async (email: string, password: string) => {
+    return signIn("credentials", { email, password, remember: String(rememberMe), redirect: false })
+  }
+
+  const goToDashboard = async () => {
+    stopTimers()
+    setProgress(100)
+    // Let the ring finish and "club ready" register before navigating.
+    await new Promise((resolve) => setTimeout(resolve, 600))
     router.push("/dashboard")
     router.refresh()
+  }
+
+  const onFinalSubmit = async (teamDetails: TeamDetailsInput) => {
+    if (isLoading) return
+    const account = accountForm.getValues()
+    const identity = identityForm.getValues()
+    setLoadingError(null)
+    setIsLoading(true)
+    startLoadingAnimation()
+
+    const formData = new FormData()
+    formData.set("name", account.name)
+    formData.set("email", account.email)
+    formData.set("password", account.password)
+    formData.set("confirmPassword", account.confirmPassword)
+    formData.set("teamName", identity.teamName)
+    formData.set("crestShape", shape)
+    formData.set("crestBorderColor", borderColor)
+    formData.set("countryCode", teamDetails.countryCode)
+    formData.set("stadiumName", teamDetails.stadiumName)
+    formData.set("stadiumStyle", stadiumStyle)
+    formData.set("crowdStyle", teamDetails.crowdStyle)
+
+    if (crestFile) {
+      formData.set("crestImage", crestFile)
+    } else {
+      formData.set("crestPattern", pattern)
+      formData.set("crestIcon", icon)
+      formData.set("crestColor", color)
+      formData.set("crestSecondaryColor", secondaryColor)
+    }
+
+    let res: Response
+    try {
+      res = await fetch("/api/register", { method: "POST", body: formData })
+    } catch {
+      stopTimers()
+      setLoadingError(t("error.NETWORK_ERROR"))
+      return
+    }
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => null)
+      const code = body?.error as string | undefined
+
+      if (code === "EMAIL_ALREADY_EXISTS") {
+        // Could be a genuine pre-existing account, or our own earlier attempt
+        // that actually committed server-side before we saw its response -
+        // signing in with what we just submitted tells them apart without
+        // ever issuing a second create.
+        const recovered = await finishWithSignIn(account.email, account.password).catch(() => null)
+        if (recovered && !recovered.error) {
+          await goToDashboard()
+          return
+        }
+        stopTimers()
+        setLoadingError(t("signup.emailExistsTitle"))
+        return
+      }
+
+      stopTimers()
+      const key = (isAuthErrorCode(code) ? `error.${code}` : "loading.createClub.error") as TranslationKey
+      setLoadingError(t(key))
+      return
+    }
+
+    // Auto-sign-in right after a successful registration.
+    const signInResult = await finishWithSignIn(account.email, account.password)
+    if (signInResult?.error) {
+      stopTimers()
+      setLoadingError(t("signup.signupSucceededSigninFailed"))
+      return
+    }
+
+    await goToDashboard()
+  }
+
+  const handleRetry = () => {
+    void teamForm.handleSubmit(onFinalSubmit)()
+  }
+
+  const handleBack = () => {
+    stopTimers()
+    setIsLoading(false)
+    setLoadingError(null)
+    setProgress(0)
+    setStatusIndex(0)
   }
 
   return (
@@ -711,42 +785,18 @@ export default function SignUpPage() {
                   </Label>
                 </div>
 
-                {emailExists && (
-                  <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-center">
-                    <p className="text-sm text-destructive">{t("signup.emailExistsTitle")}</p>
-                    <Link
-                      href={`/signin?email=${encodeURIComponent(accountForm.getValues("email"))}`}
-                      className="mt-1 inline-block text-sm font-medium text-primary hover:underline"
-                    >
-                      {t("signup.goToSignin")}
-                    </Link>
-                  </div>
-                )}
-
-                {serverError && (
-                  <div className="text-center">
-                    <p className="text-sm text-destructive">{serverError}</p>
-                    {signupSucceededSigninFailed && (
-                      <Link href="/signin" className="text-sm font-medium text-primary hover:underline">
-                        {t("signup.goToSignin")}
-                      </Link>
-                    )}
-                  </div>
-                )}
-
                 <div className="flex gap-3">
                   <Button
                     type="button"
                     variant="outline"
                     className="flex-1"
                     onClick={() => setStep(2)}
-                    disabled={isSubmitting}
+                    disabled={isLoading}
                   >
                     {t("signup.back")}
                   </Button>
-                  <Button type="submit" className="flex-1 gap-2" disabled={isSubmitting}>
-                    {isSubmitting && <Loader2 className="size-4 animate-spin" />}
-                    {isSubmitting ? t("signup.submitting") : t("signup.submit")}
+                  <Button type="submit" className="flex-1 gap-2" disabled={isLoading}>
+                    {t("signup.submit")}
                   </Button>
                 </div>
               </form>
@@ -754,30 +804,15 @@ export default function SignUpPage() {
           </>
         )}
 
-        {step === 4 && (
-          <>
-            <CardHeader className="items-center text-center">
-              <CheckCircle2 className="size-12 text-primary mb-2" />
-              <CardTitle className="text-2xl">{t("signup.readyTitle")}</CardTitle>
-              <CardDescription>{t("signup.readyDescription")}</CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col items-center gap-6">
-              <TeamCrest
-                shape={shape}
-                pattern={pattern}
-                icon={icon}
-                color={color}
-                secondaryColor={secondaryColor}
-                borderColor={borderColor}
-                imageUrl={crestPreviewUrl}
-                size={96}
-              />
-              <p className="text-lg font-semibold">{identityForm.getValues("teamName")}</p>
-              <Button className="w-full" onClick={enterClub}>
-                {t("signup.enterClub")}
-              </Button>
-            </CardContent>
-          </>
+        {isLoading && (
+          <GoalXLoadingScreen
+            mode="createClub"
+            progress={progress}
+            status={t(CREATE_CLUB_STATUS_KEYS[statusIndex])}
+            error={loadingError}
+            onRetry={handleRetry}
+            onBack={handleBack}
+          />
         )}
       </Card>
     </div>
