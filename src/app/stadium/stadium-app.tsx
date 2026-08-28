@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
-import { Armchair, Crown, Loader2, Pencil, Star, Umbrella } from "lucide-react"
+import { Armchair, Crown, Layers, Loader2, Pencil, ShieldCheck, Star, Umbrella, Users } from "lucide-react"
 import { useLocale, useT } from "@/lib/i18n/locale-context"
 import type { TranslationKey } from "@/lib/i18n/translations"
 import { cn } from "@/lib/utils"
@@ -19,7 +19,7 @@ import { StadiumIllustration } from "@/components/stadium-illustration"
 import { formatMarketValue, formatMarketValueCompact } from "@/lib/players/currency"
 import { SEAT_TYPES, TICKET_PRICES, CONSTRUCTION_COST_PER_SEAT, type SeatCounts, type SeatType } from "@/lib/stadium/config"
 import { calculateConstructionCost, calculateConstructionTime, totalSeats } from "@/lib/stadium/construction"
-import { getStadiumVisualTier } from "@/lib/stadium/metrics"
+import { getStadiumVisualTier, getStadiumVisualLevel } from "@/lib/stadium/metrics"
 
 const SEAT_ICONS: Record<SeatType, React.ComponentType<{ className?: string }>> = {
   regular: Armchair,
@@ -50,12 +50,14 @@ interface LastMatch {
 interface ActiveJob {
   id: string
   seatsAdded: number
+  totalCost: number
   startedAt: string
   endsAt: string
 }
 
 export function StadiumApp({
   stadiumName,
+  teamName,
   stadiumStyle,
   seats,
   capacity,
@@ -70,6 +72,7 @@ export function StadiumApp({
   justCompletedCapacity,
 }: {
   stadiumName: string
+  teamName: string
   stadiumStyle: string | null
   seats: SeatCounts
   capacity: number
@@ -112,6 +115,7 @@ export function StadiumApp({
         <MainView
           stadiumStyle={stadiumStyle}
           name={name}
+          teamName={teamName}
           setName={setName}
           capacity={capacity}
           seats={seats}
@@ -143,6 +147,7 @@ export function StadiumApp({
 function MainView({
   stadiumStyle,
   name,
+  teamName,
   setName,
   capacity,
   seats,
@@ -160,6 +165,7 @@ function MainView({
 }: {
   stadiumStyle: string | null
   name: string
+  teamName: string
   setName: (name: string) => void
   capacity: number
   seats: SeatCounts
@@ -177,6 +183,8 @@ function MainView({
 }) {
   const t = useT()
   const { locale } = useLocale()
+  const visualLevel = getStadiumVisualLevel(capacity)
+  const hasMatchData = matchHistory.length > 0
   const [editingName, setEditingName] = useState(false)
   const [nameDraft, setNameDraft] = useState(name)
   const [savingName, setSavingName] = useState(false)
@@ -215,98 +223,174 @@ function MainView({
   }
 
   return (
-    <div className="space-y-6">
-      <div className="rounded-2xl border bg-card p-4 sm:p-6">
-        <StadiumIllustration style={stadiumStyle} capacity={capacity} className="w-full h-40 rounded-lg mb-4" />
-
-        <div className="flex items-center gap-2">
-          <h1 className="text-xl font-bold">{name}</h1>
-          <button
-            type="button"
-            onClick={() => {
-              setNameDraft(name)
-              setEditingName(true)
-            }}
-            className="text-muted-foreground hover:text-foreground"
-            aria-label={t("stadium.editName")}
-          >
-            <Pencil className="size-4" />
-          </button>
-        </div>
-        <p className="text-xs text-muted-foreground mb-4">{t(`stadium.tier.${visualTier}` as TranslationKey)}</p>
-
-        <div className="grid grid-cols-3 gap-2 text-center">
-          <div>
-            <div className="text-lg font-bold text-primary">{capacity.toLocaleString()}</div>
-            <div className="text-xs text-muted-foreground">{t("stadium.capacity")}</div>
+    <div className="space-y-4">
+      {/* Hero + key stats: side by side from lg:, stacked (hero first) below it */}
+      <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
+        <div className="goalx-hero-gradient overflow-hidden rounded-2xl p-4 sm:p-6">
+          <div className="overflow-hidden rounded-xl bg-white/95 p-2 shadow-lg sm:p-3">
+            <StadiumIllustration
+              style={stadiumStyle}
+              capacity={capacity}
+              className="h-48 w-full rounded-lg sm:h-56 lg:h-64"
+            />
           </div>
-          <div>
-            <div className="text-lg font-bold text-primary">
-              {lastMatch ? lastMatch.attendance.toLocaleString() : "-"}
+          <div className="mt-4 text-white">
+            <div className="flex items-center gap-2">
+              <h1 className="text-xl font-bold sm:text-2xl">{name}</h1>
+              <button
+                type="button"
+                onClick={() => {
+                  setNameDraft(name)
+                  setEditingName(true)
+                }}
+                className="text-white/60 hover:text-white"
+                aria-label={t("stadium.editName")}
+              >
+                <Pencil className="size-4" />
+              </button>
             </div>
-            <div className="text-xs text-muted-foreground">{t("stadium.lastHomeMatch")}</div>
-          </div>
-          <div>
-            <div className="text-lg font-bold text-primary">
-              {lastMatch ? formatMarketValue(lastMatch.revenue) : "-"}
-            </div>
-            <div className="text-xs text-muted-foreground">{t("stadium.revenueFromCrowd")}</div>
+            <p className="text-sm text-white/70">{teamName}</p>
+            <p className="mt-2 text-sm font-medium text-white/90">
+              {t("stadium.capacity")} · {capacity.toLocaleString()}
+            </p>
           </div>
         </div>
 
-        {lastMatch && lastMatchOccupancy !== null && (
-          <div className="mt-3 flex items-center justify-center gap-2">
-            <span className="text-xs text-muted-foreground">
-              {t("stadium.occupancy")}: {lastMatchOccupancy}%
-            </span>
-            {lastMatchSoldOut && (
-              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
-                {t("stadium.soldOut")}
-              </span>
+        <div className="rounded-2xl border bg-card p-4 sm:p-6">
+          <div className="grid grid-cols-2 gap-3 text-center">
+            <div className="rounded-lg bg-muted/40 p-3">
+              <div className="text-lg font-bold text-primary">{capacity.toLocaleString()}</div>
+              <div className="text-xs text-muted-foreground">{t("stadium.capacity")}</div>
+            </div>
+            <div className="rounded-lg bg-muted/40 p-3">
+              <div className="text-lg font-bold text-primary">
+                {lastMatch ? lastMatch.attendance.toLocaleString() : "—"}
+              </div>
+              <div className="text-xs text-muted-foreground">{t("stadium.lastHomeMatch")}</div>
+            </div>
+            <div className="rounded-lg bg-muted/40 p-3">
+              <div className="text-lg font-bold text-primary">
+                {lastMatch ? formatMarketValue(lastMatch.revenue) : "—"}
+              </div>
+              <div className="text-xs text-muted-foreground">{t("stadium.revenueFromCrowd")}</div>
+            </div>
+            <div className="rounded-lg bg-muted/40 p-3">
+              <div className="text-lg font-bold text-primary">{t("stadium.levelValue", { n: String(visualLevel) })}</div>
+              <div className="text-xs text-muted-foreground">{t(`stadium.tier.${visualTier}` as TranslationKey)}</div>
+            </div>
+          </div>
+
+          <div className="mt-4">
+            {lastMatch && lastMatchOccupancy !== null ? (
+              <>
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                  <span>{t("stadium.occupancy")}</span>
+                  <span className="flex items-center gap-1.5 font-medium text-foreground">
+                    {lastMatchOccupancy}%
+                    {lastMatchSoldOut && (
+                      <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
+                        {t("stadium.soldOut")}
+                      </span>
+                    )}
+                  </span>
+                </div>
+                <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full bg-primary transition-all"
+                    style={{ width: `${Math.min(100, lastMatchOccupancy)}%` }}
+                  />
+                </div>
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground">{t("stadium.fanDataEmpty")}</p>
             )}
           </div>
-        )}
 
-        {showExpansionHint && !activeJob && (
-          <p className="mt-4 rounded-lg bg-primary/5 p-3 text-sm text-primary">{t("stadium.expansionHint")}</p>
-        )}
-
-        <div className="mt-5">
-          {activeJob ? (
-            <div className="rounded-lg border bg-muted/40 p-3">
-              <p className="text-sm font-medium">{t("stadium.constructionInProgressTitle")}</p>
-              <p className="text-sm text-muted-foreground">
-                {t("stadium.constructionNewSeats", { n: activeJob.seatsAdded.toLocaleString() })}
-              </p>
-              <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
-                <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${progressPercent}%` }} />
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {daysLeft === 0 ? t("stadium.constructionEndsToday") : t("stadium.constructionEndsIn", { days: String(daysLeft) })}
-              </p>
-            </div>
-          ) : (
-            <Button className="w-full" size="lg" onClick={onUpgradeClick}>
-              {t("stadium.upgradeButton")}
-            </Button>
+          {showExpansionHint && !activeJob && (
+            <p className="mt-4 rounded-lg bg-primary/5 p-3 text-sm text-primary">{t("stadium.expansionHint")}</p>
           )}
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {SEAT_TYPES.map((type) => {
-          const Icon = SEAT_ICONS[type]
-          const count = seats[type]
-          const percent = capacity > 0 ? Math.round((count / capacity) * 100) : 0
-          return (
-            <div key={type} className="rounded-lg border bg-card p-3 text-center">
-              <Icon className="mx-auto mb-1 size-5 text-primary" />
-              <div className="text-sm font-bold">{count.toLocaleString()}</div>
-              <div className="text-xs text-muted-foreground">{t(seatLabelKey(type))}</div>
-              <div className="text-xs text-muted-foreground">{percent}%</div>
+      {/* Stands */}
+      <div className="rounded-2xl border bg-card p-4 sm:p-6">
+        <h2 className="mb-3 text-sm font-semibold">{t("stadium.standsTitle")}</h2>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {SEAT_TYPES.map((type) => {
+            const Icon = SEAT_ICONS[type]
+            const count = seats[type]
+            const percent = capacity > 0 ? Math.round((count / capacity) * 100) : 0
+            return (
+              <div key={type} className="rounded-lg bg-muted/40 p-3 text-center">
+                <Icon className="mx-auto mb-1 size-5 text-primary" />
+                <div className="text-sm font-bold">{count.toLocaleString()}</div>
+                <div className="text-xs text-muted-foreground">{t(seatLabelKey(type))}</div>
+                <div className="text-xs text-muted-foreground">{percent}%</div>
+                <div className="mt-2 space-y-0.5 border-t pt-2 text-[11px] text-muted-foreground">
+                  <div className="flex items-center justify-center gap-1">
+                    <Layers className="size-3" />
+                    {t("stadium.standLevelLabel")}: {t("stadium.comingSoon")}
+                  </div>
+                  <div className="flex items-center justify-center gap-1">
+                    <ShieldCheck className="size-3" />
+                    {t("stadium.standStatusLabel")}: {t("stadium.standStatusActive")}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Upgrades */}
+      <div className="rounded-2xl border bg-card p-4 sm:p-6">
+        <h2 className="text-sm font-semibold">{t("stadium.upgradesTitle")}</h2>
+        <p className="mt-1 text-sm text-muted-foreground">{t("stadium.upgradeRationale")}</p>
+
+        {activeJob ? (
+          <div className="mt-4 rounded-lg bg-muted/40 p-3">
+            <p className="text-sm font-medium">{t("stadium.constructionInProgressTitle")}</p>
+            <p className="text-sm text-muted-foreground">
+              {t("stadium.constructionNewSeats", { n: activeJob.seatsAdded.toLocaleString() })}
+              {" · "}
+              {formatMarketValue(activeJob.totalCost)}
+            </p>
+            <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
+              <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${progressPercent}%` }} />
             </div>
-          )
-        })}
+            <p className="mt-1 text-xs text-muted-foreground">
+              {daysLeft === 0 ? t("stadium.constructionEndsToday") : t("stadium.constructionEndsIn", { days: String(daysLeft) })}
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="mt-4 grid grid-cols-2 gap-3 text-center sm:grid-cols-4">
+              <StatRow label={t("stadium.currentCapacity")} value={capacity.toLocaleString()} />
+              <StatRow label={t("stadium.afterUpgrade")} value="—" />
+              <StatRow label={t("stadium.totalCost")} value="—" />
+              <StatRow label={t("stadium.buildTime")} value="—" />
+            </div>
+            <Button className="mt-4 w-full" size="lg" onClick={onUpgradeClick}>
+              {t("stadium.upgradeButton")}
+            </Button>
+          </>
+        )}
+      </div>
+
+      {/* Fan data */}
+      <div className="rounded-2xl border bg-card p-4 sm:p-6">
+        <h2 className="mb-3 flex items-center gap-1.5 text-sm font-semibold">
+          <Users className="size-4 text-primary" />
+          {t("stadium.fanDataTitle")}
+        </h2>
+        {hasMatchData ? (
+          <div className="grid grid-cols-2 gap-3 text-center">
+            <StatRow label={t("stadium.avgHomeCrowd")} value={seasonStats.avgAttendance.toLocaleString()} />
+            <StatRow label={t("stadium.statsAvgOccupancy")} value={`${seasonStats.avgOccupancyPercent}%`} />
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">{t("stadium.fanDataEmpty")}</p>
+        )}
       </div>
 
       <div className="rounded-lg border bg-card p-4">

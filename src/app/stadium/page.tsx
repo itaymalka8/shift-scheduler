@@ -79,6 +79,7 @@ export default async function StadiumPage() {
       <main className="mx-auto max-w-3xl px-4 py-6 sm:px-6 sm:py-10">
         <StadiumApp
           stadiumName={stadium.name}
+          teamName={team.name}
           stadiumStyle={team.stadiumStyle}
           seats={seats}
           capacity={capacity}
@@ -118,6 +119,7 @@ export default async function StadiumPage() {
                     activeJob.coveredSeatsAdded +
                     activeJob.premiumSeatsAdded +
                     activeJob.vipSeatsAdded,
+                  totalCost: activeJob.totalCost,
                   endsAt: activeJob.endsAt.toISOString(),
                   startedAt: activeJob.startedAt.toISOString(),
                 }

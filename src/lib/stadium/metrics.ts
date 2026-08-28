@@ -33,3 +33,9 @@ export function getStadiumVisualTier(capacity: number): StadiumVisualTier {
   const tier = STADIUM_VISUAL_TIERS.find((t) => capacity <= t.maxCapacity)
   return (tier ?? STADIUM_VISUAL_TIERS[STADIUM_VISUAL_TIERS.length - 1]).id
 }
+
+/** The visual tier's 1-based position in STADIUM_VISUAL_TIERS - a "stadium level" number for display, derived from the same real capacity-based tiering above, not a separate stored value. */
+export function getStadiumVisualLevel(capacity: number): number {
+  const tier = getStadiumVisualTier(capacity)
+  return STADIUM_VISUAL_TIERS.findIndex((t) => t.id === tier) + 1
+}
