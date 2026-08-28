@@ -1,4 +1,4 @@
-import { FORMATIONS, type FormationId } from "./formations"
+import type { FormationSlot } from "./formations"
 import { calculatePositionSuitability } from "./suitability"
 import { isPlayerPosition } from "./positions"
 
@@ -27,17 +27,17 @@ export interface RecommendedAssignment {
  * available ones, so a lineup is always produced.
  */
 export function computeRecommendedLineup(
-  formation: FormationId,
+  slots: readonly FormationSlot[],
   players: RecommendCandidate[],
   preferredIds: Set<string> = new Set()
 ): RecommendedAssignment[] {
   const available = players.filter((p) => p.status === "available")
-  const pool = available.length >= FORMATIONS[formation].length ? available : players
+  const pool = available.length >= slots.length ? available : players
 
   const remaining = new Map(pool.map((p) => [p.id, p]))
   const assignments: RecommendedAssignment[] = []
 
-  FORMATIONS[formation].forEach((slot, slotIndex) => {
+  slots.forEach((slot, slotIndex) => {
     let best: RecommendCandidate | null = null
     let bestScore = -Infinity
 

@@ -6,8 +6,10 @@
 export const ATTACKING_ATTRIBUTES = ["shooting", "finishing", "longShots", "heading", "attackingPositioning"] as const
 export const TECHNICAL_ATTRIBUTES = [
   "passing",
+  "longPassing",
   "vision",
   "technique",
+  "creativity",
   "dribbling",
   "ballControl",
   "crossing",
@@ -32,6 +34,8 @@ export const MENTAL_ATTRIBUTES = [
   "workRate",
   "concentration",
   "aggression",
+  "experience",
+  "secondBallAwareness",
 ] as const
 
 export const OUTFIELD_ATTRIBUTES = [

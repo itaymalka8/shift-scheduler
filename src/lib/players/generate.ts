@@ -1,6 +1,6 @@
 import type { Prisma, PrismaClient } from "@/generated/prisma"
 import { generatePlayerName } from "./names"
-import { DEFAULT_FORMATION } from "./formations"
+import { DEFAULT_FORMATION, FORMATIONS } from "./formations"
 import { computeRecommendedLineup } from "./recommend"
 import { SECONDARY_POSITIONS, type PlayerPosition } from "./positions"
 import { calculatePlayerMarketValue } from "./market-value"
@@ -285,7 +285,7 @@ export async function generateSquad(
     created.push({ id: row.id, primaryPosition: row.primaryPosition, overall: row.overall, fitness: row.fitness, status: row.status })
   }
 
-  const assignments = computeRecommendedLineup(DEFAULT_FORMATION, created)
+  const assignments = computeRecommendedLineup(FORMATIONS[DEFAULT_FORMATION], created)
   for (const assignment of assignments) {
     await db.lineupSlot.create({
       data: { teamId, playerId: assignment.playerId, slotIndex: assignment.slotIndex },

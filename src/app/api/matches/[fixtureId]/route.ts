@@ -29,7 +29,13 @@ export async function GET(_request: Request, { params }: { params: Promise<{ fix
       where: { fixtureId },
       orderBy: { minute: "asc" },
     })
-    events = allEvents.filter((e) => e.minute <= minute).map((e) => ({ minute: e.minute, teamId: e.teamId }))
+    // A goal can come from open play (type "goal") or a converted penalty
+    // (type "penalty", outcome "scored") - every other event type (passes,
+    // tackles, fouls, cards, etc.) is not a goal and must not count as one.
+    const goals = allEvents.filter(
+      (e) => e.type === "goal" || (e.type === "penalty" && e.outcome === "scored")
+    )
+    events = goals.filter((e) => e.minute <= minute).map((e) => ({ minute: e.minute, teamId: e.teamId }))
     homeScore = events.filter((e) => e.teamId === fixture.homeTeamId).length
     awayScore = events.filter((e) => e.teamId === fixture.awayTeamId).length
   }

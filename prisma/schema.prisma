@@ -74,10 +74,21 @@ model Team {
   balance             Int            @default(5000000)
   isBot               Boolean        @default(false)
   formation           String?
+  // Custom formation slots (JSON array of {role,x,y}) - only read when
+  // formation == "custom"; the named formations live in code.
+  customFormation     Json?
   mentality           String?
   tempo               String?
   pressing            String?
   width               String?
+  attackingStyle      String?
+  defensiveLine       String?
+  offsideTrap         Boolean  @default(false)
+  creativeFreedom     String?
+  dribbleFrequency    String?
+  passingType         String?
+  attackDirection     String?
+  fullbackOverlaps    String?
   createdAt           DateTime       @default(now())
   user                User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId              String?        @unique
@@ -139,8 +150,10 @@ model Player {
 
   // Technical
   passing               Int?
+  longPassing           Int?
   vision                Int?
   technique             Int?
+  creativity            Int?
   dribbling             Int?
   ballControl           Int?
   crossing              Int?
@@ -168,11 +181,13 @@ model Player {
   leadership            Int?
   composure             Int?
   decisions             Int?
-  anticipation           Int?
+  anticipation          Int?
   teamwork              Int?
   workRate              Int?
   concentration         Int?
   aggression            Int?
+  experience            Int?
+  secondBallAwareness   Int?
 
   // Goalkeeping (goalkeepers only)
   goalkeeping            Int?
@@ -185,6 +200,7 @@ model Player {
   distribution           Int?
   penaltySaving          Int?
   lineupSlot          LineupSlot?
+  matchStats          PlayerMatchStats[]
   captainOfTeam       Team?       @relation("TeamCaptain")
   penaltyTakerOfTeam  Team?       @relation("TeamPenaltyTaker")
   freeKickTakerOfTeam Team?       @relation("TeamFreeKickTaker")
@@ -319,10 +335,52 @@ model Fixture {
   attendance  Int?
   homeRevenue Int?
   homeMatchExpense Int?
+  // Seeds the match engine's RNG, so re-running a fixture's simulation
+  // from the same snapshot always produces the identical match.
+  matchSeed   String?
+  // Team-level match statistics, as produced by the engine (possession,
+  // shots, corners, ...). Stored as JSON since it's a read-only result
+  // blob the engine defines, never queried field-by-field.
+  homeStats   Json?
+  awayStats   Json?
   scheduledAt DateTime?
   playedAt    DateTime?
   createdAt   DateTime     @default(now())
   events      MatchEvent[]
+  playerStats PlayerMatchStats[]
+}
+
+// One row per player per match they appeared in - the raw record every
+// post-match rating, form calculation, and future award/scouting feature
+// reads from. Ratings come from these actions, never from Overall.
+model PlayerMatchStats {
+  id                String   @id @default(cuid())
+  fixtureId         String
+  fixture           Fixture  @relation(fields: [fixtureId], references: [id], onDelete: Cascade)
+  playerId          String
+  player            Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  teamId            String
+  minutesPlayed     Int      @default(0)
+  goals             Int      @default(0)
+  assists           Int      @default(0)
+  shots             Int      @default(0)
+  shotsOnTarget     Int      @default(0)
+  passesAttempted   Int      @default(0)
+  passesCompleted   Int      @default(0)
+  keyPasses         Int      @default(0)
+  dribblesAttempted Int      @default(0)
+  dribblesCompleted Int      @default(0)
+  tackles           Int      @default(0)
+  interceptions     Int      @default(0)
+  aerialDuelsWon    Int      @default(0)
+  fouls             Int      @default(0)
+  yellowCards       Int      @default(0)
+  redCards          Int      @default(0)
+  saves             Int      @default(0)
+  rating            Float    @default(6)
+  createdAt         DateTime @default(now())
+
+  @@unique([fixtureId, playerId])
 }
 
 // A single goal within a fixture's simulated 90 minutes - computed all at
@@ -330,12 +388,16 @@ model Fixture {
 // src/lib/match/simulate.ts), then revealed progressively on the live match
 // page based on elapsed real time.
 model MatchEvent {
-  id        String   @id @default(cuid())
-  fixtureId String
-  fixture   Fixture  @relation(fields: [fixtureId], references: [id], onDelete: Cascade)
-  minute    Int
-  teamId    String
-  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  type      String   @default("goal")
-  createdAt DateTime @default(now())
+  id                String   @id @default(cuid())
+  fixtureId         String
+  fixture           Fixture  @relation(fields: [fixtureId], references: [id], onDelete: Cascade)
+  minute            Int
+  teamId            String
+  team              Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  type              String   @default("goal")
+  playerId          String?
+  secondaryPlayerId String?
+  outcome           String?
+  context           Json?
+  createdAt         DateTime @default(now())
 }

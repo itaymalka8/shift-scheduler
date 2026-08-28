@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useT } from "@/lib/i18n/locale-context"
 import type { TranslationKey } from "@/lib/i18n/translations"
 import { cn } from "@/lib/utils"
@@ -12,12 +12,37 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { FORMATIONS, isFormationId, type FormationId } from "@/lib/players/formations"
+import {
+  FORMATION_IDS,
+  CUSTOM_FORMATION_ID,
+  CUSTOM_FORMATION_ZONES,
+  GOALKEEPER_SLOT,
+  CUSTOM_MIN_X,
+  CUSTOM_MAX_X,
+  CUSTOM_OUTFIELD_MIN_Y,
+  CUSTOM_OUTFIELD_MAX_Y,
+  deriveRoleFromPosition,
+  resolveFormationSlots,
+  type FormationSlot,
+} from "@/lib/players/formations"
 import type { PlayerPosition } from "@/lib/players/positions"
 import { calculatePositionSuitability, type PositionFit } from "@/lib/players/suitability"
 import { getPlayerTier, getFitnessLevel, getDisplayStatus, type PlayerStatus, type DisplayPlayerStatus } from "@/lib/players/tiers"
 import { formatMarketValue, formatMarketValueCompact } from "@/lib/players/currency"
-import { MENTALITY_OPTIONS, PRESSING_OPTIONS, TEMPO_OPTIONS, WIDTH_OPTIONS } from "@/lib/players/tactics"
+import {
+  MENTALITY_OPTIONS,
+  PRESSING_OPTIONS,
+  TEMPO_OPTIONS,
+  WIDTH_OPTIONS,
+  ATTACKING_STYLE_OPTIONS,
+  DEFENSIVE_LINE_OPTIONS,
+  CREATIVE_FREEDOM_OPTIONS,
+  DRIBBLE_FREQUENCY_OPTIONS,
+  PASSING_TYPE_OPTIONS,
+  ATTACK_DIRECTION_OPTIONS,
+  FULLBACK_OVERLAP_OPTIONS,
+} from "@/lib/players/tactics"
+import type { TacticalAssessment } from "@/lib/match/engine/coach-advice"
 import {
   ATTRIBUTE_CATEGORIES,
   GOALKEEPER_ATTRIBUTE_CATEGORIES,
@@ -52,6 +77,11 @@ interface Assignment {
   playerId: string
 }
 
+interface Point {
+  x: number
+  y: number
+}
+
 type SortKey = "ability" | "position" | "age" | "fitness"
 
 const POSITION_ORDER: PlayerPosition[] = ["GK", "CB", "RB", "LB", "CDM", "CM", "CAM", "RM", "LM", "RW", "LW", "ST"]
@@ -79,6 +109,29 @@ const TIER_BADGE_CLASSES: Record<string, string> = {
   prestige: "bg-gradient-to-r from-amber-500 to-primary text-white",
 }
 
+const FIT_BADGE_CLASSES: Record<string, string> = {
+  excellent: "bg-emerald-100 text-emerald-800",
+  good: "bg-primary/10 text-primary",
+  average: "bg-amber-100 text-amber-800",
+  weak: "bg-red-100 text-red-800",
+}
+
+// A sensible starting layout for a manager entering the custom builder for
+// the first time - a plain 4-4-2 shape, already legal within the custom
+// zones, that they can then drag away from.
+const DEFAULT_CUSTOM_SLOTS: Point[] = [
+  { x: 82, y: 25 },
+  { x: 62, y: 22 },
+  { x: 38, y: 22 },
+  { x: 18, y: 25 },
+  { x: 82, y: 55 },
+  { x: 60, y: 52 },
+  { x: 40, y: 52 },
+  { x: 18, y: 55 },
+  { x: 62, y: 82 },
+  { x: 38, y: 82 },
+]
+
 function fullName(p: PlayerDTO): string {
   return `${p.firstName} ${p.lastName}`
 }
@@ -95,12 +148,21 @@ async function patchSquad(body: Record<string, unknown>) {
   })
   if (!res.ok) return null
   return (await res.json()) as {
-    formation: FormationId
+    formation: string
+    customFormation: Point[] | null
     assignments: Assignment[]
     mentality: string | null
     tempo: string | null
     pressing: string | null
     width: string | null
+    attackingStyle: string | null
+    defensiveLine: string | null
+    offsideTrap: boolean
+    creativeFreedom: string | null
+    dribbleFrequency: string | null
+    passingType: string | null
+    attackDirection: string | null
+    fullbackOverlaps: string | null
     captainId: string | null
     penaltyTakerId: string | null
     freeKickTakerId: string | null
@@ -108,14 +170,29 @@ async function patchSquad(body: Record<string, unknown>) {
   }
 }
 
+async function fetchAssessment(): Promise<TacticalAssessment | null> {
+  const res = await fetch("/api/squad/assessment")
+  if (!res.ok) return null
+  return (await res.json()) as TacticalAssessment
+}
+
 export function SquadTacticsApp({
   players,
   initialAssignments,
   initialFormation,
+  initialCustomFormation,
   initialMentality,
   initialTempo,
   initialPressing,
   initialWidth,
+  initialAttackingStyle,
+  initialDefensiveLine,
+  initialOffsideTrap,
+  initialCreativeFreedom,
+  initialDribbleFrequency,
+  initialPassingType,
+  initialAttackDirection,
+  initialFullbackOverlaps,
   initialCaptainId,
   initialPenaltyTakerId,
   initialFreeKickTakerId,
@@ -127,11 +204,20 @@ export function SquadTacticsApp({
 }: {
   players: PlayerDTO[]
   initialAssignments: Assignment[]
-  initialFormation: FormationId
+  initialFormation: string
+  initialCustomFormation: Point[] | null
   initialMentality: string
   initialTempo: string
   initialPressing: string
   initialWidth: string
+  initialAttackingStyle: string
+  initialDefensiveLine: string
+  initialOffsideTrap: boolean
+  initialCreativeFreedom: string
+  initialDribbleFrequency: string
+  initialPassingType: string
+  initialAttackDirection: string
+  initialFullbackOverlaps: string
   initialCaptainId: string | null
   initialPenaltyTakerId: string | null
   initialFreeKickTakerId: string | null
@@ -148,7 +234,8 @@ export function SquadTacticsApp({
   const [sortKey, setSortKey] = useState<SortKey>("ability")
   const [expandedPlayerId, setExpandedPlayerId] = useState<string | null>(null)
 
-  const [formation, setFormation] = useState<FormationId>(initialFormation)
+  const [formation, setFormation] = useState(initialFormation)
+  const [customFormation, setCustomFormation] = useState<Point[] | null>(initialCustomFormation)
   const [assignments, setAssignments] = useState<Map<number, string>>(
     () => new Map(initialAssignments.map((a) => [a.slotIndex, a.playerId]))
   )
@@ -156,18 +243,39 @@ export function SquadTacticsApp({
   const [tempo, setTempo] = useState(initialTempo)
   const [pressing, setPressing] = useState(initialPressing)
   const [width, setWidth] = useState(initialWidth)
+  const [attackingStyle, setAttackingStyle] = useState(initialAttackingStyle)
+  const [defensiveLine, setDefensiveLine] = useState(initialDefensiveLine)
+  const [offsideTrap, setOffsideTrap] = useState(initialOffsideTrap)
+  const [creativeFreedom, setCreativeFreedom] = useState(initialCreativeFreedom)
+  const [dribbleFrequency, setDribbleFrequency] = useState(initialDribbleFrequency)
+  const [passingType, setPassingType] = useState(initialPassingType)
+  const [attackDirection, setAttackDirection] = useState(initialAttackDirection)
+  const [fullbackOverlaps, setFullbackOverlaps] = useState(initialFullbackOverlaps)
   const [captainId, setCaptainId] = useState(initialCaptainId)
   const [penaltyTakerId, setPenaltyTakerId] = useState(initialPenaltyTakerId)
   const [freeKickTakerId, setFreeKickTakerId] = useState(initialFreeKickTakerId)
   const [cornerTakerId, setCornerTakerId] = useState(initialCornerTakerId)
+
+  const [assessment, setAssessment] = useState<TacticalAssessment | null>(null)
 
   const [pickerSlotIndex, setPickerSlotIndex] = useState<number | null>(null)
   const [confirmRecommend, setConfirmRecommend] = useState(false)
   const [saveStatus, setSaveStatus] = useState<"idle" | "saved">("idle")
   const savedTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  const slots = useMemo(() => resolveFormationSlots(formation, customFormation), [formation, customFormation])
+
   const startingIds = useMemo(() => new Set(assignments.values()), [assignments])
   const benchPlayers = players.filter((p) => !startingIds.has(p.id))
+
+  async function refreshAssessment() {
+    setAssessment(await fetchAssessment())
+  }
+
+  useEffect(() => {
+    if (tab === "tactics" && !assessment) refreshAssessment()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab])
 
   function flashSaved() {
     setSaveStatus("saved")
@@ -180,8 +288,26 @@ export function SquadTacticsApp({
     const result = await patchSquad(body)
     if (result) {
       setFormation(result.formation)
+      setCustomFormation(result.customFormation)
       setAssignments(new Map(result.assignments.map((a) => [a.slotIndex, a.playerId])))
+      setMentality(result.mentality ?? "balanced")
+      setTempo(result.tempo ?? "normal")
+      setPressing(result.pressing ?? "normal")
+      setWidth(result.width ?? "balanced")
+      setAttackingStyle(result.attackingStyle ?? "shortPassing")
+      setDefensiveLine(result.defensiveLine ?? "normal")
+      setOffsideTrap(result.offsideTrap)
+      setCreativeFreedom(result.creativeFreedom ?? "balanced")
+      setDribbleFrequency(result.dribbleFrequency ?? "balanced")
+      setPassingType(result.passingType ?? "mixed")
+      setAttackDirection(result.attackDirection ?? "balanced")
+      setFullbackOverlaps(result.fullbackOverlaps ?? "normal")
+      setCaptainId(result.captainId)
+      setPenaltyTakerId(result.penaltyTakerId)
+      setFreeKickTakerId(result.freeKickTakerId)
+      setCornerTakerId(result.cornerTakerId)
       flashSaved()
+      refreshAssessment()
     }
   }
 
@@ -200,27 +326,62 @@ export function SquadTacticsApp({
     setPickerSlotIndex(null)
   }
 
-  function changeFormation(next: FormationId) {
-    applyAndSave({ formation: next }, () => setFormation(next))
+  function changeFormation(next: string) {
+    if (next === CUSTOM_FORMATION_ID) {
+      const seed = customFormation ?? DEFAULT_CUSTOM_SLOTS
+      applyAndSave({ formation: next, customFormation: seed }, () => {
+        setFormation(next)
+        setCustomFormation(seed)
+      })
+    } else {
+      applyAndSave({ formation: next }, () => setFormation(next))
+    }
+  }
+
+  function saveCustomFormation(next: Point[]) {
+    applyAndSave({ formation: CUSTOM_FORMATION_ID, customFormation: next }, () => setCustomFormation(next))
   }
 
   async function applyRecommended() {
     const res = await fetch("/api/squad/recommend", { method: "POST" })
     if (res.ok) {
-      const body = (await res.json()) as { formation: FormationId; assignments: Assignment[] }
+      const body = (await res.json()) as { formation: string; assignments: Assignment[] }
       setFormation(body.formation)
       setAssignments(new Map(body.assignments.map((a) => [a.slotIndex, a.playerId])))
       flashSaved()
+      refreshAssessment()
     }
     setConfirmRecommend(false)
   }
 
   function resetTactics() {
-    applyAndSave({ mentality: "balanced", tempo: "normal", pressing: "normal", width: "balanced" }, () => {
-      setMentality("balanced")
-      setTempo("normal")
-      setPressing("normal")
-      setWidth("balanced")
+    const body = {
+      mentality: "balanced",
+      tempo: "normal",
+      pressing: "normal",
+      width: "balanced",
+      attackingStyle: "shortPassing",
+      defensiveLine: "normal",
+      offsideTrap: false,
+      creativeFreedom: "balanced",
+      dribbleFrequency: "balanced",
+      passingType: "mixed",
+      attackDirection: "balanced",
+      fullbackOverlaps: "normal",
+    }
+    applyAndSave(body, () => {
+      setMentality(body.mentality)
+      setTempo(body.tempo)
+      setPressing(body.pressing)
+      setWidth(body.width)
+      setAttackingStyle(body.attackingStyle)
+      setDefensiveLine(body.defensiveLine)
+      setOffsideTrap(body.offsideTrap)
+      setCreativeFreedom(body.creativeFreedom)
+      setDribbleFrequency(body.dribbleFrequency)
+      setPassingType(body.passingType)
+      setAttackDirection(body.attackDirection)
+      setFullbackOverlaps(body.fullbackOverlaps)
     })
   }
 
@@ -347,8 +508,16 @@ export function SquadTacticsApp({
       ) : (
         <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
           <div className="space-y-4">
+            {formation === CUSTOM_FORMATION_ID && (
+              <CustomFormationBuilder
+                slots={customFormation ?? DEFAULT_CUSTOM_SLOTS}
+                onCommit={saveCustomFormation}
+                accentColor={accentColor}
+              />
+            )}
+
             <Pitch
-              formation={formation}
+              slots={slots}
               assignments={assignments}
               byId={byId}
               accentColor={accentColor}
@@ -372,13 +541,14 @@ export function SquadTacticsApp({
                 <select
                   className="rounded-md border bg-background px-2 py-1 text-sm"
                   value={formation}
-                  onChange={(e) => changeFormation(e.target.value as FormationId)}
+                  onChange={(e) => changeFormation(e.target.value)}
                 >
-                  {Object.keys(FORMATIONS).map((id) => (
+                  {FORMATION_IDS.map((id) => (
                     <option key={id} value={id}>
                       {id}
                     </option>
                   ))}
+                  <option value={CUSTOM_FORMATION_ID}>{t("squad.formation.custom")}</option>
                 </select>
               </label>
               <Button size="sm" variant="outline" onClick={() => setConfirmRecommend(true)}>
@@ -388,6 +558,8 @@ export function SquadTacticsApp({
                 {t("squad.resetTactics")}
               </Button>
             </div>
+
+            <TacticalFitPanel assessment={assessment} />
 
             <div className="space-y-1">
               <h2 className="text-sm font-medium text-muted-foreground">{t("squad.tabSquad")}</h2>
@@ -416,6 +588,13 @@ export function SquadTacticsApp({
               onChange={(v) => applyAndSave({ mentality: v }, () => setMentality(v))}
             />
             <TacticDial
+              titleKey="squad.attackingStyle.title"
+              value={attackingStyle}
+              options={ATTACKING_STYLE_OPTIONS as readonly string[]}
+              prefix="squad.attackingStyle"
+              onChange={(v) => applyAndSave({ attackingStyle: v }, () => setAttackingStyle(v))}
+            />
+            <TacticDial
               titleKey="squad.tempo.title"
               value={tempo}
               options={TEMPO_OPTIONS as readonly string[]}
@@ -430,11 +609,59 @@ export function SquadTacticsApp({
               onChange={(v) => applyAndSave({ pressing: v }, () => setPressing(v))}
             />
             <TacticDial
+              titleKey="squad.defensiveLine.title"
+              value={defensiveLine}
+              options={DEFENSIVE_LINE_OPTIONS as readonly string[]}
+              prefix="squad.defensiveLine"
+              onChange={(v) => applyAndSave({ defensiveLine: v }, () => setDefensiveLine(v))}
+            />
+            <ToggleDial
+              titleKey="squad.offsideTrap.title"
+              descKey="squad.offsideTrap.desc"
+              value={offsideTrap}
+              onChange={(v) => applyAndSave({ offsideTrap: v }, () => setOffsideTrap(v))}
+            />
+            <TacticDial
               titleKey="squad.width.title"
               value={width}
               options={WIDTH_OPTIONS as readonly string[]}
               prefix="squad.width"
               onChange={(v) => applyAndSave({ width: v }, () => setWidth(v))}
+            />
+            <TacticDial
+              titleKey="squad.creativeFreedom.title"
+              value={creativeFreedom}
+              options={CREATIVE_FREEDOM_OPTIONS as readonly string[]}
+              prefix="squad.creativeFreedom"
+              onChange={(v) => applyAndSave({ creativeFreedom: v }, () => setCreativeFreedom(v))}
+            />
+            <TacticDial
+              titleKey="squad.dribbleFrequency.title"
+              value={dribbleFrequency}
+              options={DRIBBLE_FREQUENCY_OPTIONS as readonly string[]}
+              prefix="squad.dribbleFrequency"
+              onChange={(v) => applyAndSave({ dribbleFrequency: v }, () => setDribbleFrequency(v))}
+            />
+            <TacticDial
+              titleKey="squad.passingType.title"
+              value={passingType}
+              options={PASSING_TYPE_OPTIONS as readonly string[]}
+              prefix="squad.passingType"
+              onChange={(v) => applyAndSave({ passingType: v }, () => setPassingType(v))}
+            />
+            <TacticDial
+              titleKey="squad.attackDirection.title"
+              value={attackDirection}
+              options={ATTACK_DIRECTION_OPTIONS as readonly string[]}
+              prefix="squad.attackDirection"
+              onChange={(v) => applyAndSave({ attackDirection: v }, () => setAttackDirection(v))}
+            />
+            <TacticDial
+              titleKey="squad.fullbackOverlaps.title"
+              value={fullbackOverlaps}
+              options={FULLBACK_OVERLAP_OPTIONS as readonly string[]}
+              prefix="squad.fullbackOverlaps"
+              onChange={(v) => applyAndSave({ fullbackOverlaps: v }, () => setFullbackOverlaps(v))}
             />
 
             <div className="space-y-3">
@@ -482,7 +709,7 @@ export function SquadTacticsApp({
                 {(() => {
                   const slotEntry = [...assignments.entries()].find(([, playerId]) => playerId === expandedPlayer.id)
                   if (!slotEntry) return null
-                  const role = FORMATIONS[formation][slotEntry[0]].role
+                  const role = slots[slotEntry[0]].role
                   if (role === (expandedPlayer.primaryPosition as PlayerPosition)) return null
                   return (
                     <Row
@@ -535,7 +762,7 @@ export function SquadTacticsApp({
               benchPlayers
                 .slice()
                 .sort((a, b) => {
-                  const slotRole = FORMATIONS[formation][pickerSlotIndex].role
+                  const slotRole = slots[pickerSlotIndex].role
                   const fitScore = (p: PlayerDTO) => {
                     const fit = fitOf(p, slotRole)
                     return fit === "natural" ? 2 : fit === "secondary" ? 1 : 0
@@ -715,7 +942,7 @@ function BenchChip({ player, onClick }: { player: PlayerDTO; onClick: () => void
 }
 
 function Pitch({
-  formation,
+  slots,
   assignments,
   byId,
   accentColor,
@@ -723,7 +950,7 @@ function Pitch({
   onSlotClick,
   onRemove,
 }: {
-  formation: FormationId
+  slots: FormationSlot[]
   assignments: Map<number, string>
   byId: Map<string, PlayerDTO>
   accentColor: string
@@ -752,7 +979,7 @@ function Pitch({
       <div className="pointer-events-none absolute left-1/2 top-3 h-[14%] w-[46%] -translate-x-1/2 border-2 border-t-0 border-white/70" />
       <div className="pointer-events-none absolute left-1/2 bottom-3 h-[14%] w-[46%] -translate-x-1/2 border-2 border-b-0 border-white/70" />
 
-      {FORMATIONS[formation].map((slot, slotIndex) => {
+      {slots.map((slot, slotIndex) => {
         const playerId = assignments.get(slotIndex)
         const player = playerId ? byId.get(playerId) : undefined
         const fit = player ? fitOf(player, slot.role) : "natural"
@@ -814,6 +1041,98 @@ function Pitch({
   )
 }
 
+/**
+ * Pure geometry editor for a custom formation - a flat (non-3D) pitch so
+ * pointer coordinates map directly to percentages. Only shapes WHERE the ten
+ * outfield players stand; who plays each spot is still decided on the
+ * regular Pitch above, which re-renders with whatever shape is saved here.
+ */
+function CustomFormationBuilder({
+  slots,
+  onCommit,
+  accentColor,
+}: {
+  slots: Point[]
+  onCommit: (next: Point[]) => void
+  accentColor: string
+}) {
+  const t = useT()
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [draft, setDraft] = useState<Point[]>(slots)
+  const draggingIndex = useRef<number | null>(null)
+
+  useEffect(() => setDraft(slots), [slots])
+
+  function positionFromEvent(e: React.PointerEvent): Point {
+    const rect = containerRef.current!.getBoundingClientRect()
+    const x = ((e.clientX - rect.left) / rect.width) * 100
+    const y = ((e.clientY - rect.top) / rect.height) * 100
+    return {
+      x: Math.min(CUSTOM_MAX_X, Math.max(CUSTOM_MIN_X, x)),
+      y: Math.min(CUSTOM_OUTFIELD_MAX_Y, Math.max(CUSTOM_OUTFIELD_MIN_Y, y)),
+    }
+  }
+
+  function handlePointerDown(index: number, e: React.PointerEvent<HTMLDivElement>) {
+    e.currentTarget.setPointerCapture(e.pointerId)
+    draggingIndex.current = index
+  }
+
+  function handlePointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    const index = draggingIndex.current
+    if (index === null) return
+    const point = positionFromEvent(e)
+    setDraft((prev) => prev.map((slot, i) => (i === index ? point : slot)))
+  }
+
+  function handlePointerUp() {
+    if (draggingIndex.current === null) return
+    draggingIndex.current = null
+    onCommit(draft)
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border bg-card p-3">
+      <h3 className="text-sm font-semibold">{t("squad.customFormation.title")}</h3>
+      <p className="text-xs text-muted-foreground">{t("squad.customFormation.hint")}</p>
+      <div
+        ref={containerRef}
+        className="relative mx-auto w-full max-w-md touch-none select-none overflow-hidden rounded-xl"
+        style={{
+          aspectRatio: "2 / 3",
+          background: "repeating-linear-gradient(to bottom, #2f9e44 0%, #2f9e44 10%, #37b24d 10%, #37b24d 20%)",
+        }}
+      >
+        {CUSTOM_FORMATION_ZONES.map((zone) => (
+          <div
+            key={zone.id}
+            className="pointer-events-none absolute left-0 right-0 border-t border-dashed border-white/30"
+            style={{ top: `${zone.minY}%` }}
+          />
+        ))}
+        <div
+          className="pointer-events-none absolute flex size-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-white/80 bg-black/60 text-[10px] font-bold text-white"
+          style={{ left: `${GOALKEEPER_SLOT.x}%`, top: `${GOALKEEPER_SLOT.y}%` }}
+        >
+          {t(positionLabelKey("GK"))}
+        </div>
+        {draft.map((slot, index) => (
+          <div
+            key={index}
+            onPointerDown={(e) => handlePointerDown(index, e)}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            className="absolute flex size-9 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none items-center justify-center rounded-full border-2 border-white/90 text-[10px] font-bold text-white shadow-md active:cursor-grabbing"
+            style={{ left: `${slot.x}%`, top: `${slot.y}%`, backgroundColor: accentColor }}
+          >
+            {t(positionLabelKey(deriveRoleFromPosition(slot.x, slot.y)))}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function TacticDial({
   titleKey,
   value,
@@ -831,7 +1150,7 @@ function TacticDial({
   return (
     <div>
       <h3 className="mb-2 text-sm font-semibold">{t(titleKey)}</h3>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         {options.map((option) => (
           <button
             key={option}
@@ -849,6 +1168,83 @@ function TacticDial({
       <p className="mt-1.5 text-xs text-muted-foreground">
         {t(`${prefix}.${value}Desc` as TranslationKey)}
       </p>
+    </div>
+  )
+}
+
+function ToggleDial({
+  titleKey,
+  descKey,
+  value,
+  onChange,
+}: {
+  titleKey: TranslationKey
+  descKey: TranslationKey
+  value: boolean
+  onChange: (value: boolean) => void
+}) {
+  const t = useT()
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between">
+        <h3 className="text-sm font-semibold">{t(titleKey)}</h3>
+        <button
+          type="button"
+          onClick={() => onChange(!value)}
+          className={cn(
+            "rounded-full border px-3 py-1 text-xs font-medium",
+            value ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground"
+          )}
+        >
+          {t(value ? "squad.offsideTrap.on" : "squad.offsideTrap.off")}
+        </button>
+      </div>
+      <p className="text-xs text-muted-foreground">{t(descKey)}</p>
+    </div>
+  )
+}
+
+/**
+ * The one place the manager sees whether their plan actually suits their
+ * players - computed server-side by the same engine logic the match itself
+ * uses, never a separate client-side guess.
+ */
+function TacticalFitPanel({ assessment }: { assessment: TacticalAssessment | null }) {
+  const t = useT()
+  if (!assessment) return null
+
+  return (
+    <div className="space-y-3 rounded-lg border bg-card p-3">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold">{t("squad.fit.title")}</h3>
+        <span className={cn("rounded-full px-2 py-0.5 text-xs font-bold", FIT_BADGE_CLASSES[assessment.rating])}>
+          {t(`squad.fit.${assessment.rating}` as TranslationKey)}
+        </span>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {t(assessment.explanation.key as TranslationKey, assessment.explanation.values)}
+      </p>
+
+      {assessment.advice.length > 0 && (
+        <div>
+          <h4 className="mb-1 text-xs font-semibold text-muted-foreground">{t("squad.coachAdvice.title")}</h4>
+          <ul className="space-y-1 text-xs text-muted-foreground">
+            {assessment.advice.map((item) => (
+              <li key={item.key}>• {t(item.key as TranslationKey, item.values)}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {assessment.bestStyles[0] && (
+        <div>
+          <h4 className="mb-1 text-xs font-semibold text-muted-foreground">{t("squad.bestStyles.title")}</h4>
+          <p className="text-xs text-muted-foreground">
+            {t(`squad.attackingStyle.${assessment.bestStyles[0].style}` as TranslationKey)} ·{" "}
+            {t(`squad.fit.${assessment.bestStyles[0].rating}` as TranslationKey)}
+          </p>
+        </div>
+      )}
     </div>
   )
 }

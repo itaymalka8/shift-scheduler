@@ -14,7 +14,7 @@ import { STADIUM_STYLES } from "@/components/stadium-illustration"
 import { CROWD_STYLES } from "@/lib/validation"
 import { generateSquad } from "@/lib/players/generate"
 import { computeRecommendedLineup } from "@/lib/players/recommend"
-import { DEFAULT_FORMATION, isFormationId } from "@/lib/players/formations"
+import { DEFAULT_FORMATION, FORMATIONS, isFormationId } from "@/lib/players/formations"
 import { getSeasonStartMonday, computeMatchdayDate } from "@/lib/match/schedule"
 import { DEFAULT_STARTING_SEATS, toSeatColumns } from "@/lib/stadium/config"
 import { calculatePlayerSalary } from "@/lib/economy/salary"
@@ -128,7 +128,7 @@ async function backfillMissingGameData(tx: Prisma.TransactionClient, seasonId: s
       // rows - give any squad left without a starting XI a fresh one.
       const formation = isFormationId(team.formation) ? team.formation : DEFAULT_FORMATION
       const assignments = computeRecommendedLineup(
-        formation,
+        FORMATIONS[formation],
         team.players.map((p) => ({
           id: p.id,
           primaryPosition: p.primaryPosition,

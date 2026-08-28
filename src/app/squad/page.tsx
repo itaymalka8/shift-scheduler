@@ -5,9 +5,10 @@ import { cookies } from "next/headers"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
+import { Prisma } from "@/generated/prisma"
 import { DEFAULT_LOCALE, getTranslator, isLocale } from "@/lib/i18n/translations"
 import { LanguageSwitcher } from "@/components/language-switcher"
-import { DEFAULT_FORMATION, isFormationId } from "@/lib/players/formations"
+import { DEFAULT_FORMATION, isFormationId, resolveFormationSlots, CUSTOM_FORMATION_ID } from "@/lib/players/formations"
 import { computeRecommendedLineup } from "@/lib/players/recommend"
 import { calculateTeamTotalQuality, calculateSquadMarketValue } from "@/lib/players/quality"
 import { extractPlayerAttributes } from "@/lib/players/attributes"
@@ -25,9 +26,13 @@ export default async function SquadPage() {
   const team = await prisma.team.findUnique({ where: { userId: session.user.id } })
   if (!team) notFound()
 
-  const formation = isFormationId(team.formation) ? team.formation : DEFAULT_FORMATION
+  const formationSlots = resolveFormationSlots(team.formation, team.customFormation)
+  // Self-heal: an unrecognized formation (and no valid custom layout) falls
+  // back to the default rather than leaving the team on an invalid one.
+  const formationIsValid = isFormationId(team.formation) || team.formation === CUSTOM_FORMATION_ID
+  const formation = formationIsValid ? (team.formation as string) : DEFAULT_FORMATION
   if (team.formation !== formation) {
-    await prisma.team.update({ where: { id: team.id }, data: { formation } })
+    await prisma.team.update({ where: { id: team.id }, data: { formation, customFormation: Prisma.DbNull } })
   }
 
   let lineupSlots = await prisma.lineupSlot.findMany({ where: { teamId: team.id } })
@@ -36,7 +41,7 @@ export default async function SquadPage() {
   // Self-heal: a team should never land on an empty pitch.
   if (lineupSlots.length === 0 && players.length > 0) {
     const assignments = computeRecommendedLineup(
-      formation,
+      formationSlots,
       players.map((p) => ({
         id: p.id,
         primaryPosition: p.primaryPosition,
@@ -90,10 +95,21 @@ export default async function SquadPage() {
           }))}
           initialAssignments={lineupSlots.map((s) => ({ slotIndex: s.slotIndex, playerId: s.playerId }))}
           initialFormation={formation}
+          initialCustomFormation={
+            formation === CUSTOM_FORMATION_ID ? (team.customFormation as { x: number; y: number }[] | null) : null
+          }
           initialMentality={team.mentality ?? "balanced"}
           initialTempo={team.tempo ?? "normal"}
           initialPressing={team.pressing ?? "normal"}
           initialWidth={team.width ?? "balanced"}
+          initialAttackingStyle={team.attackingStyle ?? "shortPassing"}
+          initialDefensiveLine={team.defensiveLine ?? "normal"}
+          initialOffsideTrap={team.offsideTrap ?? false}
+          initialCreativeFreedom={team.creativeFreedom ?? "balanced"}
+          initialDribbleFrequency={team.dribbleFrequency ?? "balanced"}
+          initialPassingType={team.passingType ?? "mixed"}
+          initialAttackDirection={team.attackDirection ?? "balanced"}
+          initialFullbackOverlaps={team.fullbackOverlaps ?? "normal"}
           initialCaptainId={team.captainId}
           initialPenaltyTakerId={team.penaltyTakerId}
           initialFreeKickTakerId={team.freeKickTakerId}

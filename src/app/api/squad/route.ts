@@ -2,8 +2,21 @@ import { NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
-import { isFormationId } from "@/lib/players/formations"
-import { isMentality, isTempo, isPressing, isWidth } from "@/lib/players/tactics"
+import { Prisma } from "@/generated/prisma"
+import { FORMATIONS, isFormationId, CUSTOM_FORMATION_ID, parseCustomFormation, type FormationSlot } from "@/lib/players/formations"
+import {
+  isMentality,
+  isTempo,
+  isPressing,
+  isWidth,
+  isAttackingStyle,
+  isDefensiveLine,
+  isCreativeFreedom,
+  isDribbleFrequency,
+  isPassingType,
+  isAttackDirection,
+  isFullbackOverlaps,
+} from "@/lib/players/tactics"
 import { computeRecommendedLineup } from "@/lib/players/recommend"
 
 async function getOwnTeam(userId: string) {
@@ -29,10 +42,19 @@ async function currentState(teamId: string) {
   ])
   return {
     formation: team?.formation ?? null,
+    customFormation: team?.customFormation ?? null,
     mentality: team?.mentality ?? null,
     tempo: team?.tempo ?? null,
     pressing: team?.pressing ?? null,
     width: team?.width ?? null,
+    attackingStyle: team?.attackingStyle ?? null,
+    defensiveLine: team?.defensiveLine ?? null,
+    offsideTrap: team?.offsideTrap ?? false,
+    creativeFreedom: team?.creativeFreedom ?? null,
+    dribbleFrequency: team?.dribbleFrequency ?? null,
+    passingType: team?.passingType ?? null,
+    attackDirection: team?.attackDirection ?? null,
+    fullbackOverlaps: team?.fullbackOverlaps ?? null,
     captainId: team?.captainId ?? null,
     penaltyTakerId: team?.penaltyTakerId ?? null,
     freeKickTakerId: team?.freeKickTakerId ?? null,
@@ -67,17 +89,36 @@ export async function PATCH(request: Request) {
     await prisma.$transaction(async (tx) => {
     // Formation change: re-derive the whole lineup, preferring current starters.
     if (body.formation !== undefined) {
-      if (!isFormationId(body.formation)) throw new Error("VALIDATION_ERROR")
+      let slots: FormationSlot[]
+      if (body.formation === CUSTOM_FORMATION_ID) {
+        const parsed = parseCustomFormation(body.customFormation)
+        if (!parsed) throw new Error("VALIDATION_ERROR")
+        slots = parsed
+      } else {
+        const formationId = body.formation
+        if (!isFormationId(formationId)) throw new Error("VALIDATION_ERROR")
+        slots = [...FORMATIONS[formationId]]
+      }
+
       const existingSlots = await tx.lineupSlot.findMany({ where: { teamId: team.id } })
       const preferredIds = new Set(existingSlots.map((s) => s.playerId))
       const candidates = await loadCandidates(team.id)
-      const assignments = computeRecommendedLineup(body.formation, candidates, preferredIds)
+      const assignments = computeRecommendedLineup(slots, candidates, preferredIds)
 
       await tx.lineupSlot.deleteMany({ where: { teamId: team.id } })
       await tx.lineupSlot.createMany({
         data: assignments.map((a) => ({ teamId: team.id, playerId: a.playerId, slotIndex: a.slotIndex })),
       })
-      await tx.team.update({ where: { id: team.id }, data: { formation: body.formation } })
+      await tx.team.update({
+        where: { id: team.id },
+        data: {
+          formation: body.formation,
+          customFormation:
+            body.formation === CUSTOM_FORMATION_ID
+              ? (body.customFormation as Prisma.InputJsonValue)
+              : Prisma.DbNull,
+        },
+      })
     }
 
     // Individual slot assignments (bench<->pitch), independent of a formation change.
@@ -96,22 +137,34 @@ export async function PATCH(request: Request) {
       }
     }
 
-    const tacticsUpdate: Record<string, string> = {}
-    if (body.mentality !== undefined) {
-      if (!isMentality(body.mentality)) throw new Error("VALIDATION_ERROR")
-      tacticsUpdate.mentality = body.mentality
+    // Every tactical dial is validated against its own allowed values here -
+    // the client can never write an unrecognized instruction into the row
+    // the match engine later reads.
+    const tacticsUpdate: Record<string, string | boolean> = {}
+    const stringDials = [
+      ["mentality", isMentality],
+      ["tempo", isTempo],
+      ["pressing", isPressing],
+      ["width", isWidth],
+      ["attackingStyle", isAttackingStyle],
+      ["defensiveLine", isDefensiveLine],
+      ["creativeFreedom", isCreativeFreedom],
+      ["dribbleFrequency", isDribbleFrequency],
+      ["passingType", isPassingType],
+      ["attackDirection", isAttackDirection],
+      ["fullbackOverlaps", isFullbackOverlaps],
+    ] as const
+
+    for (const [field, validate] of stringDials) {
+      const value = body[field]
+      if (value === undefined) continue
+      if (typeof value !== "string" || !validate(value)) throw new Error("VALIDATION_ERROR")
+      tacticsUpdate[field] = value
     }
-    if (body.tempo !== undefined) {
-      if (!isTempo(body.tempo)) throw new Error("VALIDATION_ERROR")
-      tacticsUpdate.tempo = body.tempo
-    }
-    if (body.pressing !== undefined) {
-      if (!isPressing(body.pressing)) throw new Error("VALIDATION_ERROR")
-      tacticsUpdate.pressing = body.pressing
-    }
-    if (body.width !== undefined) {
-      if (!isWidth(body.width)) throw new Error("VALIDATION_ERROR")
-      tacticsUpdate.width = body.width
+
+    if (body.offsideTrap !== undefined) {
+      if (typeof body.offsideTrap !== "boolean") throw new Error("VALIDATION_ERROR")
+      tacticsUpdate.offsideTrap = body.offsideTrap
     }
 
     const rolesUpdate: Record<string, string | null> = {}

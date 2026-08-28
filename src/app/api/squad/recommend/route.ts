@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
-import { DEFAULT_FORMATION, isFormationId } from "@/lib/players/formations"
+import { resolveFormationSlots } from "@/lib/players/formations"
 import { computeRecommendedLineup } from "@/lib/players/recommend"
 
 export async function POST() {
@@ -16,7 +16,7 @@ export async function POST() {
     return NextResponse.json({ error: "NO_TEAM" }, { status: 404 })
   }
 
-  const formation = isFormationId(team.formation) ? team.formation : DEFAULT_FORMATION
+  const slots = resolveFormationSlots(team.formation, team.customFormation)
   const players = await prisma.player.findMany({ where: { teamId: team.id } })
   const candidates = players.map((p) => ({
     id: p.id,
@@ -27,7 +27,7 @@ export async function POST() {
     status: p.status,
   }))
 
-  const assignments = computeRecommendedLineup(formation, candidates)
+  const assignments = computeRecommendedLineup(slots, candidates)
 
   await prisma.$transaction([
     prisma.lineupSlot.deleteMany({ where: { teamId: team.id } }),
@@ -36,5 +36,5 @@ export async function POST() {
     }),
   ])
 
-  return NextResponse.json({ formation, assignments })
+  return NextResponse.json({ formation: team.formation, assignments })
 }
