@@ -69,10 +69,9 @@ model Team {
   crestBorderColor    String?
   crestImageUrl       String?
   countryCode         String?
-  stadiumName         String?
   stadiumStyle        String?
-  stadiumCapacity     Int            @default(100)
   crowdStyle          String?
+  balance             Int            @default(5000000)
   isBot               Boolean        @default(false)
   formation           String?
   mentality           String?
@@ -88,6 +87,7 @@ model Team {
   players             Player[]
   lineupSlots         LineupSlot[]
   matchEvents         MatchEvent[]
+  stadium             Stadium?
   captainId           String?        @unique
   captain             Player?        @relation("TeamCaptain", fields: [captainId], references: [id], onDelete: SetNull)
   penaltyTakerId      String?        @unique
@@ -123,6 +123,45 @@ model Player {
   penaltyTakerOfTeam  Team?       @relation("TeamPenaltyTaker")
   freeKickTakerOfTeam Team?       @relation("TeamFreeKickTaker")
   cornerTakerOfTeam   Team?       @relation("TeamCornerTaker")
+}
+
+// A club's stadium - its own entity (not just fields on Team) since it has
+// a real internal structure (four seat types) and its own lifecycle
+// (construction jobs). totalCapacity/stadiumValue/weeklyMaintenance are
+// deliberately NOT stored here - they're always derived from the seat
+// counts below (see src/lib/stadium/metrics.ts), the same way a squad's
+// Total Quality is derived from its players rather than cached and risking
+// going stale.
+model Stadium {
+  id                String                   @id @default(cuid())
+  teamId            String                   @unique
+  team              Team                     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  name              String
+  regularSeats      Int
+  coveredSeats      Int
+  premiumSeats      Int
+  vipSeats          Int
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+  constructionJobs  StadiumConstructionJob[]
+}
+
+// One in-progress or finished expansion. At most one pending/active job per
+// stadium at a time - enforced in code (startStadiumConstruction checks
+// before creating one), not just relied on here.
+model StadiumConstructionJob {
+  id                  String    @id @default(cuid())
+  stadiumId           String
+  stadium             Stadium   @relation(fields: [stadiumId], references: [id], onDelete: Cascade)
+  regularSeatsAdded   Int       @default(0)
+  coveredSeatsAdded   Int       @default(0)
+  premiumSeatsAdded   Int       @default(0)
+  vipSeatsAdded       Int       @default(0)
+  totalCost           Int
+  status              String    @default("active")
+  startedAt           DateTime  @default(now())
+  endsAt              DateTime
+  completedAt         DateTime?
 }
 
 // A player's spot in their team's current starting XI. slotIndex points at
@@ -190,6 +229,8 @@ model Fixture {
   awayTeam    Team         @relation("AwayFixtures", fields: [awayTeamId], references: [id], onDelete: Cascade)
   homeScore   Int?
   awayScore   Int?
+  attendance  Int?
+  homeRevenue Int?
   scheduledAt DateTime?
   playedAt    DateTime?
   createdAt   DateTime     @default(now())

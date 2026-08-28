@@ -77,6 +77,9 @@ export default async function DashboardPage() {
             <Link href="/squad" className="text-sm font-medium text-primary hover:underline">
               {t("squad.navLink")}
             </Link>
+            <Link href="/stadium" className="text-sm font-medium text-primary hover:underline">
+              {t("stadium.navLink")}
+            </Link>
             <LanguageSwitcher />
             <SignOutButton label={t("dashboard.signOut")} />
           </div>

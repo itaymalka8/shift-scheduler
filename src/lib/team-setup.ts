@@ -9,6 +9,7 @@ import {
 } from "@/components/team-crest"
 import { DEFAULT_STADIUM_STYLE } from "@/components/stadium-illustration"
 import { generateSquad } from "@/lib/players/generate"
+import { DEFAULT_STARTING_SEATS, DEFAULT_STADIUM_NAME_SUFFIX, toSeatColumns } from "@/lib/stadium/config"
 
 type Client = PrismaClient | Prisma.TransactionClient
 
@@ -39,8 +40,10 @@ export async function ensureTeamForUser(
       crestBorderColor: DEFAULT_CREST_BORDER_COLOR,
       crowdStyle: "calm",
       stadiumStyle: DEFAULT_STADIUM_STYLE,
-      stadiumCapacity: 100,
     },
   })
   await generateSquad(client, team.id)
+  await client.stadium.create({
+    data: { teamId: team.id, name: DEFAULT_STADIUM_NAME_SUFFIX, ...toSeatColumns(DEFAULT_STARTING_SEATS) },
+  })
 }

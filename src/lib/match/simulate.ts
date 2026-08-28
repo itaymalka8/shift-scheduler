@@ -1,5 +1,10 @@
 import { prisma } from "@/lib/prisma"
 import { POSITION_GROUP, isPlayerPosition, type PositionGroup } from "@/lib/players/positions"
+import { calculateTeamTotalQuality } from "@/lib/players/quality"
+import { ensureStadiumForTeam } from "@/lib/stadium/actions"
+import { calculateAttendance, calculateMatchStadiumRevenue } from "@/lib/stadium/attendance"
+import { toSeatCounts } from "@/lib/stadium/config"
+import { adjustClubBalance } from "@/lib/finance/balance"
 
 const BASE_GOAL_RATE = 1.35
 const HOME_ADVANTAGE = 1.15
@@ -110,6 +115,18 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
     ...Array.from({ length: awayGoals }, () => ({ minute: randomMinute(), teamId: fixture.awayTeamId })),
   ].sort((a, b) => a.minute - b.minute)
 
+  // Gate attendance/revenue for the home side - self-heals a missing Stadium
+  // row (e.g. a team created before the stadium system existed) the same way
+  // generateSquad backfills a missing squad.
+  const homeStadium = await ensureStadiumForTeam(fixture.homeTeamId)
+  const homePlayers = await prisma.player.findMany({ where: { teamId: fixture.homeTeamId } })
+  const attendance = calculateAttendance(
+    { isHome: true },
+    { teamTotalQuality: calculateTeamTotalQuality(homePlayers) },
+    { seats: toSeatCounts(homeStadium) }
+  )
+  const revenue = calculateMatchStadiumRevenue(attendance.bySeatType)
+
   await prisma.$transaction(async (tx) => {
     const fresh = await tx.fixture.findUnique({ where: { id: fixtureId } })
     if (!fresh || fresh.playedAt) return
@@ -119,8 +136,15 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
     })
     await tx.fixture.update({
       where: { id: fixtureId },
-      data: { homeScore: homeGoals, awayScore: awayGoals, playedAt: new Date() },
+      data: {
+        homeScore: homeGoals,
+        awayScore: awayGoals,
+        playedAt: new Date(),
+        attendance: attendance.total,
+        homeRevenue: revenue.total,
+      },
     })
+    await adjustClubBalance(tx, fixture.homeTeamId, revenue.total, { allowNegative: true })
   })
 }
 

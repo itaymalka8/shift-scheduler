@@ -21,8 +21,7 @@ import { DEFAULT_STADIUM_STYLE, isStadiumStyle } from "@/components/stadium-illu
 import { ensureIsraelSeasonSeeded } from "@/lib/leagues/seed"
 import { pickBotTeamForNewSignup } from "@/lib/leagues/assign"
 import { generateSquad } from "@/lib/players/generate"
-
-const DEFAULT_STADIUM_CAPACITY = 100
+import { DEFAULT_STARTING_SEATS, toSeatColumns } from "@/lib/stadium/config"
 
 const MAX_CREST_SIZE = 2 * 1024 * 1024 // 2MB
 const ALLOWED_CREST_TYPES: Record<string, string> = {
@@ -161,9 +160,7 @@ export async function POST(request: Request) {
     crestBorderColor: resolvedBorder,
     crestImageUrl,
     countryCode,
-    stadiumName,
     stadiumStyle: resolvedStadiumStyle,
-    stadiumCapacity: DEFAULT_STADIUM_CAPACITY,
     crowdStyle: resolvedCrowdStyle,
   }
 
@@ -176,11 +173,14 @@ export async function POST(request: Request) {
       const botTeamId = countryCode === "IL" ? await pickBotTeamForNewSignup(tx) : null
 
       if (botTeamId) {
-        // Inherits the bot's already-generated squad and fixtures as-is.
+        // Inherits the bot's already-generated squad, fixtures, and stadium
+        // seats as-is - only the stadium's name changes to the one picked at signup.
         await tx.team.update({ where: { id: botTeamId }, data: { ...teamData, userId: user.id, isBot: false } })
+        await tx.stadium.update({ where: { teamId: botTeamId }, data: { name: stadiumName } })
       } else {
         const team = await tx.team.create({ data: { ...teamData, userId: user.id } })
         await generateSquad(tx, team.id)
+        await tx.stadium.create({ data: { teamId: team.id, name: stadiumName, ...toSeatColumns(DEFAULT_STARTING_SEATS) } })
       }
     })
   } catch (error) {

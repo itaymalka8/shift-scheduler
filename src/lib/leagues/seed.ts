@@ -16,6 +16,7 @@ import { generateSquad } from "@/lib/players/generate"
 import { computeRecommendedLineup } from "@/lib/players/recommend"
 import { DEFAULT_FORMATION, isFormationId } from "@/lib/players/formations"
 import { getSeasonStartMonday, computeMatchdayDate } from "@/lib/match/schedule"
+import { DEFAULT_STARTING_SEATS, toSeatColumns } from "@/lib/stadium/config"
 
 const COUNTRY_CODE = "IL"
 const SEASON_NUMBER = 1
@@ -49,10 +50,8 @@ async function refreshBotTeamNames(tx: Prisma.TransactionClient): Promise<void> 
       const team = botMemberships[i].team
       const newName = names[i]
       if (team.name !== newName) {
-        await tx.team.update({
-          where: { id: team.id },
-          data: { name: newName, stadiumName: `אצטדיון ${newName}` },
-        })
+        await tx.team.update({ where: { id: team.id }, data: { name: newName } })
+        await tx.stadium.updateMany({ where: { teamId: team.id }, data: { name: `אצטדיון ${newName}` } })
       }
     }
   }
@@ -67,10 +66,16 @@ async function refreshBotTeamNames(tx: Prisma.TransactionClient): Promise<void> 
 async function backfillMissingGameData(tx: Prisma.TransactionClient, seasonId: string): Promise<void> {
   const teamsInSeason = await tx.team.findMany({
     where: { divisionMemberships: { some: { division: { seasonId } } } },
-    include: { players: true, lineupSlots: true },
+    include: { players: true, lineupSlots: true, stadium: true },
   })
 
   for (const team of teamsInSeason) {
+    if (!team.stadium) {
+      await tx.stadium.create({
+        data: { teamId: team.id, name: `אצטדיון ${team.name}`, ...toSeatColumns(DEFAULT_STARTING_SEATS) },
+      })
+    }
+
     if (team.players.length === 0) {
       await generateSquad(tx, team.id)
     } else if (team.lineupSlots.length === 0) {
@@ -176,15 +181,16 @@ export async function ensureIsraelSeasonSeeded(): Promise<void> {
                 crestColor: CREST_COLORS[n % CREST_COLORS.length],
                 crestSecondaryColor: CREST_COLORS[(n + 5) % CREST_COLORS.length],
                 crestBorderColor: DEFAULT_CREST_BORDER_COLOR,
-                stadiumName: `אצטדיון ${name}`,
                 stadiumStyle: STADIUM_STYLES[n % STADIUM_STYLES.length].id,
-                stadiumCapacity: 100,
                 crowdStyle: CROWD_STYLES[n % CROWD_STYLES.length],
               },
             })
             teamIds.push(team.id)
             await tx.divisionTeam.create({ data: { divisionId: division.id, teamId: team.id } })
             await generateSquad(tx, team.id)
+            await tx.stadium.create({
+              data: { teamId: team.id, name: `אצטדיון ${name}`, ...toSeatColumns(DEFAULT_STARTING_SEATS) },
+            })
           }
 
           const fixtures = generateDoubleRoundRobin(teamIds)
