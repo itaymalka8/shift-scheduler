@@ -135,6 +135,8 @@ const he = {
   "dashboard.nextMatch.countdownLabel": "המשחק הבא בעוד",
   "dashboard.countdown.days": "ימים",
   "dashboard.countdown.hours": "שעות",
+  "dashboard.league.viewFullTable": "לטבלה המלאה",
+  "dashboard.league.myTeamBadge": "הקבוצה שלי",
 
   "league.title": "הליגה שלי",
   "league.viewAllLeagues": "צפו בכל הליגות",
@@ -771,6 +773,8 @@ const en: Record<keyof typeof he, string> = {
   "dashboard.nextMatch.countdownLabel": "Next match in",
   "dashboard.countdown.days": "days",
   "dashboard.countdown.hours": "hours",
+  "dashboard.league.viewFullTable": "View full table",
+  "dashboard.league.myTeamBadge": "My team",
 
   "league.title": "My League",
   "league.viewAllLeagues": "View all leagues",
@@ -1404,6 +1408,8 @@ const ar: Record<keyof typeof he, string> = {
   "dashboard.nextMatch.countdownLabel": "المباراة القادمة خلال",
   "dashboard.countdown.days": "أيام",
   "dashboard.countdown.hours": "ساعات",
+  "dashboard.league.viewFullTable": "الجدول الكامل",
+  "dashboard.league.myTeamBadge": "فريقي",
 
   "league.title": "دوريّ",
   "league.viewAllLeagues": "عرض كل الدوريات",

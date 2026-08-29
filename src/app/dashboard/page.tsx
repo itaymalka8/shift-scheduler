@@ -6,9 +6,10 @@ import { authOptions } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { DEFAULT_LOCALE, getTranslator, isLocale, type Locale } from "@/lib/i18n/translations"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
 import { TeamCrest } from "@/components/team-crest"
 import { getLeagueTiers, getDivisionName } from "@/lib/leagues/config"
-import { computeStandings } from "@/lib/leagues/standings"
+import { computeStandings, type StandingRow } from "@/lib/leagues/standings"
 import { ensureIsraelSeasonSeeded } from "@/lib/leagues/seed"
 import { ensureTeamForUser } from "@/lib/team-setup"
 import { ensureStadiumForTeam } from "@/lib/stadium/actions"
@@ -61,6 +62,38 @@ export default async function DashboardPage() {
   const standings = division ? await computeStandings(division.id) : []
   const teamNameById = new Map(standings.map((r) => [r.teamId, r.teamName]))
 
+  // A compact "around my team" window for the dashboard card - 2 above +
+  // me + 2 below, or the top 6 when there aren't 2 teams above (including
+  // right at season start, where every team is still tied on 0 points and
+  // this just reads as "the top of the table"). The full table stays on
+  // /league, untouched.
+  const myStandingIndex = team ? standings.findIndex((r) => r.teamId === team.id) : -1
+  const standingsWindowStart = myStandingIndex < 0 || myStandingIndex < 2 ? 0 : myStandingIndex - 2
+  const standingsWindowEnd =
+    myStandingIndex < 0 || myStandingIndex < 2
+      ? Math.min(6, standings.length)
+      : Math.min(myStandingIndex + 3, standings.length)
+  const visibleStandings = standings.slice(standingsWindowStart, standingsWindowEnd)
+  const visibleTeamCrests = visibleStandings.length
+    ? new Map(
+        (
+          await prisma.team.findMany({
+            where: { id: { in: visibleStandings.map((r) => r.teamId) } },
+            select: {
+              id: true,
+              crestShape: true,
+              crestPattern: true,
+              crestIcon: true,
+              crestColor: true,
+              crestSecondaryColor: true,
+              crestBorderColor: true,
+              crestImageUrl: true,
+            },
+          })
+        ).map((t) => [t.id, t])
+      )
+    : new Map()
+
   const upcomingFixtures = division
     ? await prisma.fixture.findMany({
         where: {
@@ -86,8 +119,7 @@ export default async function DashboardPage() {
   const stadium = team ? await ensureStadiumForTeam(team.id, team.name) : null
   const stadiumCapacity = stadium ? calculateStadiumCapacity(toSeatCounts(stadium)) : null
 
-  const myPositionIndex = team ? standings.findIndex((r) => r.teamId === team.id) : -1
-  const positionLabel = myPositionIndex >= 0 ? myPositionIndex + 1 : null
+  const positionLabel = myStandingIndex >= 0 ? myStandingIndex + 1 : null
 
   const nextFixture = upcomingFixtures[0] ?? null
   const isHomeNextMatch = nextFixture && team ? nextFixture.homeTeamId === team.id : true
@@ -175,77 +207,63 @@ export default async function DashboardPage() {
           </div>
         </div>
 
-        <Card className="mt-6">
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle>{t("league.title")}</CardTitle>
-              {division && (
-                <Link href="/league" className="text-sm text-primary hover:underline">
-                  {t("league.viewAllLeagues")}
-                </Link>
-              )}
+        <Card className="mt-6 overflow-hidden py-0">
+          <CardHeader className="gap-2 border-b bg-gradient-to-br from-primary/10 via-primary/5 to-transparent py-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <CardTitle className="truncate text-base">{divisionName ?? t("league.title")}</CardTitle>
+                {nextFixture && (
+                  <CardDescription className="mt-0.5">
+                    {t("league.matchday", { n: String(nextFixture.matchday) })}
+                  </CardDescription>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {positionLabel && (
+                  <span className="flex items-center gap-1.5 whitespace-nowrap rounded-full bg-primary/10 px-3 py-1 text-sm font-semibold text-primary">
+                    <Trophy className="size-3.5" />
+                    {t("dashboard.hero.position", { n: String(positionLabel) })}
+                  </span>
+                )}
+                {division && (
+                  <Button asChild size="sm" variant="outline" className="bg-card">
+                    <Link href="/league">{t("dashboard.league.viewFullTable")}</Link>
+                  </Button>
+                )}
+              </div>
             </div>
-            {divisionName && <CardDescription>{divisionName}</CardDescription>}
           </CardHeader>
-          <CardContent className="min-w-0">
+          <CardContent className="min-w-0 px-3 py-4 sm:px-4">
             {!division ? (
-              <p className="text-muted-foreground">{t("league.notAssigned")}</p>
+              <p className="px-3 text-muted-foreground">{t("league.notAssigned")}</p>
             ) : (
               <>
-                <h3 className="mb-2 text-sm font-medium text-muted-foreground">{t("league.standings")}</h3>
-                {/* min-w-0 above lets this shrink inside its flex-col Card
-                    instead of growing to the table's full intrinsic width -
-                    without it, overflow-x-auto below never gets a chance to
-                    activate and the whole page scrolls horizontally instead.
-                    Secondary columns (W/D/L/GF/GA/GD) are mobile-hidden -
-                    position, team, played and points are the ones that must
-                    always fit without any scrolling; the rest reappear at
-                    sm: and are always one local scroll away below that. */}
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b text-muted-foreground">
-                        <th className="px-1.5 py-1 text-start font-medium sm:px-2">{t("league.colPos")}</th>
-                        <th className="px-1.5 py-1 text-start font-medium sm:px-2">{t("league.colTeam")}</th>
-                        <th className="px-1.5 py-1 text-center font-medium sm:px-2">{t("league.colPlayed")}</th>
-                        <th className="hidden px-2 py-1 text-center font-medium sm:table-cell">{t("league.colWon")}</th>
-                        <th className="hidden px-2 py-1 text-center font-medium sm:table-cell">{t("league.colDrawn")}</th>
-                        <th className="hidden px-2 py-1 text-center font-medium sm:table-cell">{t("league.colLost")}</th>
-                        <th className="hidden px-2 py-1 text-center font-medium sm:table-cell">{t("league.colGoalsFor")}</th>
-                        <th className="hidden px-2 py-1 text-center font-medium sm:table-cell">{t("league.colGoalsAgainst")}</th>
-                        <th className="hidden px-2 py-1 text-center font-medium sm:table-cell">{t("league.colGoalDiff")}</th>
-                        <th className="px-1.5 py-1 text-center font-semibold sm:px-2">{t("league.colPoints")}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {standings.map((row, i) => (
-                        <tr
-                          key={row.teamId}
-                          className={cn("border-b last:border-0", row.teamId === team?.id && "bg-accent/60 font-medium")}
-                        >
-                          <td className="px-1.5 py-1 sm:px-2">{i + 1}</td>
-                          <td className="max-w-24 truncate px-1.5 py-1 sm:max-w-none sm:px-2">{row.teamName}</td>
-                          <td className="px-1.5 py-1 text-center sm:px-2">{row.played}</td>
-                          <td className="hidden px-2 py-1 text-center sm:table-cell">{row.won}</td>
-                          <td className="hidden px-2 py-1 text-center sm:table-cell">{row.drawn}</td>
-                          <td className="hidden px-2 py-1 text-center sm:table-cell">{row.lost}</td>
-                          <td className="hidden px-2 py-1 text-center sm:table-cell">{row.goalsFor}</td>
-                          <td className="hidden px-2 py-1 text-center sm:table-cell">{row.goalsAgainst}</td>
-                          <td className="hidden px-2 py-1 text-center sm:table-cell">{row.goalDiff}</td>
-                          <td className="px-1.5 py-1 text-center font-semibold sm:px-2">{row.points}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                {/* Each row's grid columns collapse per breakpoint (see
+                    StandingsRow) instead of scrolling - position, team,
+                    played and points always fit; won/drawn/lost/goal-diff
+                    only join in at sm: where there's room, so this never
+                    needs horizontal scroll. */}
+                <StandingsHeaderRow t={t} />
+                <div className="space-y-1">
+                  {visibleStandings.map((row, i) => (
+                    <StandingsRow
+                      key={row.teamId}
+                      row={row}
+                      position={standingsWindowStart + i + 1}
+                      isMe={row.teamId === team?.id}
+                      crest={visibleTeamCrests.get(row.teamId) ?? null}
+                      t={t}
+                    />
+                  ))}
                 </div>
 
-                <h3 className="mb-2 mt-6 text-sm font-medium text-muted-foreground">
+                <h3 className="mb-2 mt-6 px-3 text-sm font-medium text-muted-foreground">
                   {t("league.upcomingFixtures")}
                 </h3>
                 {upcomingFixtures.length === 0 ? (
-                  <p className="text-muted-foreground">{t("league.noFixturesYet")}</p>
+                  <p className="px-3 text-muted-foreground">{t("league.noFixturesYet")}</p>
                 ) : (
-                  <ul className="space-y-1 text-sm">
+                  <ul className="space-y-1 px-3 text-sm">
                     {upcomingFixtures.map((f) => {
                       const isHome = f.homeTeamId === team?.id
                       const opponentId = isHome ? f.awayTeamId : f.homeTeamId
@@ -513,6 +531,102 @@ function ClubStatusStats({
           </div>
         ))}
       </div>
+    </div>
+  )
+}
+
+type TeamCrestFields = {
+  crestShape: string | null
+  crestPattern: string | null
+  crestIcon: string | null
+  crestColor: string | null
+  crestSecondaryColor: string | null
+  crestBorderColor: string | null
+  crestImageUrl: string | null
+}
+
+/** Column labels for StandingsRow, sharing its exact grid template so everything lines up. */
+function StandingsHeaderRow({ t }: { t: Translator }) {
+  return (
+    <div className="grid grid-cols-[1.75rem_1fr_2.25rem_2.75rem] items-center gap-2 px-2 pb-1.5 text-[11px] font-medium text-muted-foreground sm:grid-cols-[1.75rem_1fr_2.25rem_2.25rem_2.25rem_2.25rem_2.75rem_2.75rem] sm:gap-3 sm:px-3">
+      <span />
+      <span />
+      <span className="text-center">{t("league.colPlayed")}</span>
+      <span className="hidden text-center sm:block">{t("league.colWon")}</span>
+      <span className="hidden text-center sm:block">{t("league.colDrawn")}</span>
+      <span className="hidden text-center sm:block">{t("league.colLost")}</span>
+      <span className="hidden text-center sm:block">{t("league.colGoalDiff")}</span>
+      <span className="text-center">{t("league.colPoints")}</span>
+    </div>
+  )
+}
+
+/**
+ * One row of the dashboard's compact standings window - a "game row" feel
+ * (crest, generous padding, no thin table borders) instead of a spreadsheet.
+ * Mobile shows position/team/played/points only; won/drawn/lost/goal-diff
+ * join in at sm: via the same row simply switching its own grid template
+ * (hidden cells drop out of grid flow entirely, so nothing needs to scroll).
+ * No promotion/relegation stripe - that ruleset isn't wired up as queryable
+ * per-position data anywhere in the app yet, so it isn't invented here.
+ */
+function StandingsRow({
+  row,
+  position,
+  isMe,
+  crest,
+  t,
+}: {
+  row: StandingRow
+  position: number
+  isMe: boolean
+  crest: TeamCrestFields | null
+  t: Translator
+}) {
+  const isTopThree = position <= 3
+  const goalDiffLabel = row.goalDiff > 0 ? `+${row.goalDiff}` : String(row.goalDiff)
+
+  return (
+    <div
+      className={cn(
+        "grid grid-cols-[1.75rem_1fr_2.25rem_2.75rem] items-center gap-2 rounded-lg border-s-4 px-2 py-2.5 sm:grid-cols-[1.75rem_1fr_2.25rem_2.25rem_2.25rem_2.25rem_2.75rem_2.75rem] sm:gap-3 sm:px-3",
+        isMe ? "border-s-primary bg-primary/5" : "border-s-transparent"
+      )}
+    >
+      <span
+        className={cn(
+          "flex size-6 items-center justify-center rounded-full text-xs font-bold",
+          isTopThree ? "bg-primary/10 text-primary" : "text-sm font-semibold text-muted-foreground"
+        )}
+      >
+        {position}
+      </span>
+
+      <span className="flex min-w-0 items-center gap-2">
+        <TeamCrest
+          shape={crest?.crestShape}
+          pattern={crest?.crestPattern}
+          icon={crest?.crestIcon}
+          color={crest?.crestColor}
+          secondaryColor={crest?.crestSecondaryColor}
+          borderColor={crest?.crestBorderColor}
+          imageUrl={crest?.crestImageUrl}
+          size={22}
+        />
+        <span className="min-w-0">
+          <span className={cn("block truncate text-sm", isMe ? "font-bold" : "font-medium")}>{row.teamName}</span>
+          {isMe && <span className="text-[10px] font-medium text-primary">{t("dashboard.league.myTeamBadge")}</span>}
+        </span>
+      </span>
+
+      <span className="text-center text-sm text-muted-foreground">{row.played}</span>
+
+      <span className="hidden text-center text-sm text-muted-foreground sm:block">{row.won}</span>
+      <span className="hidden text-center text-sm text-muted-foreground sm:block">{row.drawn}</span>
+      <span className="hidden text-center text-sm text-muted-foreground sm:block">{row.lost}</span>
+      <span className="hidden text-center text-sm text-muted-foreground sm:block">{goalDiffLabel}</span>
+
+      <span className="text-center text-sm font-bold">{row.points}</span>
     </div>
   )
 }
