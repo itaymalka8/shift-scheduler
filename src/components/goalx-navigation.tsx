@@ -9,6 +9,7 @@ import { useT } from "@/lib/i18n/locale-context"
 import { NAV_ITEMS, MOBILE_PRIMARY_ITEMS, MOBILE_OVERFLOW_ITEMS, isNavHiddenRoute, type NavItem } from "@/lib/navigation"
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
 import { LanguageSwitcher } from "@/components/language-switcher"
+import { DisplayModeSwitcher } from "@/components/display-mode-switcher"
 import { SignOutButton } from "@/components/sign-out-button"
 import { cn } from "@/lib/utils"
 
@@ -46,6 +47,7 @@ export function GoalXNavigation() {
             ))}
           </nav>
           <div className="flex shrink-0 items-center gap-3">
+            <DisplayModeSwitcher />
             <LanguageSwitcher />
             <SignOutButton label={t("dashboard.signOut")} size="sm" />
           </div>
@@ -104,8 +106,15 @@ export function GoalXNavigation() {
             ))}
           </div>
 
-          {/* Language switch + sign-out live here on mobile - the "more"
-              sheet is still the one navigation surface, not a second header. */}
+          {/* Display mode + language switch + sign-out live here on mobile -
+              the "more" sheet is still the one navigation surface, not a
+              second header. Kept reachable from inside Desktop mode too
+              (see the header row above) so switching into it never strands
+              the user without a way back to Mobile/Auto. */}
+          <div className="border-t px-4 py-3">
+            <div className="mb-1.5 text-xs font-medium text-muted-foreground">{t("display.mode.title")}</div>
+            <DisplayModeSwitcher />
+          </div>
           <div className="flex items-center justify-between gap-3 border-t px-4 py-3">
             <LanguageSwitcher />
             <SignOutButton label={t("dashboard.signOut")} size="sm" />

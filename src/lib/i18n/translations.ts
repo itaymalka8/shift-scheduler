@@ -678,6 +678,11 @@ const he = {
   "nav.club": "מועדון",
   "nav.more": "עוד",
 
+  "display.mode.title": "תצוגה",
+  "display.mode.auto": "אוטומטי",
+  "display.mode.mobile": "מובייל",
+  "display.mode.desktop": "מחשב",
+
   "resetPassword.title": "קביעת סיסמה חדשה",
   "resetPassword.description": "בחרו סיסמה חדשה לחשבון שלכם.",
   "resetPassword.newPassword": "סיסמה חדשה",
@@ -1350,6 +1355,11 @@ const en: Record<keyof typeof he, string> = {
   "nav.club": "Club",
   "nav.more": "More",
 
+  "display.mode.title": "Display",
+  "display.mode.auto": "Auto",
+  "display.mode.mobile": "Mobile",
+  "display.mode.desktop": "Desktop",
+
   "resetPassword.title": "Set a new password",
   "resetPassword.description": "Choose a new password for your account.",
   "resetPassword.newPassword": "New password",
@@ -2018,6 +2028,11 @@ const ar: Record<keyof typeof he, string> = {
   "nav.economy": "المالية",
   "nav.club": "النادي",
   "nav.more": "المزيد",
+
+  "display.mode.title": "طريقة العرض",
+  "display.mode.auto": "تلقائي",
+  "display.mode.mobile": "جوال",
+  "display.mode.desktop": "حاسوب",
 
   "resetPassword.title": "تعيين كلمة مرور جديدة",
   "resetPassword.description": "اختر كلمة مرور جديدة لحسابك.",
