@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
-import { ensureFixtureSimulated } from "@/lib/match/simulate"
 import { getSimulatedMinute, hasKickedOff, MATCH_SIMULATED_MINUTES } from "@/lib/match/timing"
 
+// Read-only: never simulates. A fixture is played by processDueFixtures()
+// (see src/lib/match/simulate.ts), run on its own schedule - not by someone
+// polling this endpoint while watching. Before the scheduler catches up to
+// a just-kicked-off fixture, this correctly reports "live" with zero
+// events yet, which is honest (not a bug) rather than a reason to trigger
+// the engine from a GET.
 export async function GET(_request: Request, { params }: { params: Promise<{ fixtureId: string }> }) {
   const { fixtureId } = await params
 
@@ -13,8 +18,6 @@ export async function GET(_request: Request, { params }: { params: Promise<{ fix
   if (!fixture) {
     return NextResponse.json({ error: "NOT_FOUND" }, { status: 404 })
   }
-
-  await ensureFixtureSimulated(fixtureId)
 
   const kickedOff = hasKickedOff(fixture.scheduledAt)
   const minute = getSimulatedMinute(fixture.scheduledAt)

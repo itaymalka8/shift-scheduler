@@ -62,3 +62,27 @@ services:
         sync: false
       - key: APPLE_CLIENT_SECRET
         sync: false
+
+  # Plays every fixture whose kickoff has passed but hasn't been simulated
+  # yet - the ONLY thing that should ever run the match engine. Talks to
+  # Postgres directly (same DATABASE_URL as the web service above), so it
+  # needs no HTTP endpoint and no shared secret at all. Render Cron Jobs are
+  # a separate plan/pricing tier from the free web service above - check
+  # your account supports one before deploying this; if not, an external
+  # scheduler hitting POST /api/internal/process-fixtures (protected by
+  # INTERNAL_JOB_SECRET on the web service, see that route) is the fallback.
+  #
+  # Every 2 minutes keeps the gap between a fixture's real kickoff and its
+  # result actually landing small enough that a manager opening the live
+  # match view right after kickoff isn't staring at "scheduled" for long -
+  # tune to taste; there's no correctness reason to run it more often than
+  # that.
+  - type: cron
+    name: goalx-manager-fixture-processor
+    env: node
+    schedule: "*/2 * * * *"
+    buildCommand: npm install --include=dev && npx prisma generate
+    startCommand: npm run process-fixtures
+    envVars:
+      - key: DATABASE_URL
+        sync: false

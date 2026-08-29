@@ -60,10 +60,15 @@ export async function processWeeklyPayroll(teamId: string, at: Date = new Date()
 
 /**
  * Self-heal, run on every economy/dashboard page load (same pattern as
- * settleDueFixtures / settleDueStadiumConstruction) - catches up every
- * payroll week that has come due since the club was created (or last paid),
- * so wages are never skipped just because nobody visited on payroll day.
- * Server time only - never a browser-side timer.
+ * settleDueStadiumConstruction) - catches up every payroll week that has
+ * come due since the club was created (or last paid), so wages are never
+ * skipped just because nobody visited on payroll day. Server time only -
+ * never a browser-side timer.
+ *
+ * Unlike match simulation (see processDueFixtures in
+ * src/lib/match/simulate.ts), a missed payroll run has no risk of a
+ * duplicate/conflicting write worth a scheduled job over - it's a pure
+ * balance debit, safe to catch up from any page view.
  */
 export async function settleDuePayroll(teamId: string): Promise<number> {
   const team = await prisma.team.findUniqueOrThrow({ where: { id: teamId }, select: { createdAt: true } })

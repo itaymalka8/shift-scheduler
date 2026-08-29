@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "balance": "tsx scripts/match-balance-suite.ts",
+    "process-fixtures": "tsx scripts/process-due-fixtures.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

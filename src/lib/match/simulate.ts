@@ -62,7 +62,19 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
   const fine = fanIncident ? fanIncidentFine(DEFAULT_GAME_BALANCE_CONFIG, incidentRng.next()) : 0
 
   await prisma.$transaction(async (tx) => {
-    const fresh = await tx.fixture.findUnique({ where: { id: fixtureId } })
+    // SELECT ... FOR UPDATE, not a plain findUnique: this actually locks the
+    // row at the database level. Two processes racing on the same fixture
+    // (two scheduler ticks overlapping, a retry racing the original run)
+    // both pass the early-return checks above and both reach here at
+    // roughly the same time - under Postgres's default READ COMMITTED
+    // isolation a plain SELECT would let both see playedAt as still null
+    // and both write. FOR UPDATE forces the second transaction to block
+    // until the first commits, then re-read the now-updated row and bail
+    // out on the playedAt check below - a real DB-enforced guarantee, not
+    // just an application-level check.
+    const [fresh] = await tx.$queryRaw<{ id: string; playedAt: Date | null }[]>`
+      SELECT "id", "playedAt" FROM "Fixture" WHERE "id" = ${fixtureId} FOR UPDATE
+    `
     if (!fresh || fresh.playedAt) return
 
     await tx.matchEvent.createMany({
@@ -157,13 +169,26 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
   })
 }
 
-/** Simulates every fixture in a division whose kickoff has passed but hasn't been computed yet. */
-export async function settleDueFixtures(divisionId: string): Promise<void> {
+/**
+ * The one place responsible for turning "kickoff has passed" into a played
+ * match, across every division - a scheduled job's entrypoint, never a page
+ * load's. Finds every fixture whose time has come, processes each one
+ * through ensureFixtureSimulated (which does the actual locking, one
+ * fixture at a time - see the FOR UPDATE above), and reports what it did.
+ *
+ * Never call this from a GET route, a Server Component, or anything else on
+ * a navigation path - computeStandings only reads already-played results,
+ * and the live match view only reads what's already in the database. A
+ * match gets played by this function running on its own schedule, not by
+ * someone happening to look.
+ */
+export async function processDueFixtures(): Promise<{ processedCount: number; fixtureIds: string[] }> {
   const due = await prisma.fixture.findMany({
-    where: { divisionId, playedAt: null, scheduledAt: { lte: new Date() } },
+    where: { playedAt: null, scheduledAt: { lte: new Date() } },
     select: { id: true },
   })
   for (const fixture of due) {
     await ensureFixtureSimulated(fixture.id)
   }
+  return { processedCount: due.length, fixtureIds: due.map((f) => f.id) }
 }

@@ -1,5 +1,4 @@
 import { prisma } from "@/lib/prisma"
-import { settleDueFixtures } from "@/lib/match/simulate"
 import { isMatchFinished } from "@/lib/match/timing"
 
 export interface StandingRow {
@@ -16,9 +15,14 @@ export interface StandingRow {
   points: number
 }
 
+/**
+ * Read-only: computes the table strictly from results already in the
+ * database. Never simulates or writes anything - a fixture whose kickoff
+ * has passed but hasn't been played yet just doesn't count toward the table
+ * until processDueFixtures() (run by the scheduler, not by this call) plays
+ * it. See src/lib/match/simulate.ts for where that actually happens.
+ */
 export async function computeStandings(divisionId: string): Promise<StandingRow[]> {
-  await settleDueFixtures(divisionId)
-
   const [memberships, allFixtures] = await Promise.all([
     prisma.divisionTeam.findMany({ where: { divisionId }, include: { team: true } }),
     prisma.fixture.findMany({

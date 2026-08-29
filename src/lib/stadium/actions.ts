@@ -116,10 +116,15 @@ export async function completeStadiumConstruction(jobId: string): Promise<void> 
 }
 
 /**
- * Self-heal, run on every stadium page load (same pattern as settleDueFixtures
- * for match results) - relies on server time, never a browser-side timer.
- * Returns the just-finished job (if any) so the page can show a one-time
- * completion message.
+ * Self-heal, run on every stadium page load - relies on server time, never a
+ * browser-side timer. Returns the just-finished job (if any) so the page can
+ * show a one-time completion message.
+ *
+ * Unlike match results (see processDueFixtures in
+ * src/lib/match/simulate.ts), completing a construction job is a single
+ * idempotent update with no simulation and no risk of a duplicate/
+ * conflicting write, so it stays safe to run from a page load rather than
+ * needing a scheduled job of its own.
  */
 export async function settleDueStadiumConstruction(teamId: string) {
   const stadium = await prisma.stadium.findUnique({
