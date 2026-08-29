@@ -3,7 +3,7 @@ import {
   DEFAULT_CREST_SECONDARY_COLOR,
   DEFAULT_CREST_BORDER_COLOR,
 } from "@/components/team-crest"
-import { DEFAULT_KIT_TEMPLATE, type KitTemplateId } from "@/components/kit/jersey-preview"
+import { DEFAULT_KIT_TEMPLATE, type KitTemplateId } from "@/lib/kits/templates"
 
 export interface KitColors {
   template: KitTemplateId

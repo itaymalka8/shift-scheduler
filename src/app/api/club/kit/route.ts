@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
-import { isKitTemplateId } from "@/components/kit/jersey-preview"
+import { isKitTemplateId } from "@/lib/kits/templates"
 import { isValidHexColor } from "@/lib/kits/validation"
 
 /**

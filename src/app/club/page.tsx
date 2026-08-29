@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { deriveDefaultHomeKit } from "@/lib/kits/defaults"
-import { isKitTemplateId } from "@/components/kit/jersey-preview"
+import { isKitTemplateId } from "@/lib/kits/templates"
 import { ClubApp } from "./club-app"
 
 export default async function ClubPage() {

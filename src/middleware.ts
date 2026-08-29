@@ -54,5 +54,6 @@ export const config = {
     "/squad/:path*",
     "/stadium/:path*",
     "/economy/:path*",
+    "/club/:path*",
   ],
 }

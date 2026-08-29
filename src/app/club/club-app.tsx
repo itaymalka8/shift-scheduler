@@ -4,7 +4,8 @@ import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { CREST_COLORS } from "@/components/team-crest"
-import { JerseyPreview, KIT_TEMPLATES, type KitTemplateId } from "@/components/kit/jersey-preview"
+import { JerseyPreview } from "@/components/kit/jersey-preview"
+import { KIT_TEMPLATES, type KitTemplateId } from "@/lib/kits/templates"
 import { cn } from "@/lib/utils"
 
 const PREVIEW_NUMBER = 10
