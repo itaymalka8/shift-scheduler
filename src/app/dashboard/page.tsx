@@ -12,7 +12,7 @@ import { getLeagueTiers, getDivisionName } from "@/lib/leagues/config"
 import { computeStandings, type StandingRow } from "@/lib/leagues/standings"
 import { ensureIsraelSeasonSeeded } from "@/lib/leagues/seed"
 import { ensureTeamForUser } from "@/lib/team-setup"
-import { ensureStadiumForTeam, settleDueStadiumConstruction } from "@/lib/stadium/actions"
+import { ensureStadiumForTeam } from "@/lib/stadium/actions"
 import { toSeatCounts } from "@/lib/stadium/config"
 import { calculateStadiumCapacity } from "@/lib/stadium/metrics"
 import { calculateTeamTotalQuality, calculateSquadMarketValue } from "@/lib/players/quality"
@@ -202,9 +202,12 @@ export default async function DashboardPage() {
   const suspendedStarter = startingPlayers.find((p) => p.status === "suspended") ?? null
   const lowFitnessStarterCount = startingPlayers.filter((p) => getFitnessLevel(p.fitness) === "low").length
 
+  // Read-only: never calls settleDueStadiumConstruction (that write belongs to the
+  // /stadium page's own action). A job past its endsAt is settled - completed and
+  // applied to the stadium's seat counts - only when the manager visits /stadium;
+  // until then this simply reports "not recently completed" rather than completing it.
   let stadiumUpgradeRecentlyCompleted = false
   if (stadium) {
-    await settleDueStadiumConstruction(team!.id)
     const recentCompletion = await prisma.stadiumConstructionJob.findFirst({
       where: { stadiumId: stadium.id, status: "completed", completedAt: { gte: new Date(Date.now() - 48 * 3_600_000) } },
     })
