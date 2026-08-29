@@ -3,11 +3,29 @@ services:
     name: goalx-manager
     env: node
     plan: free
-    buildCommand: npm install --include=dev && npx prisma migrate deploy && npm run build
-    startCommand: npx next start
+    # next.config.ts sets output: "standalone", so the build only produces a
+    # working server at .next/standalone/server.js - `next start` (the
+    # previous startCommand here) prints "next start does not work with
+    # output: standalone configuration" and never actually opens a port,
+    # which is exactly why Render's port scan was timing out. Standalone
+    # mode also doesn't bundle public/ or .next/static/ into that folder on
+    # its own (this is documented Next.js behavior, not a bug) - the two
+    # cp/mkdir steps below are the officially-recommended way to put them
+    # there so CSS, fonts, and client JS chunks actually resolve instead of
+    # 404ing once the server is up.
+    buildCommand: npm install --include=dev && npx prisma migrate deploy && npm run build && mkdir -p .next/standalone/.next/static && cp -r .next/static/* .next/standalone/.next/static/ && cp -r public .next/standalone/public
+    startCommand: node .next/standalone/server.js
     envVars:
       - key: NODE_ENV
         value: production
+      # The generated server.js already defaults to 0.0.0.0 when this is
+      # unset, which is what a Web Service on Render needs (binding to
+      # localhost/127.0.0.1 instead is the other classic cause of "port
+      # scan timeout, no open ports detected") - set explicitly anyway so
+      # that stays true regardless of what generates this file in a future
+      # Next.js version.
+      - key: HOSTNAME
+        value: 0.0.0.0
       # Points at an external Postgres database - a free Neon project
       # (https://neon.tech) works well. This service's own disk is NOT
       # persistent: SQLite on it was wiped on every redeploy (and possibly
