@@ -30,6 +30,7 @@ import {
 import { POSITION_GROUP, type PlayerPosition } from "@/lib/players/positions"
 import { calculatePositionSuitability, type PositionFit } from "@/lib/players/suitability"
 import { getPlayerTier, getFitnessLevel, getDisplayStatus, type PlayerStatus, type DisplayPlayerStatus } from "@/lib/players/tiers"
+import { getPlayerVisualGrade, PLAYER_VISUAL_GRADE_CONFIG } from "@/lib/players/visual-grade"
 import { formatMarketValue, formatMarketValueCompact } from "@/lib/players/currency"
 import {
   MENTALITY_OPTIONS,
@@ -1361,8 +1362,12 @@ function PitchPlayerCard({
   homeKit: KitColors
 }) {
   const t = useT()
-  const tier = getPlayerTier(player.overall)
   const fitnessLevel = getFitnessLevel(player.fitness)
+  // A purely cosmetic read of Overall (see visual-grade.ts) - separate from
+  // the 7-step getPlayerTier system PlayerCard/BenchChip/PlayerSquadRow
+  // still use unchanged. Frames the card; never touches the jersey colors.
+  const grade = getPlayerVisualGrade(player.overall)
+  const gradeStyle = PLAYER_VISUAL_GRADE_CONFIG[grade]
   // Whatever reads on top of this specific kit's primary color - the same
   // three colors every card on the pitch shares, so this is cheap to
   // recompute per card and never needs its own query or state.
@@ -1384,8 +1389,10 @@ function PitchPlayerCard({
           : undefined
       }
       className={cn(
-        "relative flex w-[2.875rem] flex-col items-center overflow-hidden rounded-lg border px-0.5 py-0.5 shadow-sm transition-transform sm:w-[4.5rem] sm:rounded-xl sm:px-1 sm:py-1.5",
-        TIER_CARD_CLASSES[tier.cardStyle],
+        "relative flex w-[2.875rem] flex-col items-center overflow-hidden rounded-lg px-0.5 py-0.5 transition-transform sm:w-[4.5rem] sm:rounded-xl sm:px-1 sm:py-1.5",
+        gradeStyle.cardBorder,
+        gradeStyle.cardBackground,
+        gradeStyle.cardShadow,
         selected ? "ring-1 ring-primary ring-offset-1" : "hover:scale-[1.04]"
       )}
     >
@@ -1411,7 +1418,7 @@ function PitchPlayerCard({
       <span
         className={cn(
           "relative z-10 rounded px-1 py-0.5 text-xs font-extrabold leading-none sm:px-1.5 sm:text-lg",
-          TIER_BADGE_CLASSES[tier.cardStyle]
+          gradeStyle.badge
         )}
       >
         {player.overall}
