@@ -110,6 +110,15 @@ const TIER_BADGE_CLASSES: Record<string, string> = {
   prestige: "bg-gradient-to-r from-amber-500 to-primary text-white",
 }
 
+// Small dot color per fitness level (see tiers.ts's getFitnessLevel) - used
+// as the tiny fitness indicator on a pitch mini card, never a number.
+const FITNESS_DOT_CLASSES: Record<string, string> = {
+  excellent: "bg-emerald-500",
+  good: "bg-lime-500",
+  average: "bg-amber-500",
+  low: "bg-red-500",
+}
+
 const FIT_BADGE_CLASSES: Record<string, string> = {
   excellent: "bg-emerald-100 text-emerald-800",
   good: "bg-primary/10 text-primary",
@@ -135,6 +144,11 @@ const DEFAULT_CUSTOM_SLOTS: Point[] = [
 
 function fullName(p: PlayerDTO): string {
   return `${p.firstName} ${p.lastName}`
+}
+
+/** What a mini pitch card actually has room for - last name only (see PitchPlayerCard). */
+function shortName(p: PlayerDTO): string {
+  return p.lastName || p.firstName
 }
 
 function positionLabelKey(position: string): TranslationKey {
@@ -278,6 +292,7 @@ export function SquadTacticsApp({
   const [assessment, setAssessment] = useState<TacticalAssessment | null>(null)
 
   const [pickerSlotIndex, setPickerSlotIndex] = useState<number | null>(null)
+  const [selectedSlotIndex, setSelectedSlotIndex] = useState<number | null>(null)
   const [confirmRecommend, setConfirmRecommend] = useState(false)
   const [saveStatus, setSaveStatus] = useState<"idle" | "saved">("idle")
   const savedTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -346,6 +361,7 @@ export function SquadTacticsApp({
   }
 
   function changeFormation(next: string) {
+    setSelectedSlotIndex(null)
     if (next === CUSTOM_FORMATION_ID) {
       const seed = customFormation ?? DEFAULT_CUSTOM_SLOTS
       applyAndSave({ formation: next, customFormation: seed }, () => {
@@ -365,6 +381,7 @@ export function SquadTacticsApp({
     const res = await fetch("/api/squad/recommend", { method: "POST" })
     if (res.ok) {
       const body = (await res.json()) as { formation: string; assignments: Assignment[] }
+      setSelectedSlotIndex(null)
       setFormation(body.formation)
       setAssignments(new Map(body.assignments.map((a) => [a.slotIndex, a.playerId])))
       flashSaved()
@@ -539,11 +556,58 @@ export function SquadTacticsApp({
               slots={slots}
               assignments={assignments}
               byId={byId}
-              accentColor={accentColor}
               onDrop={handleDrop}
-              onSlotClick={(slotIndex) => setPickerSlotIndex(slotIndex)}
-              onRemove={(slotIndex) => assignPlayer(slotIndex, null)}
+              selectedSlotIndex={selectedSlotIndex}
+              onSelectSlot={setSelectedSlotIndex}
+              onOpenPicker={(slotIndex) => setPickerSlotIndex(slotIndex)}
             />
+
+            {selectedSlotIndex !== null &&
+              (() => {
+                const playerId = assignments.get(selectedSlotIndex)
+                const player = playerId ? byId.get(playerId) : undefined
+                if (!player) return null
+                const slotRole = slots[selectedSlotIndex].role
+                const fit = fitOf(player, slotRole)
+                const fitScore = fit !== "natural" ? calculatePositionOverall(player.attributes, slotRole) : null
+
+                return (
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-3 shadow-sm">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 text-sm font-semibold">
+                        <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-primary">{player.overall}</span>
+                        <span className="truncate">{fullName(player)}</span>
+                      </div>
+                      <div className="truncate text-xs text-muted-foreground">
+                        {t(positionLabelKey(player.primaryPosition))}
+                        {fitScore !== null && (
+                          <span className="ms-2 text-amber-700">
+                            {t("squad.action.outOfPosition")} · {t("squad.action.fitScore", { score: String(fitScore) })}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button size="sm" variant="outline" onClick={() => setExpandedPlayerId(player.id)}>
+                        {t("squad.action.viewProfile")}
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => setPickerSlotIndex(selectedSlotIndex)}>
+                        {t("squad.action.swap")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          assignPlayer(selectedSlotIndex, null)
+                          setSelectedSlotIndex(null)
+                        }}
+                      >
+                        {t("squad.action.removeFromLineup")}
+                      </Button>
+                    </div>
+                  </div>
+                )
+              })()}
 
             <div onDragOver={(e) => e.preventDefault()} onDrop={handleDropOnBench}>
               <h2 className="mb-2 text-sm font-medium text-muted-foreground">{t("squad.bench")}</h2>
@@ -911,21 +975,21 @@ function PlayerCard({
       draggable={draggable}
       onDragStart={(e) => e.dataTransfer.setData("text/plain", player.id)}
       className={cn(
-        "flex w-full items-center justify-between gap-3 rounded-lg border px-3 text-start hover:brightness-[0.98]",
+        "flex w-full min-w-0 items-center justify-between gap-3 rounded-lg border px-3 text-start hover:brightness-[0.98]",
         TIER_CARD_CLASSES[tier.cardStyle],
         compact ? "py-1.5" : "py-2.5"
       )}
     >
-      <div className="flex items-center gap-3">
-        <span className="w-6 text-center text-xs text-muted-foreground">#{player.shirtNumber}</span>
-        <div>
-          <div className="text-sm font-medium">{fullName(player)}</div>
-          <div className="text-xs text-muted-foreground">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="w-6 shrink-0 text-center text-xs text-muted-foreground">#{player.shirtNumber}</span>
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium">{fullName(player)}</div>
+          <div className="truncate text-xs text-muted-foreground">
             {t(positionLabelKey(player.primaryPosition))} · {t("squad.colAge")} {player.age}
           </div>
         </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex shrink-0 items-center gap-2">
         <span className="text-xs text-muted-foreground">
           {t(`squad.fitness.${getFitnessLevel(player.fitness)}` as TranslationKey)}
         </span>
@@ -960,98 +1024,207 @@ function BenchChip({ player, onClick }: { player: PlayerDTO; onClick: () => void
   )
 }
 
+// Real pitch proportions in meters, rendered portrait (own goal at the top,
+// attacking goal at the bottom) - the container's aspect-ratio is set to
+// match exactly, so the SVG markings below land at true-to-life positions
+// instead of being derived from an arbitrary "2/3" box.
+const PITCH_W = 68
+const PITCH_H = 105
+const LINE_W = 0.45
+const PENALTY_BOX_W = 40.32
+const PENALTY_BOX_D = 16.5
+const SIX_YARD_W = 18.32
+const SIX_YARD_D = 5.5
+const PENALTY_SPOT_Y = 11
+const CENTER_CIRCLE_R = 9.15
+const GOAL_W = 7.32
+
+// Where the D-arc (the part of the penalty-arc circle that lies outside the
+// box) meets the box's front edge - solved once here from the real
+// dimensions above, reused for both ends by mirroring y.
+const D_ARC_HALF_CHORD = Math.sqrt(CENTER_CIRCLE_R ** 2 - (PENALTY_BOX_D - PENALTY_SPOT_Y) ** 2)
+const D_ARC_X0 = PITCH_W / 2 - D_ARC_HALF_CHORD
+const D_ARC_X1 = PITCH_W / 2 + D_ARC_HALF_CHORD
+
+/** The real line markings only - no fill, no tactical zone bands, drawn once in true proportion and mirrored top/bottom. */
+function PitchMarkings() {
+  const boxX = (PITCH_W - PENALTY_BOX_W) / 2
+  const sixYardX = (PITCH_W - SIX_YARD_W) / 2
+  const goalX = (PITCH_W - GOAL_W) / 2
+  const cx = PITCH_W / 2
+
+  return (
+    <svg
+      viewBox={`0 0 ${PITCH_W} ${PITCH_H}`}
+      className="pointer-events-none absolute inset-0 h-full w-full overflow-visible"
+      preserveAspectRatio="xMidYMid meet"
+    >
+      <g fill="none" stroke="white" strokeOpacity={0.92} strokeWidth={LINE_W}>
+        <rect x={LINE_W / 2} y={LINE_W / 2} width={PITCH_W - LINE_W} height={PITCH_H - LINE_W} />
+        <line x1={0} y1={PITCH_H / 2} x2={PITCH_W} y2={PITCH_H / 2} />
+        <circle cx={cx} cy={PITCH_H / 2} r={CENTER_CIRCLE_R} />
+
+        {/* Top (own) penalty area */}
+        <rect x={boxX} y={0} width={PENALTY_BOX_W} height={PENALTY_BOX_D} />
+        <rect x={sixYardX} y={0} width={SIX_YARD_W} height={SIX_YARD_D} />
+        <path d={`M ${D_ARC_X0} ${PENALTY_BOX_D} A ${CENTER_CIRCLE_R} ${CENTER_CIRCLE_R} 0 0 0 ${D_ARC_X1} ${PENALTY_BOX_D}`} />
+        <path d={`M ${goalX} 0 L ${goalX} ${-2} L ${goalX + GOAL_W} ${-2} L ${goalX + GOAL_W} 0`} />
+
+        {/* Bottom (attacking) penalty area */}
+        <rect x={boxX} y={PITCH_H - PENALTY_BOX_D} width={PENALTY_BOX_W} height={PENALTY_BOX_D} />
+        <rect x={sixYardX} y={PITCH_H - SIX_YARD_D} width={SIX_YARD_W} height={SIX_YARD_D} />
+        <path
+          d={`M ${D_ARC_X0} ${PITCH_H - PENALTY_BOX_D} A ${CENTER_CIRCLE_R} ${CENTER_CIRCLE_R} 0 0 1 ${D_ARC_X1} ${PITCH_H - PENALTY_BOX_D}`}
+        />
+        <path d={`M ${goalX} ${PITCH_H} L ${goalX} ${PITCH_H + 2} L ${goalX + GOAL_W} ${PITCH_H + 2} L ${goalX + GOAL_W} ${PITCH_H}`} />
+
+        {/* Corner arcs */}
+        <path d={`M 0 1 A 1 1 0 0 0 1 0`} />
+        <path d={`M ${PITCH_W - 1} 0 A 1 1 0 0 0 ${PITCH_W} 1`} />
+        <path d={`M ${PITCH_W} ${PITCH_H - 1} A 1 1 0 0 0 ${PITCH_W - 1} ${PITCH_H}`} />
+        <path d={`M 1 ${PITCH_H} A 1 1 0 0 0 0 ${PITCH_H - 1}`} />
+      </g>
+      <circle cx={cx} cy={PITCH_H / 2} r={0.45} fill="white" />
+      <circle cx={cx} cy={PENALTY_SPOT_Y} r={0.45} fill="white" />
+      <circle cx={cx} cy={PITCH_H - PENALTY_SPOT_Y} r={0.45} fill="white" />
+    </svg>
+  )
+}
+
+/**
+ * A player as they appear on the pitch - Overall is the dominant number
+ * (never the shirt number), name and position underneath, tier styling
+ * reused verbatim from the existing PLAYER_TIERS system (TIER_CARD_CLASSES/
+ * TIER_BADGE_CLASSES - the same classes PlayerCard uses in the squad list),
+ * and only a small dot for fitness/fit warnings - never a colorful card-game
+ * treatment, and never a permanently-visible remove control.
+ */
+function PitchPlayerCard({
+  player,
+  slotRole,
+  fit,
+  selected,
+  onClick,
+  draggable,
+}: {
+  player: PlayerDTO
+  slotRole: PlayerPosition
+  fit: PositionFit
+  selected: boolean
+  onClick: () => void
+  draggable?: boolean
+}) {
+  const t = useT()
+  const tier = getPlayerTier(player.overall)
+  const fitnessLevel = getFitnessLevel(player.fitness)
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      draggable={draggable}
+      onDragStart={(e) => e.dataTransfer.setData("text/plain", player.id)}
+      title={
+        fit === "unsuitable"
+          ? t("squad.positionWarning", {
+              playerPosition: t(positionLabelKey(player.primaryPosition)),
+              slotPosition: t(positionLabelKey(slotRole)),
+            })
+          : undefined
+      }
+      className={cn(
+        "relative flex w-14 flex-col items-center rounded-lg border px-1 py-1 shadow-md transition-transform sm:w-[4.5rem] sm:rounded-xl sm:py-1.5",
+        TIER_CARD_CLASSES[tier.cardStyle],
+        selected ? "ring-2 ring-primary ring-offset-1" : "hover:scale-[1.04]"
+      )}
+    >
+      {fit === "unsuitable" && (
+        <span className="absolute -end-1 -top-1 size-2.5 rounded-full border border-white bg-red-500 sm:size-3" />
+      )}
+      {fit === "secondary" && (
+        <span className="absolute -end-1 -top-1 size-2.5 rounded-full border border-white bg-orange-500 sm:size-3" />
+      )}
+      <span
+        className={cn(
+          "rounded px-1.5 py-0.5 text-sm font-extrabold leading-none sm:text-lg",
+          TIER_BADGE_CLASSES[tier.cardStyle]
+        )}
+      >
+        {player.overall}
+      </span>
+      <span className="mt-1 max-w-full truncate text-[10px] font-semibold leading-tight sm:text-xs">
+        {shortName(player)}
+      </span>
+      <span className="flex items-center gap-1 text-[9px] text-muted-foreground sm:text-[10px]">
+        <span className={cn("size-1.5 rounded-full", FITNESS_DOT_CLASSES[fitnessLevel])} />
+        {t(positionLabelKey(player.primaryPosition))}
+      </span>
+    </button>
+  )
+}
+
 function Pitch({
   slots,
   assignments,
   byId,
-  accentColor,
   onDrop,
-  onSlotClick,
-  onRemove,
+  selectedSlotIndex,
+  onSelectSlot,
+  onOpenPicker,
 }: {
   slots: FormationSlot[]
   assignments: Map<number, string>
   byId: Map<string, PlayerDTO>
-  accentColor: string
   onDrop: (slotIndex: number, e: React.DragEvent) => void
-  onSlotClick: (slotIndex: number) => void
-  onRemove: (slotIndex: number) => void
+  selectedSlotIndex: number | null
+  onSelectSlot: (slotIndex: number | null) => void
+  onOpenPicker: (slotIndex: number) => void
 }) {
   const t = useT()
   return (
     <div
-      className="relative mx-auto w-full max-w-md select-none overflow-hidden rounded-2xl shadow-xl"
+      className="relative mx-auto w-full max-w-2xl select-none overflow-hidden rounded-2xl shadow-lg"
       style={{
-        aspectRatio: "2 / 3",
-        transform: "perspective(1100px) rotateX(10deg)",
-        transformOrigin: "center bottom",
-        background: "repeating-linear-gradient(to bottom, #2f9e44 0%, #2f9e44 10%, #37b24d 10%, #37b24d 20%)",
-        boxShadow: "0 25px 40px -15px rgba(0,0,0,0.5)",
+        aspectRatio: `${PITCH_W} / ${PITCH_H}`,
+        background: "repeating-linear-gradient(to bottom, #2f9e44 0%, #2f9e44 6.25%, #35ab4b 6.25%, #35ab4b 12.5%)",
       }}
     >
-      <div className="pointer-events-none absolute inset-3 border-2 border-white/70" />
-      <div className="pointer-events-none absolute left-3 right-3 top-1/2 border-t-2 border-white/70" />
-      <div
-        className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white/70"
-        style={{ width: "22%", height: "14%" }}
-      />
-      <div className="pointer-events-none absolute left-1/2 top-3 h-[14%] w-[46%] -translate-x-1/2 border-2 border-t-0 border-white/70" />
-      <div className="pointer-events-none absolute left-1/2 bottom-3 h-[14%] w-[46%] -translate-x-1/2 border-2 border-b-0 border-white/70" />
+      <PitchMarkings />
 
       {slots.map((slot, slotIndex) => {
         const playerId = assignments.get(slotIndex)
         const player = playerId ? byId.get(playerId) : undefined
         const fit = player ? fitOf(player, slot.role) : "natural"
+        // Rendering-only nudge so the keeper reads as standing near their own
+        // goal line rather than mid-box - the formation's real y (used for
+        // every position/fit calculation) is untouched.
+        const visualY = slot.role === "GK" ? Math.max(4, slot.y - 4) : slot.y
 
         return (
           <div
             key={slotIndex}
             onDragOver={(e) => e.preventDefault()}
             onDrop={(e) => onDrop(slotIndex, e)}
-            onClick={() => onSlotClick(slotIndex)}
-            className="absolute flex -translate-x-1/2 -translate-y-1/2 cursor-pointer flex-col items-center"
-            style={{ left: `${slot.x}%`, top: `${slot.y}%` }}
-            title={
-              player && fit === "unsuitable"
-                ? t("squad.positionWarning", {
-                    playerPosition: t(positionLabelKey(player.primaryPosition)),
-                    slotPosition: t(positionLabelKey(slot.role)),
-                  })
-                : undefined
-            }
+            className="absolute -translate-x-1/2 -translate-y-1/2"
+            style={{ left: `${slot.x}%`, top: `${visualY}%` }}
           >
             {player ? (
-              <div className="relative">
-                <div
-                  className={cn(
-                    "flex size-11 flex-col items-center justify-center rounded-full border-2 text-[11px] font-bold text-white shadow-md",
-                    fit === "unsuitable" ? "border-red-400 ring-2 ring-red-400" : "border-white/80"
-                  )}
-                  style={{ backgroundColor: accentColor }}
-                >
-                  {player.shirtNumber}
-                </div>
-                {fit === "secondary" && (
-                  <span className="absolute -end-1 -top-1 size-3 rounded-full border border-white bg-orange-500" />
-                )}
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onRemove(slotIndex)
-                  }}
-                  className="absolute -start-1 -top-1 flex size-4 items-center justify-center rounded-full bg-background text-[10px] text-muted-foreground shadow"
-                >
-                  ×
-                </button>
-                <div className="mt-0.5 max-w-16 truncate rounded bg-black/50 px-1 text-center text-[9px] text-white">
-                  {fullName(player)}
-                </div>
-              </div>
+              <PitchPlayerCard
+                player={player}
+                slotRole={slot.role}
+                fit={fit}
+                selected={selectedSlotIndex === slotIndex}
+                draggable
+                onClick={() => onSelectSlot(selectedSlotIndex === slotIndex ? null : slotIndex)}
+              />
             ) : (
-              <div className="flex size-11 flex-col items-center justify-center rounded-full border-2 border-dashed border-white/70 bg-white/10 text-[9px] text-white/80">
+              <button
+                type="button"
+                onClick={() => onOpenPicker(slotIndex)}
+                className="flex size-12 flex-col items-center justify-center rounded-full border-2 border-dashed border-white/70 bg-white/10 text-[9px] text-white/85 sm:size-14"
+              >
                 {t(positionLabelKey(slot.role))}
-              </div>
+              </button>
             )}
           </div>
         )
