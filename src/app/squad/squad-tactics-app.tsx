@@ -45,6 +45,9 @@ import {
   FULLBACK_OVERLAP_OPTIONS,
 } from "@/lib/players/tactics"
 import type { TacticalAssessment } from "@/lib/match/engine/coach-advice"
+import { JerseyPreview } from "@/components/kit/jersey-preview"
+import type { KitColors } from "@/lib/kits/defaults"
+import { getReadableTextColor } from "@/lib/kits/contrast"
 import {
   ATTRIBUTE_CATEGORIES,
   GOALKEEPER_ATTRIBUTE_CATEGORIES,
@@ -239,6 +242,7 @@ export function SquadTacticsApp({
   initialFreeKickTakerId,
   initialCornerTakerId,
   accentColor,
+  homeKit,
   teamTotalQuality,
   squadMarketValue,
   totalWeeklyPlayerSalaries,
@@ -264,6 +268,7 @@ export function SquadTacticsApp({
   initialFreeKickTakerId: string | null
   initialCornerTakerId: string | null
   accentColor: string
+  homeKit: KitColors
   teamTotalQuality: number
   squadMarketValue: number
   totalWeeklyPlayerSalaries: number
@@ -600,6 +605,7 @@ export function SquadTacticsApp({
               selectedSlotIndex={selectedSlotIndex}
               onSelectSlot={setSelectedSlotIndex}
               onOpenPicker={(slotIndex) => setPickerSlotIndex(slotIndex)}
+              homeKit={homeKit}
             />
 
             {selectedSlotIndex !== null &&
@@ -1344,6 +1350,7 @@ function PitchPlayerCard({
   selected,
   onClick,
   draggable,
+  homeKit,
 }: {
   player: PlayerDTO
   slotRole: PlayerPosition
@@ -1351,10 +1358,16 @@ function PitchPlayerCard({
   selected: boolean
   onClick: () => void
   draggable?: boolean
+  homeKit: KitColors
 }) {
   const t = useT()
   const tier = getPlayerTier(player.overall)
   const fitnessLevel = getFitnessLevel(player.fitness)
+  // Whatever reads on top of this specific kit's primary color - the same
+  // three colors every card on the pitch shares, so this is cheap to
+  // recompute per card and never needs its own query or state.
+  const kitTextColor = getReadableTextColor(homeKit.primaryColor)
+  const kitTextBacking = kitTextColor === "#FFFFFF" ? "rgba(0,0,0,0.45)" : "rgba(255,255,255,0.8)"
 
   return (
     <button
@@ -1371,29 +1384,48 @@ function PitchPlayerCard({
           : undefined
       }
       className={cn(
-        "relative flex w-[2.875rem] flex-col items-center rounded-lg border px-0.5 py-0.5 shadow-sm transition-transform sm:w-[4.5rem] sm:rounded-xl sm:px-1 sm:py-1.5",
+        "relative flex w-[2.875rem] flex-col items-center overflow-hidden rounded-lg border px-0.5 py-0.5 shadow-sm transition-transform sm:w-[4.5rem] sm:rounded-xl sm:px-1 sm:py-1.5",
         TIER_CARD_CLASSES[tier.cardStyle],
         selected ? "ring-1 ring-primary ring-offset-1" : "hover:scale-[1.04]"
       )}
     >
+      {/* The club's own home kit - the same JerseyPreview /club uses, same
+          TeamKit data loaded once for the whole pitch (see Pitch/
+          SquadTacticsApp) - no crest or number at this scale, both of
+          JerseyPreview's optional props are simply omitted here rather
+          than building a separate small component. */}
+      <JerseyPreview
+        template={homeKit.template}
+        primaryColor={homeKit.primaryColor}
+        secondaryColor={homeKit.secondaryColor}
+        accentColor={homeKit.accentColor}
+        className="pointer-events-none absolute inset-0 h-full w-full"
+      />
+
       {fit === "unsuitable" && (
-        <span className="absolute -end-1 -top-1 size-2 rounded-full border border-white bg-red-500 sm:size-3" />
+        <span className="absolute -end-1 -top-1 z-10 size-2 rounded-full border border-white bg-red-500 sm:size-3" />
       )}
       {fit === "secondary" && (
-        <span className="absolute -end-1 -top-1 size-2 rounded-full border border-white bg-orange-500 sm:size-3" />
+        <span className="absolute -end-1 -top-1 z-10 size-2 rounded-full border border-white bg-orange-500 sm:size-3" />
       )}
       <span
         className={cn(
-          "rounded px-1 py-0.5 text-xs font-extrabold leading-none sm:px-1.5 sm:text-lg",
+          "relative z-10 rounded px-1 py-0.5 text-xs font-extrabold leading-none sm:px-1.5 sm:text-lg",
           TIER_BADGE_CLASSES[tier.cardStyle]
         )}
       >
         {player.overall}
       </span>
-      <span className="mt-0.5 max-w-full truncate text-[9px] font-semibold leading-tight sm:mt-1 sm:text-xs">
+      <span
+        className="relative z-10 mt-0.5 max-w-full truncate rounded px-0.5 text-[9px] font-semibold leading-tight sm:mt-1 sm:text-xs"
+        style={{ backgroundColor: kitTextBacking, color: kitTextColor }}
+      >
         {shortName(player)}
       </span>
-      <span className="flex items-center gap-1 text-[8px] text-muted-foreground sm:text-[10px]">
+      <span
+        className="relative z-10 mt-px flex items-center gap-1 rounded px-0.5 text-[8px] sm:text-[10px]"
+        style={{ backgroundColor: kitTextBacking, color: kitTextColor }}
+      >
         <span className={cn("size-1 rounded-full sm:size-1.5", FITNESS_DOT_CLASSES[fitnessLevel])} />
         {t(positionLabelKey(player.primaryPosition))}
       </span>
@@ -1409,6 +1441,7 @@ function Pitch({
   selectedSlotIndex,
   onSelectSlot,
   onOpenPicker,
+  homeKit,
 }: {
   slots: FormationSlot[]
   assignments: Map<number, string>
@@ -1417,6 +1450,7 @@ function Pitch({
   selectedSlotIndex: number | null
   onSelectSlot: (slotIndex: number | null) => void
   onOpenPicker: (slotIndex: number) => void
+  homeKit: KitColors
 }) {
   const t = useT()
   return (
@@ -1454,6 +1488,7 @@ function Pitch({
                 selected={selectedSlotIndex === slotIndex}
                 draggable
                 onClick={() => onSelectSlot(selectedSlotIndex === slotIndex ? null : slotIndex)}
+                homeKit={homeKit}
               />
             ) : (
               <button

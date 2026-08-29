@@ -7,6 +7,8 @@ import { DEFAULT_FORMATION, isFormationId, resolveFormationSlots, CUSTOM_FORMATI
 import { computeRecommendedLineup } from "@/lib/players/recommend"
 import { calculateTeamTotalQuality, calculateSquadMarketValue } from "@/lib/players/quality"
 import { extractPlayerAttributes } from "@/lib/players/attributes"
+import { isKitTemplateId } from "@/lib/kits/templates"
+import { deriveDefaultHomeKit } from "@/lib/kits/defaults"
 import { SquadTacticsApp } from "./squad-tactics-app"
 
 export default async function SquadPage() {
@@ -26,12 +28,30 @@ export default async function SquadPage() {
     await prisma.team.update({ where: { id: team.id }, data: { formation, customFormation: Prisma.DbNull } })
   }
 
-  // Independent of each other - one round trip instead of two.
-  const [initialLineupSlots, players] = await Promise.all([
+  // Independent of each other - one round trip instead of three.
+  const [initialLineupSlots, players, homeKitRow] = await Promise.all([
     prisma.lineupSlot.findMany({ where: { teamId: team.id } }),
     prisma.player.findMany({ where: { teamId: team.id }, orderBy: { overall: "desc" } }),
+    prisma.teamKit.findUnique({ where: { teamId_type: { teamId: team.id, type: "HOME" } } }),
   ])
   let lineupSlots = initialLineupSlots
+
+  // Loaded once for the whole team, never per player - every pitch mini
+  // card below reuses this same object. A club with no saved HOME kit gets
+  // exactly the same derived preview /club shows - deriveDefaultHomeKit is
+  // the only place that default is computed anywhere in the app.
+  const homeKit = homeKitRow
+    ? {
+        template: isKitTemplateId(homeKitRow.template) ? homeKitRow.template : deriveDefaultHomeKit({}).template,
+        primaryColor: homeKitRow.primaryColor,
+        secondaryColor: homeKitRow.secondaryColor,
+        accentColor: homeKitRow.accentColor,
+      }
+    : deriveDefaultHomeKit({
+        color: team.crestColor,
+        secondaryColor: team.crestSecondaryColor,
+        borderColor: team.crestBorderColor,
+      })
 
   // Self-heal: a team should never land on an empty pitch.
   if (lineupSlots.length === 0 && players.length > 0) {
@@ -100,6 +120,7 @@ export default async function SquadPage() {
           initialFreeKickTakerId={team.freeKickTakerId}
           initialCornerTakerId={team.cornerTakerId}
           accentColor={team.crestColor ?? "#3B2F7A"}
+          homeKit={homeKit}
           teamTotalQuality={teamTotalQuality}
           squadMarketValue={squadMarketValue}
           totalWeeklyPlayerSalaries={totalWeeklyPlayerSalaries}

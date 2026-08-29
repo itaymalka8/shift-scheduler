@@ -1,4 +1,4 @@
-import { Home, Users, LayoutGrid, Trophy, Landmark, Wallet, type LucideIcon } from "lucide-react"
+import { Home, Users, LayoutGrid, Trophy, Landmark, Wallet, Shirt, type LucideIcon } from "lucide-react"
 import type { TranslationKey } from "@/lib/i18n/translations"
 
 export interface NavItem {
@@ -56,6 +56,13 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/economy",
     icon: Wallet,
     isActive: (pathname) => pathname.startsWith("/economy"),
+  },
+  {
+    key: "club",
+    labelKey: "nav.club",
+    href: "/club",
+    icon: Shirt,
+    isActive: (pathname) => pathname.startsWith("/club"),
   },
 ]
 

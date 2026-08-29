@@ -665,6 +665,7 @@ const he = {
   "nav.league": "ליגה",
   "nav.stadium": "אצטדיון",
   "nav.economy": "כלכלה",
+  "nav.club": "מועדון",
   "nav.more": "עוד",
 
   "resetPassword.title": "קביעת סיסמה חדשה",
@@ -1326,6 +1327,7 @@ const en: Record<keyof typeof he, string> = {
   "nav.league": "League",
   "nav.stadium": "Stadium",
   "nav.economy": "Finances",
+  "nav.club": "Club",
   "nav.more": "More",
 
   "resetPassword.title": "Set a new password",
@@ -1984,6 +1986,7 @@ const ar: Record<keyof typeof he, string> = {
   "nav.league": "الدوري",
   "nav.stadium": "الملعب",
   "nav.economy": "المالية",
+  "nav.club": "النادي",
   "nav.more": "المزيد",
 
   "resetPassword.title": "تعيين كلمة مرور جديدة",
