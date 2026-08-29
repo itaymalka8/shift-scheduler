@@ -1,16 +1,27 @@
+import Image from "next/image"
 import Link from "next/link"
 import { cookies } from "next/headers"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
-import { DEFAULT_LOCALE, getTranslator, isLocale } from "@/lib/i18n/translations"
+import { DEFAULT_LOCALE, getTranslator, isLocale, type Locale } from "@/lib/i18n/translations"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { TeamCrest } from "@/components/team-crest"
 import { getLeagueTiers, getDivisionName } from "@/lib/leagues/config"
 import { computeStandings } from "@/lib/leagues/standings"
 import { ensureIsraelSeasonSeeded } from "@/lib/leagues/seed"
 import { ensureTeamForUser } from "@/lib/team-setup"
+import { ensureStadiumForTeam } from "@/lib/stadium/actions"
+import { toSeatCounts } from "@/lib/stadium/config"
+import { calculateStadiumCapacity } from "@/lib/stadium/metrics"
+import { calculateTeamTotalQuality, calculateSquadMarketValue } from "@/lib/players/quality"
+import { formatMarketValueCompact } from "@/lib/players/currency"
 import { cn } from "@/lib/utils"
+import { Trophy, Landmark, Star, Users, Wallet, Coins, ListOrdered, CalendarOff, type LucideIcon } from "lucide-react"
+
+function localeToBCP47(locale: Locale): string {
+  return locale === "he" ? "he-IL" : locale === "ar" ? "ar" : "en-US"
+}
 
 export default async function DashboardPage() {
   const session = await getServerSession(authOptions)
@@ -62,36 +73,107 @@ export default async function DashboardPage() {
       })
     : []
 
+  // Everything below (players/stadium/position/next-match) reuses the exact
+  // same derivation functions the squad/stadium/league pages already use -
+  // no new data model, just reading what's already there for the Hero and
+  // the 4 key-stat cards.
+  const players = team
+    ? await prisma.player.findMany({ where: { teamId: team.id }, select: { overall: true, marketValue: true } })
+    : []
+  const teamTotalQuality = calculateTeamTotalQuality(players)
+  const squadMarketValue = calculateSquadMarketValue(players)
+
+  const stadium = team ? await ensureStadiumForTeam(team.id, team.name) : null
+  const stadiumCapacity = stadium ? calculateStadiumCapacity(toSeatCounts(stadium)) : null
+
+  const myPositionIndex = team ? standings.findIndex((r) => r.teamId === team.id) : -1
+  const positionLabel = myPositionIndex >= 0 ? myPositionIndex + 1 : null
+
+  const nextFixture = upcomingFixtures[0] ?? null
+  const isHomeNextMatch = nextFixture && team ? nextFixture.homeTeamId === team.id : true
+  const opponentId = nextFixture && team ? (isHomeNextMatch ? nextFixture.awayTeamId : nextFixture.homeTeamId) : null
+  const opponentTeam = opponentId
+    ? await prisma.team.findUnique({
+        where: { id: opponentId },
+        select: {
+          name: true,
+          crestShape: true,
+          crestPattern: true,
+          crestIcon: true,
+          crestColor: true,
+          crestSecondaryColor: true,
+          crestBorderColor: true,
+          crestImageUrl: true,
+        },
+      })
+    : null
+  const opponentName = opponentId ? (opponentTeam?.name ?? teamNameById.get(opponentId) ?? "") : null
+
+  const dateLocale = localeToBCP47(locale)
+  const nextMatchDate = nextFixture?.scheduledAt
+    ? nextFixture.scheduledAt.toLocaleDateString(dateLocale, { weekday: "long", day: "numeric", month: "long" })
+    : null
+  const nextMatchTime = nextFixture?.scheduledAt
+    ? nextFixture.scheduledAt.toLocaleTimeString(dateLocale, { hour: "2-digit", minute: "2-digit" })
+    : null
+
+  let countdown: { days: number; hours: number } | null = null
+  if (nextFixture?.scheduledAt) {
+    const diffMs = nextFixture.scheduledAt.getTime() - Date.now()
+    if (diffMs > 0) {
+      countdown = { days: Math.floor(diffMs / 86_400_000), hours: Math.floor((diffMs % 86_400_000) / 3_600_000) }
+    }
+  }
+
   return (
-    <div className="min-h-screen bg-background">
-      <main className="mx-auto max-w-5xl px-6 py-12">
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-4">
-              <TeamCrest
-                shape={team?.crestShape}
-                pattern={team?.crestPattern}
-                icon={team?.crestIcon}
-                color={team?.crestColor}
-                secondaryColor={team?.crestSecondaryColor}
-                borderColor={team?.crestBorderColor}
-                imageUrl={team?.crestImageUrl}
-                size={56}
-              />
-              <div>
-                <CardTitle className="text-2xl">
-                  {t("dashboard.welcome", { team: team?.name ?? session?.user?.teamName ?? "" })}
-                </CardTitle>
-                <CardDescription>
-                  {t("dashboard.greeting", { name: session?.user?.name ?? "" })}
-                </CardDescription>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <p className="text-muted-foreground">{t("dashboard.comingSoon")}</p>
-          </CardContent>
-        </Card>
+    <div className="relative min-h-screen overflow-hidden bg-background">
+      {/* Subtle page-wide purple tint + a huge, near-transparent GoalX mark
+          decorating the background - the existing logo asset, not a new
+          image - so the brand is felt even where there's no real artwork. */}
+      <div aria-hidden className="pointer-events-none absolute inset-0 bg-gradient-to-b from-primary/[0.04] via-transparent to-transparent" />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -end-32 -top-32 size-[420px] rotate-[-10deg] opacity-[0.05] blur-[1px] sm:-end-40 sm:-top-40 sm:size-[560px] lg:size-[680px]"
+      >
+        <Image src="/logo.png" alt="" fill sizes="680px" className="object-contain" />
+      </div>
+
+      <main className="relative mx-auto max-w-5xl px-6 py-8 sm:py-12">
+        <div className="space-y-6">
+          <ClubHero
+            team={team}
+            managerName={session?.user?.name ?? null}
+            divisionName={divisionName}
+            positionLabel={positionLabel}
+            stadiumName={stadium?.name ?? null}
+            stadiumCapacity={stadiumCapacity}
+            teamTotalQuality={teamTotalQuality}
+            fallbackTeamName={session?.user?.teamName ?? ""}
+            t={t}
+          />
+
+          <div className="grid gap-6 lg:grid-cols-[3fr_2fr] lg:items-start">
+            <NextMatchCard
+              team={team}
+              opponentName={opponentName}
+              opponentTeam={opponentTeam}
+              isHome={isHomeNextMatch}
+              divisionName={divisionName}
+              matchDate={nextMatchDate}
+              matchTime={nextMatchTime}
+              countdown={countdown}
+              t={t}
+            />
+
+            <ClubStatusStats
+              teamTotalQuality={teamTotalQuality}
+              squadMarketValue={squadMarketValue}
+              balance={team?.balance ?? 0}
+              playerCount={players.length}
+              t={t}
+            />
+          </div>
+        </div>
 
         <Card className="mt-6">
           <CardHeader>
@@ -191,6 +273,246 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
       </main>
+    </div>
+  )
+}
+
+type Translator = ReturnType<typeof getTranslator>
+
+/**
+ * The club's identity strip - replaces the old plain "welcome" card. Deep
+ * purple/lavender surface (same brand gradient as the landing page), crest,
+ * club name up front, manager name underneath, and a compact meta row for
+ * whatever real context already exists (league, table position, stadium,
+ * squad quality) - never a table.
+ */
+function ClubHero({
+  team,
+  managerName,
+  divisionName,
+  positionLabel,
+  stadiumName,
+  stadiumCapacity,
+  teamTotalQuality,
+  fallbackTeamName,
+  t,
+}: {
+  team: {
+    name: string
+    crestShape: string | null
+    crestPattern: string | null
+    crestIcon: string | null
+    crestColor: string | null
+    crestSecondaryColor: string | null
+    crestBorderColor: string | null
+    crestImageUrl: string | null
+  } | null
+  managerName: string | null
+  divisionName: string | null
+  positionLabel: number | null
+  stadiumName: string | null
+  stadiumCapacity: number | null
+  teamTotalQuality: number
+  fallbackTeamName: string
+  t: Translator
+}) {
+  const metaItems: { icon: LucideIcon; label: string }[] = []
+  if (divisionName) metaItems.push({ icon: Trophy, label: divisionName })
+  if (positionLabel) metaItems.push({ icon: ListOrdered, label: t("dashboard.hero.position", { n: String(positionLabel) }) })
+  if (stadiumName && stadiumCapacity) {
+    metaItems.push({ icon: Landmark, label: `${stadiumName} · ${stadiumCapacity.toLocaleString()}` })
+  }
+  metaItems.push({ icon: Star, label: `${t("squad.summaryQuality")} ${teamTotalQuality}` })
+
+  return (
+    <div className="goalx-hero-gradient motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 relative overflow-hidden rounded-2xl border border-white/10 p-6 text-white shadow-lg motion-safe:duration-500 sm:p-8">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -end-14 -top-14 size-56 rotate-[8deg] opacity-[0.08] blur-[1px] sm:size-72"
+      >
+        <Image src="/logo.png" alt="" fill sizes="288px" className="object-contain" />
+      </div>
+
+      <div className="relative flex flex-wrap items-center gap-4">
+        <TeamCrest
+          shape={team?.crestShape}
+          pattern={team?.crestPattern}
+          icon={team?.crestIcon}
+          color={team?.crestColor}
+          secondaryColor={team?.crestSecondaryColor}
+          borderColor={team?.crestBorderColor}
+          imageUrl={team?.crestImageUrl}
+          size={64}
+        />
+        <div className="min-w-0">
+          <h1 className="truncate text-2xl font-bold sm:text-3xl">{team?.name ?? fallbackTeamName}</h1>
+          {managerName && <p className="mt-1 text-sm text-white/70">{t("dashboard.hero.manager", { name: managerName })}</p>}
+        </div>
+      </div>
+
+      <div className="relative mt-5 flex flex-wrap gap-x-6 gap-y-2">
+        {metaItems.map((item, i) => (
+          <span key={i} className="flex items-center gap-1.5 text-sm text-white/85">
+            <item.icon className="size-4 text-white/60" />
+            {item.label}
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/** Big, central "what's next" card - the game's actual reason to check the dashboard. */
+function NextMatchCard({
+  team,
+  opponentName,
+  opponentTeam,
+  isHome,
+  divisionName,
+  matchDate,
+  matchTime,
+  countdown,
+  t,
+}: {
+  team: {
+    name: string
+    crestShape: string | null
+    crestPattern: string | null
+    crestIcon: string | null
+    crestColor: string | null
+    crestSecondaryColor: string | null
+    crestBorderColor: string | null
+    crestImageUrl: string | null
+  } | null
+  opponentName: string | null
+  opponentTeam: {
+    crestShape: string | null
+    crestPattern: string | null
+    crestIcon: string | null
+    crestColor: string | null
+    crestSecondaryColor: string | null
+    crestBorderColor: string | null
+    crestImageUrl: string | null
+  } | null
+  isHome: boolean
+  divisionName: string | null
+  matchDate: string | null
+  matchTime: string | null
+  countdown: { days: number; hours: number } | null
+  t: Translator
+}) {
+  return (
+    <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 rounded-2xl border bg-card p-6 shadow-sm motion-safe:duration-500 motion-safe:delay-100">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold text-muted-foreground">{t("dashboard.nextMatch.title")}</h2>
+        {divisionName && <span className="truncate text-xs text-muted-foreground">{divisionName}</span>}
+      </div>
+
+      {!opponentName ? (
+        <div className="flex flex-col items-center justify-center gap-3 py-10 text-center">
+          <CalendarOff className="size-10 text-muted-foreground/40" />
+          <p className="max-w-xs text-sm font-medium text-muted-foreground">{t("dashboard.nextMatch.emptyTitle")}</p>
+        </div>
+      ) : (
+        <>
+          <div className="mt-5 flex items-center justify-center gap-4 sm:gap-10">
+            <div className="flex min-w-0 flex-1 flex-col items-center gap-2 text-center">
+              <TeamCrest
+                shape={team?.crestShape}
+                pattern={team?.crestPattern}
+                icon={team?.crestIcon}
+                color={team?.crestColor}
+                secondaryColor={team?.crestSecondaryColor}
+                borderColor={team?.crestBorderColor}
+                imageUrl={team?.crestImageUrl}
+                size={48}
+              />
+              <span className="max-w-full truncate text-sm font-semibold">{team?.name}</span>
+            </div>
+
+            <div className="flex shrink-0 flex-col items-center gap-1.5">
+              <span className="text-xs font-medium text-muted-foreground">{t("dashboard.nextMatch.vs")}</span>
+              <span
+                className={cn(
+                  "rounded-full px-2.5 py-0.5 text-[11px] font-semibold",
+                  isHome ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"
+                )}
+              >
+                {isHome ? t("league.home") : t("league.away")}
+              </span>
+            </div>
+
+            <div className="flex min-w-0 flex-1 flex-col items-center gap-2 text-center">
+              <TeamCrest
+                shape={opponentTeam?.crestShape}
+                pattern={opponentTeam?.crestPattern}
+                icon={opponentTeam?.crestIcon}
+                color={opponentTeam?.crestColor}
+                secondaryColor={opponentTeam?.crestSecondaryColor}
+                borderColor={opponentTeam?.crestBorderColor}
+                imageUrl={opponentTeam?.crestImageUrl}
+                size={48}
+              />
+              <span className="max-w-full truncate text-sm font-semibold">{opponentName}</span>
+            </div>
+          </div>
+
+          {(matchDate || matchTime) && (
+            <div className="mt-5 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
+              {matchDate && <span>{matchDate}</span>}
+              {matchTime && <span>{matchTime}</span>}
+            </div>
+          )}
+
+          {countdown && (
+            <div className="mt-4 rounded-lg bg-primary/5 py-2 text-center text-sm font-medium text-primary">
+              {t("dashboard.nextMatch.countdownLabel")} · {countdown.days} {t("dashboard.countdown.days")}{" "}
+              {countdown.hours} {t("dashboard.countdown.hours")}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+/** Four real, already-computed numbers - never a table, never invented data. */
+function ClubStatusStats({
+  teamTotalQuality,
+  squadMarketValue,
+  balance,
+  playerCount,
+  t,
+}: {
+  teamTotalQuality: number
+  squadMarketValue: number
+  balance: number
+  playerCount: number
+  t: Translator
+}) {
+  const stats: { icon: LucideIcon; label: string; value: string }[] = [
+    { icon: Star, label: t("squad.summaryQuality"), value: String(teamTotalQuality) },
+    { icon: Coins, label: t("squad.summaryValue"), value: formatMarketValueCompact(squadMarketValue) },
+    { icon: Wallet, label: t("dashboard.availableBudget"), value: formatMarketValueCompact(balance) },
+    { icon: Users, label: t("squad.summaryPlayers"), value: String(playerCount) },
+  ]
+
+  return (
+    <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 space-y-2 motion-safe:duration-500 motion-safe:delay-150">
+      <h2 className="text-sm font-semibold text-muted-foreground">{t("dashboard.clubStatus.title")}</h2>
+      <div className="grid grid-cols-2 gap-3">
+        {stats.map((stat, i) => (
+          <div key={i} className="flex items-center gap-3 rounded-xl border bg-card p-4 shadow-sm">
+            <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <stat.icon className="size-4" />
+            </div>
+            <div className="min-w-0">
+              <div className="truncate text-lg font-bold leading-tight">{stat.value}</div>
+              <div className="truncate text-xs text-muted-foreground">{stat.label}</div>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
