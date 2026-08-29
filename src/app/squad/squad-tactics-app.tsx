@@ -13,6 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import {
   FORMATION_IDS,
   CUSTOM_FORMATION_ID,
@@ -318,6 +319,7 @@ export function SquadTacticsApp({
 
   const [pickerSlotIndex, setPickerSlotIndex] = useState<number | null>(null)
   const [selectedSlotIndex, setSelectedSlotIndex] = useState<number | null>(null)
+  const [squadSheetOpen, setSquadSheetOpen] = useState(false)
   const [confirmRecommend, setConfirmRecommend] = useState(false)
   const [saveStatus, setSaveStatus] = useState<"idle" | "saved">("idle")
   const savedTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -801,14 +803,41 @@ export function SquadTacticsApp({
 
             <TacticalFitPanel assessment={assessment} />
 
-            <SquadList
-              players={players}
-              startingIds={startingIds}
-              onSelect={(playerId) => setExpandedPlayerId(playerId)}
-            />
+            {/* The full 22-player squad isn't shown open by default here -
+                the Squad tab already exists for that. This just opens the
+                same SquadList in a panel (side drawer on desktop, bottom
+                sheet on mobile) so the tactics screen itself stays about
+                lineup/bench/formation/instructions. */}
+            <Button variant="outline" className="w-full" onClick={() => setSquadSheetOpen(true)}>
+              {t("squad.openFullSquad")}
+            </Button>
           </div>
         </div>
       )}
+
+      {/* Full squad panel - opened on demand from the button above. Reuses
+          SquadList exactly as the Squad tab does; selecting a player here
+          just opens the same read-only detail dialog as everywhere else. */}
+      <Sheet open={squadSheetOpen} onOpenChange={setSquadSheetOpen}>
+        <SheetContent
+          side="bottom"
+          className="max-h-[85vh] overflow-y-auto rounded-t-2xl lg:inset-y-0 lg:inset-x-auto lg:top-0 lg:right-0 lg:left-auto lg:bottom-auto lg:h-full lg:max-h-none lg:w-full lg:max-w-md lg:rounded-none lg:border-t-0 lg:border-l lg:data-[state=open]:slide-in-from-right lg:data-[state=closed]:slide-out-to-right"
+        >
+          <SheetHeader>
+            <SheetTitle>{t("squad.tabSquad")}</SheetTitle>
+          </SheetHeader>
+          <div className="px-4 pb-4">
+            <SquadList
+              players={players}
+              startingIds={startingIds}
+              onSelect={(playerId) => {
+                setSquadSheetOpen(false)
+                setExpandedPlayerId(playerId)
+              }}
+            />
+          </div>
+        </SheetContent>
+      </Sheet>
 
       {/* expanded player modal / full profile */}
       <Dialog open={!!expandedPlayer} onOpenChange={(open) => !open && setExpandedPlayerId(null)}>

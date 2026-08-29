@@ -174,6 +174,7 @@ const he = {
   "squad.filter.fw": "התקפה",
   "squad.searchPlaceholder": "חפש שחקן",
   "squad.noPlayersFound": "לא נמצאו שחקנים",
+  "squad.openFullSquad": "פתח סגל מלא",
   "squad.colAbility": "יכולת",
 
   "squad.status.starting": "הרכב",
@@ -799,6 +800,7 @@ const en: Record<keyof typeof he, string> = {
   "squad.filter.fw": "Attack",
   "squad.searchPlaceholder": "Search player",
   "squad.noPlayersFound": "No players found",
+  "squad.openFullSquad": "Open full squad",
 
   "squad.status.starting": "Starting",
   "squad.status.bench": "Bench",
@@ -1420,6 +1422,7 @@ const ar: Record<keyof typeof he, string> = {
   "squad.filter.fw": "هجوم",
   "squad.searchPlaceholder": "ابحث عن لاعب",
   "squad.noPlayersFound": "لم يتم العثور على لاعبين",
+  "squad.openFullSquad": "فتح التشكيلة الكاملة",
 
   "squad.status.starting": "أساسي",
   "squad.status.bench": "احتياط",
