@@ -108,6 +108,36 @@ model Team {
   freeKickTaker       Player?        @relation("TeamFreeKickTaker", fields: [freeKickTakerId], references: [id], onDelete: SetNull)
   cornerTakerId       String?        @unique
   cornerTaker         Player?        @relation("TeamCornerTaker", fields: [cornerTakerId], references: [id], onDelete: SetNull)
+  kits                TeamKit[]
+}
+
+enum KitType {
+  HOME
+  AWAY
+  THIRD
+}
+
+// One row per kit a team has actually saved - not one row per team. Only
+// HOME is used by the UI right now; AWAY/THIRD exist so a future away/third
+// kit phase is an insert, not a schema change. template stays a plain
+// String (validated in code against the approved template list) rather
+// than an enum, so a new template can ship without a migration.
+model TeamKit {
+  id             String   @id @default(cuid())
+  teamId         String
+  team           Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  type           KitType
+  template       String
+  primaryColor   String
+  secondaryColor String
+  accentColor    String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // A club can have at most one kit of a given type - this is what makes
+  // saveHomeKit's upsert well-defined (first save creates the HOME row,
+  // every save after that updates the same one).
+  @@unique([teamId, type])
 }
 
 model Player {
