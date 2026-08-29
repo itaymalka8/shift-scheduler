@@ -12,13 +12,27 @@ import { getLeagueTiers, getDivisionName } from "@/lib/leagues/config"
 import { computeStandings, type StandingRow } from "@/lib/leagues/standings"
 import { ensureIsraelSeasonSeeded } from "@/lib/leagues/seed"
 import { ensureTeamForUser } from "@/lib/team-setup"
-import { ensureStadiumForTeam } from "@/lib/stadium/actions"
+import { ensureStadiumForTeam, settleDueStadiumConstruction } from "@/lib/stadium/actions"
 import { toSeatCounts } from "@/lib/stadium/config"
 import { calculateStadiumCapacity } from "@/lib/stadium/metrics"
 import { calculateTeamTotalQuality, calculateSquadMarketValue } from "@/lib/players/quality"
 import { formatMarketValueCompact } from "@/lib/players/currency"
+import { getFitnessLevel } from "@/lib/players/tiers"
+import { resolveFormationSlots } from "@/lib/players/formations"
+import { getManagerTasks, type ManagerTaskSeverity } from "@/lib/dashboard/manager-tasks"
 import { cn } from "@/lib/utils"
-import { Trophy, Landmark, Star, Users, Wallet, Coins, ListOrdered, CalendarOff, type LucideIcon } from "lucide-react"
+import {
+  Trophy,
+  Landmark,
+  Star,
+  Users,
+  Wallet,
+  Coins,
+  ListOrdered,
+  CalendarOff,
+  CheckCircle2,
+  type LucideIcon,
+} from "lucide-react"
 
 function localeToBCP47(locale: Locale): string {
   return locale === "he" ? "he-IL" : locale === "ar" ? "ar" : "en-US"
@@ -111,10 +125,23 @@ export default async function DashboardPage() {
   // no new data model, just reading what's already there for the Hero and
   // the 4 key-stat cards.
   const players = team
-    ? await prisma.player.findMany({ where: { teamId: team.id }, select: { overall: true, marketValue: true } })
+    ? await prisma.player.findMany({
+        where: { teamId: team.id },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          overall: true,
+          marketValue: true,
+          status: true,
+          fitness: true,
+          weeklySalary: true,
+        },
+      })
     : []
   const teamTotalQuality = calculateTeamTotalQuality(players)
   const squadMarketValue = calculateSquadMarketValue(players)
+  const weeklyWageBill = players.reduce((sum, p) => sum + p.weeklySalary, 0)
 
   const stadium = team ? await ensureStadiumForTeam(team.id, team.name) : null
   const stadiumCapacity = stadium ? calculateStadiumCapacity(toSeatCounts(stadium)) : null
@@ -156,6 +183,49 @@ export default async function DashboardPage() {
       countdown = { days: Math.floor(diffMs / 86_400_000), hours: Math.floor((diffMs % 86_400_000) / 3_600_000) }
     }
   }
+  const hoursUntilNextMatch = nextFixture?.scheduledAt
+    ? Math.max(0, (nextFixture.scheduledAt.getTime() - Date.now()) / 3_600_000)
+    : null
+
+  // The manager's inbox - built entirely from facts already computed above
+  // (lineup slots, player status/fitness, the team's own tactic fields,
+  // balance vs. wage bill) plus one more real, honest signal: a stadium
+  // job that actually finished recently. Nothing here is invented; see
+  // getManagerTasks for how each fact becomes (or doesn't become) a task.
+  const requiredLineupSize = resolveFormationSlots(team?.formation ?? null, team?.customFormation ?? null).length
+  const lineupSlots = team
+    ? await prisma.lineupSlot.findMany({ where: { teamId: team.id }, select: { playerId: true } })
+    : []
+  const startingPlayerIds = new Set(lineupSlots.map((s) => s.playerId))
+  const startingPlayers = players.filter((p) => startingPlayerIds.has(p.id))
+  const injuredStarter = startingPlayers.find((p) => p.status === "injured") ?? null
+  const suspendedStarter = startingPlayers.find((p) => p.status === "suspended") ?? null
+  const lowFitnessStarterCount = startingPlayers.filter((p) => getFitnessLevel(p.fitness) === "low").length
+
+  let stadiumUpgradeRecentlyCompleted = false
+  if (stadium) {
+    await settleDueStadiumConstruction(team!.id)
+    const recentCompletion = await prisma.stadiumConstructionJob.findFirst({
+      where: { stadiumId: stadium.id, status: "completed", completedAt: { gte: new Date(Date.now() - 48 * 3_600_000) } },
+    })
+    stadiumUpgradeRecentlyCompleted = !!recentCompletion
+  }
+
+  const managerTasks = getManagerTasks(
+    {
+      requiredLineupSize,
+      lineupSize: lineupSlots.length,
+      hoursUntilNextMatch,
+      injuredStarterName: injuredStarter ? `${injuredStarter.firstName} ${injuredStarter.lastName}` : null,
+      suspendedStarterName: suspendedStarter ? `${suspendedStarter.firstName} ${suspendedStarter.lastName}` : null,
+      lowFitnessStarterCount,
+      tacticsConfigured: team?.mentality != null,
+      balance: team?.balance ?? 0,
+      weeklyWageBill,
+      stadiumUpgradeRecentlyCompleted,
+    },
+    t
+  ).slice(0, 3)
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-background">
@@ -205,6 +275,8 @@ export default async function DashboardPage() {
               t={t}
             />
           </div>
+
+          {team && <ManagerCenter tasks={managerTasks} t={t} />}
         </div>
 
         <Card className="mt-6 overflow-hidden py-0">
@@ -627,6 +699,74 @@ function StandingsRow({
       <span className="hidden text-center text-sm text-muted-foreground sm:block">{goalDiffLabel}</span>
 
       <span className="text-center text-sm font-bold">{row.points}</span>
+    </div>
+  )
+}
+
+const SEVERITY_BORDER: Record<ManagerTaskSeverity, string> = {
+  urgent: "border-s-red-500",
+  attention: "border-s-amber-500",
+  info: "border-s-primary/40",
+}
+
+const SEVERITY_ICON_BG: Record<ManagerTaskSeverity, string> = {
+  urgent: "bg-red-100 text-red-700",
+  attention: "bg-amber-100 text-amber-700",
+  info: "bg-primary/10 text-primary",
+}
+
+/**
+ * "מרכז המנהל" - a live-feeling inbox instead of a static dashboard: up to
+ * 3 tasks (getManagerTasks decides which, and in what order; this only
+ * renders what it's handed), one Surface, compact rows - never three big
+ * cards. Severity is a thin start-border + tinted icon chip, never a fully
+ * colored card.
+ */
+function ManagerCenter({
+  tasks,
+  t,
+}: {
+  tasks: ReturnType<typeof getManagerTasks>
+  t: Translator
+}) {
+  return (
+    <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 overflow-hidden rounded-2xl border bg-card shadow-sm motion-safe:duration-500 motion-safe:delay-200">
+      <div className="border-b px-4 py-3">
+        <h2 className="text-sm font-semibold">{t("dashboard.managerCenter.title")}</h2>
+      </div>
+
+      {tasks.length === 0 ? (
+        <div className="flex flex-col items-center gap-1 px-4 py-8 text-center">
+          <CheckCircle2 className="size-8 text-emerald-500" />
+          <p className="text-sm font-medium">{t("dashboard.managerCenter.allClearTitle")}</p>
+          <p className="text-xs text-muted-foreground">{t("dashboard.managerCenter.allClearDesc")}</p>
+        </div>
+      ) : (
+        <ul className="divide-y">
+          {tasks.map((task) => (
+            <li
+              key={task.id}
+              className={cn(
+                "flex flex-col gap-2 border-s-4 px-4 py-3 sm:flex-row sm:items-center sm:gap-3",
+                SEVERITY_BORDER[task.severity]
+              )}
+            >
+              <div className="flex min-w-0 flex-1 items-start gap-3">
+                <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-full", SEVERITY_ICON_BG[task.severity])}>
+                  <task.icon className="size-4" />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">{task.title}</p>
+                  <p className="text-xs text-muted-foreground">{task.description}</p>
+                </div>
+              </div>
+              <Button asChild size="sm" variant="outline" className="w-full shrink-0 sm:w-auto">
+                <Link href={task.href}>{task.actionLabel}</Link>
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }
