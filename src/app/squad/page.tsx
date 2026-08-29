@@ -26,8 +26,12 @@ export default async function SquadPage() {
     await prisma.team.update({ where: { id: team.id }, data: { formation, customFormation: Prisma.DbNull } })
   }
 
-  let lineupSlots = await prisma.lineupSlot.findMany({ where: { teamId: team.id } })
-  const players = await prisma.player.findMany({ where: { teamId: team.id }, orderBy: { overall: "desc" } })
+  // Independent of each other - one round trip instead of two.
+  const [initialLineupSlots, players] = await Promise.all([
+    prisma.lineupSlot.findMany({ where: { teamId: team.id } }),
+    prisma.player.findMany({ where: { teamId: team.id }, orderBy: { overall: "desc" } }),
+  ])
+  let lineupSlots = initialLineupSlots
 
   // Self-heal: a team should never land on an empty pitch.
   if (lineupSlots.length === 0 && players.length > 0) {

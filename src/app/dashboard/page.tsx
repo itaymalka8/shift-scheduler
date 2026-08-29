@@ -62,18 +62,54 @@ export default async function DashboardPage() {
     await ensureIsraelSeasonSeeded()
   }
 
-  const membership = team
-    ? await prisma.divisionTeam.findFirst({
-        where: { teamId: team.id },
-        include: { division: true },
-        orderBy: { joinedAt: "desc" },
-      })
-    : null
+  // Everything in this group depends only on `team` (already resolved above)
+  // and not on each other, so they run as one round trip instead of four
+  // sequential ones - a real win once each round trip is a network hop away
+  // on hosted Postgres, not just local-loopback latency.
+  const [membership, players, stadium, lineupSlots] = team
+    ? await Promise.all([
+        prisma.divisionTeam.findFirst({
+          where: { teamId: team.id },
+          include: { division: true },
+          orderBy: { joinedAt: "desc" },
+        }),
+        prisma.player.findMany({
+          where: { teamId: team.id },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            overall: true,
+            marketValue: true,
+            status: true,
+            fitness: true,
+            weeklySalary: true,
+          },
+        }),
+        ensureStadiumForTeam(team.id, team.name),
+        prisma.lineupSlot.findMany({ where: { teamId: team.id }, select: { playerId: true } }),
+      ])
+    : [null, [], null, []]
 
   const division = membership?.division ?? null
   const tierConfig = division ? getLeagueTiers(team!.countryCode ?? "").find((tc) => tc.tier === division.tier) : null
   const divisionName = division && tierConfig ? getDivisionName(tierConfig, division.group ?? "", locale) : null
-  const standings = division ? await computeStandings(division.id) : []
+
+  // Both depend on `division` but not on each other.
+  const [standings, upcomingFixtures] = division
+    ? await Promise.all([
+        computeStandings(division.id),
+        prisma.fixture.findMany({
+          where: {
+            divisionId: division.id,
+            homeScore: null,
+            OR: [{ homeTeamId: team!.id }, { awayTeamId: team!.id }],
+          },
+          orderBy: { matchday: "asc" },
+          take: 5,
+        }),
+      ])
+    : [[], []]
   const teamNameById = new Map(standings.map((r) => [r.teamId, r.teamName]))
 
   // A compact "around my team" window for the dashboard card - 2 above +
@@ -88,62 +124,11 @@ export default async function DashboardPage() {
       ? Math.min(6, standings.length)
       : Math.min(myStandingIndex + 3, standings.length)
   const visibleStandings = standings.slice(standingsWindowStart, standingsWindowEnd)
-  const visibleTeamCrests = visibleStandings.length
-    ? new Map(
-        (
-          await prisma.team.findMany({
-            where: { id: { in: visibleStandings.map((r) => r.teamId) } },
-            select: {
-              id: true,
-              crestShape: true,
-              crestPattern: true,
-              crestIcon: true,
-              crestColor: true,
-              crestSecondaryColor: true,
-              crestBorderColor: true,
-              crestImageUrl: true,
-            },
-          })
-        ).map((t) => [t.id, t])
-      )
-    : new Map()
 
-  const upcomingFixtures = division
-    ? await prisma.fixture.findMany({
-        where: {
-          divisionId: division.id,
-          homeScore: null,
-          OR: [{ homeTeamId: team!.id }, { awayTeamId: team!.id }],
-        },
-        orderBy: { matchday: "asc" },
-        take: 5,
-      })
-    : []
-
-  // Everything below (players/stadium/position/next-match) reuses the exact
-  // same derivation functions the squad/stadium/league pages already use -
-  // no new data model, just reading what's already there for the Hero and
-  // the 4 key-stat cards.
-  const players = team
-    ? await prisma.player.findMany({
-        where: { teamId: team.id },
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          overall: true,
-          marketValue: true,
-          status: true,
-          fitness: true,
-          weeklySalary: true,
-        },
-      })
-    : []
   const teamTotalQuality = calculateTeamTotalQuality(players)
   const squadMarketValue = calculateSquadMarketValue(players)
   const weeklyWageBill = players.reduce((sum, p) => sum + p.weeklySalary, 0)
 
-  const stadium = team ? await ensureStadiumForTeam(team.id, team.name) : null
   const stadiumCapacity = stadium ? calculateStadiumCapacity(toSeatCounts(stadium)) : null
 
   const positionLabel = myStandingIndex >= 0 ? myStandingIndex + 1 : null
@@ -151,21 +136,48 @@ export default async function DashboardPage() {
   const nextFixture = upcomingFixtures[0] ?? null
   const isHomeNextMatch = nextFixture && team ? nextFixture.homeTeamId === team.id : true
   const opponentId = nextFixture && team ? (isHomeNextMatch ? nextFixture.awayTeamId : nextFixture.homeTeamId) : null
-  const opponentTeam = opponentId
-    ? await prisma.team.findUnique({
-        where: { id: opponentId },
-        select: {
-          name: true,
-          crestShape: true,
-          crestPattern: true,
-          crestIcon: true,
-          crestColor: true,
-          crestSecondaryColor: true,
-          crestBorderColor: true,
-          crestImageUrl: true,
-        },
-      })
-    : null
+
+  // Three more independent reads - the visible standings' crests, the next
+  // opponent's crest, and the stadium's own recently-completed-job check -
+  // none of them depend on one another, only on data already resolved above.
+  const [visibleTeamCrests, opponentTeam, recentStadiumCompletion] = await Promise.all([
+    visibleStandings.length
+      ? prisma.team.findMany({
+          where: { id: { in: visibleStandings.map((r) => r.teamId) } },
+          select: {
+            id: true,
+            crestShape: true,
+            crestPattern: true,
+            crestIcon: true,
+            crestColor: true,
+            crestSecondaryColor: true,
+            crestBorderColor: true,
+            crestImageUrl: true,
+          },
+        })
+      : Promise.resolve([]),
+    opponentId
+      ? prisma.team.findUnique({
+          where: { id: opponentId },
+          select: {
+            name: true,
+            crestShape: true,
+            crestPattern: true,
+            crestIcon: true,
+            crestColor: true,
+            crestSecondaryColor: true,
+            crestBorderColor: true,
+            crestImageUrl: true,
+          },
+        })
+      : Promise.resolve(null),
+    stadium
+      ? prisma.stadiumConstructionJob.findFirst({
+          where: { stadiumId: stadium.id, status: "completed", completedAt: { gte: new Date(Date.now() - 48 * 3_600_000) } },
+        })
+      : Promise.resolve(null),
+  ])
+  const visibleTeamCrestsById = new Map(visibleTeamCrests.map((t) => [t.id, t]))
   const opponentName = opponentId ? (opponentTeam?.name ?? teamNameById.get(opponentId) ?? "") : null
 
   const dateLocale = localeToBCP47(locale)
@@ -193,9 +205,6 @@ export default async function DashboardPage() {
   // job that actually finished recently. Nothing here is invented; see
   // getManagerTasks for how each fact becomes (or doesn't become) a task.
   const requiredLineupSize = resolveFormationSlots(team?.formation ?? null, team?.customFormation ?? null).length
-  const lineupSlots = team
-    ? await prisma.lineupSlot.findMany({ where: { teamId: team.id }, select: { playerId: true } })
-    : []
   const startingPlayerIds = new Set(lineupSlots.map((s) => s.playerId))
   const startingPlayers = players.filter((p) => startingPlayerIds.has(p.id))
   const injuredStarter = startingPlayers.find((p) => p.status === "injured") ?? null
@@ -206,13 +215,7 @@ export default async function DashboardPage() {
   // /stadium page's own action). A job past its endsAt is settled - completed and
   // applied to the stadium's seat counts - only when the manager visits /stadium;
   // until then this simply reports "not recently completed" rather than completing it.
-  let stadiumUpgradeRecentlyCompleted = false
-  if (stadium) {
-    const recentCompletion = await prisma.stadiumConstructionJob.findFirst({
-      where: { stadiumId: stadium.id, status: "completed", completedAt: { gte: new Date(Date.now() - 48 * 3_600_000) } },
-    })
-    stadiumUpgradeRecentlyCompleted = !!recentCompletion
-  }
+  const stadiumUpgradeRecentlyCompleted = !!recentStadiumCompletion
 
   const managerTasks = getManagerTasks(
     {
@@ -326,7 +329,7 @@ export default async function DashboardPage() {
                       row={row}
                       position={standingsWindowStart + i + 1}
                       isMe={row.teamId === team?.id}
-                      crest={visibleTeamCrests.get(row.teamId) ?? null}
+                      crest={visibleTeamCrestsById.get(row.teamId) ?? null}
                       t={t}
                     />
                   ))}

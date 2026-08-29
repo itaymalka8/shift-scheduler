@@ -378,6 +378,18 @@ async function backfillMissingGameData(seasonId: string): Promise<void> {
   }
 }
 
+// ensureIsraelSeasonSeeded is self-heal, safe to call on every request, but
+// its "nothing to do" path still costs ~15-30 sequential round trips (one
+// upsert/count per division, a full team scan for bot-name refresh, four
+// backfill counts) - fine once per registration, wasteful on every /dashboard
+// and /league page view. This short debounce skips re-verifying within the
+// window; on Render's actually-networked Postgres those round trips are the
+// difference between a snappy nav and a very noticeable stall, and nothing
+// about season/division config changes on a timescale this cache would ever
+// make visible.
+const RECHECK_INTERVAL_MS = 2 * 60_000
+let lastVerifiedAt = 0
+
 /**
  * Creates Season 1 for Israel - every division in ISRAEL_LEAGUE_TIERS, each
  * filled with bot teams and a full double round-robin fixture list - the
@@ -389,6 +401,8 @@ async function backfillMissingGameData(seasonId: string): Promise<void> {
  * never leaves the league in a state the next call can't finish.
  */
 export async function ensureIsraelSeasonSeeded(): Promise<void> {
+  if (Date.now() - lastVerifiedAt < RECHECK_INTERVAL_MS) return
+
   const season = await prisma.season.upsert({
     where: { countryCode_number: { countryCode: COUNTRY_CODE, number: SEASON_NUMBER } },
     create: { countryCode: COUNTRY_CODE, number: SEASON_NUMBER },
@@ -413,4 +427,6 @@ export async function ensureIsraelSeasonSeeded(): Promise<void> {
   if (await needsBackfill(season.id)) {
     await backfillMissingGameData(season.id)
   }
+
+  lastVerifiedAt = Date.now()
 }
