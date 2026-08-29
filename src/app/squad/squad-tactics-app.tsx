@@ -455,7 +455,12 @@ export function SquadTacticsApp({
   const expandedPlayer = expandedPlayerId ? byId.get(expandedPlayerId) ?? null : null
 
   return (
-    <div>
+    // pb-24 clears the fixed mobile bottom nav bar (GoalXNavigation) - its
+    // own layout-level spacer only adds space above the page's content, not
+    // after it, so without this the last ~55px of whatever this page
+    // renders last is permanently covered once scrolled to the bottom.
+    // Desktop has no fixed bottom bar, hence md:pb-0.
+    <div className="pb-24 md:pb-0">
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-2xl font-bold">{t("squad.title")}</h1>
         <span
@@ -572,13 +577,13 @@ export function SquadTacticsApp({
                 const fitScore = fit !== "natural" ? calculatePositionOverall(player.attributes, slotRole) : null
 
                 return (
-                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-3 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card p-2 shadow-sm sm:gap-3 sm:p-3">
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2 text-sm font-semibold">
+                      <div className="flex items-center gap-2 text-xs font-semibold sm:text-sm">
                         <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-primary">{player.overall}</span>
                         <span className="truncate">{fullName(player)}</span>
                       </div>
-                      <div className="truncate text-xs text-muted-foreground">
+                      <div className="truncate text-[11px] text-muted-foreground sm:text-xs">
                         {t(positionLabelKey(player.primaryPosition))}
                         {fitScore !== null && (
                           <span className="ms-2 text-amber-700">
@@ -587,16 +592,17 @@ export function SquadTacticsApp({
                         )}
                       </div>
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                      <Button size="sm" variant="outline" onClick={() => setExpandedPlayerId(player.id)}>
+                    <div className="flex flex-wrap gap-1.5 sm:gap-2">
+                      <Button size="sm" variant="outline" className="h-7 px-2 text-xs sm:h-8 sm:px-3 sm:text-sm" onClick={() => setExpandedPlayerId(player.id)}>
                         {t("squad.action.viewProfile")}
                       </Button>
-                      <Button size="sm" variant="outline" onClick={() => setPickerSlotIndex(selectedSlotIndex)}>
+                      <Button size="sm" variant="outline" className="h-7 px-2 text-xs sm:h-8 sm:px-3 sm:text-sm" onClick={() => setPickerSlotIndex(selectedSlotIndex)}>
                         {t("squad.action.swap")}
                       </Button>
                       <Button
                         size="sm"
                         variant="ghost"
+                        className="h-7 px-2 text-xs sm:h-8 sm:px-3 sm:text-sm"
                         onClick={() => {
                           assignPlayer(selectedSlotIndex, null)
                           setSelectedSlotIndex(null)
@@ -1133,30 +1139,30 @@ function PitchPlayerCard({
           : undefined
       }
       className={cn(
-        "relative flex w-14 flex-col items-center rounded-lg border px-1 py-1 shadow-md transition-transform sm:w-[4.5rem] sm:rounded-xl sm:py-1.5",
+        "relative flex w-[2.875rem] flex-col items-center rounded-lg border px-0.5 py-0.5 shadow-sm transition-transform sm:w-[4.5rem] sm:rounded-xl sm:px-1 sm:py-1.5",
         TIER_CARD_CLASSES[tier.cardStyle],
-        selected ? "ring-2 ring-primary ring-offset-1" : "hover:scale-[1.04]"
+        selected ? "ring-1 ring-primary ring-offset-1" : "hover:scale-[1.04]"
       )}
     >
       {fit === "unsuitable" && (
-        <span className="absolute -end-1 -top-1 size-2.5 rounded-full border border-white bg-red-500 sm:size-3" />
+        <span className="absolute -end-1 -top-1 size-2 rounded-full border border-white bg-red-500 sm:size-3" />
       )}
       {fit === "secondary" && (
-        <span className="absolute -end-1 -top-1 size-2.5 rounded-full border border-white bg-orange-500 sm:size-3" />
+        <span className="absolute -end-1 -top-1 size-2 rounded-full border border-white bg-orange-500 sm:size-3" />
       )}
       <span
         className={cn(
-          "rounded px-1.5 py-0.5 text-sm font-extrabold leading-none sm:text-lg",
+          "rounded px-1 py-0.5 text-xs font-extrabold leading-none sm:px-1.5 sm:text-lg",
           TIER_BADGE_CLASSES[tier.cardStyle]
         )}
       >
         {player.overall}
       </span>
-      <span className="mt-1 max-w-full truncate text-[10px] font-semibold leading-tight sm:text-xs">
+      <span className="mt-0.5 max-w-full truncate text-[9px] font-semibold leading-tight sm:mt-1 sm:text-xs">
         {shortName(player)}
       </span>
-      <span className="flex items-center gap-1 text-[9px] text-muted-foreground sm:text-[10px]">
-        <span className={cn("size-1.5 rounded-full", FITNESS_DOT_CLASSES[fitnessLevel])} />
+      <span className="flex items-center gap-1 text-[8px] text-muted-foreground sm:text-[10px]">
+        <span className={cn("size-1 rounded-full sm:size-1.5", FITNESS_DOT_CLASSES[fitnessLevel])} />
         {t(positionLabelKey(player.primaryPosition))}
       </span>
     </button>
