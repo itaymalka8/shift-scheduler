@@ -25,12 +25,15 @@ export function isDisplayMode(value: string | null | undefined): value is Displa
 
 export const DISPLAY_MODE_COOKIE = "goalx-display-mode"
 
-// The CSS width "desktop" pins the viewport to - anything at or above
-// Tailwind's `md` breakpoint (768) works, but 1280 (`lg`) is what actually
-// makes the *lg* layouts (e.g. the tactics screen's side-by-side pitch +
-// settings panel) kick in too, not just the `md` ones - a phone forced into
-// "desktop" should see the same arrangement a real desktop visitor does.
-export const DESKTOP_VIEWPORT_WIDTH = 1280
+// The CSS width "desktop" pins the viewport to. The app's widest real
+// breakpoint is Tailwind's `lg` (1024) - there is no `xl`/`2xl` usage
+// anywhere in the codebase, confirmed by grep, so anything at or above
+// 1024 activates the exact same desktop layout (e.g. the tactics screen's
+// side-by-side pitch + settings panel). 1080 keeps a deliberate safety
+// margin above that 1024 boundary (rather than sitting exactly on it)
+// while still giving a meaningfully larger effective on-screen size than
+// 1280 once the phone's browser zooms the whole layout to fit its screen.
+export const DESKTOP_VIEWPORT_WIDTH = 1080
 // Comfortably narrower than Tailwind's `sm` (640) so "mobile" mode reliably
 // stays under every breakpoint the app uses, even on a wide phone or a
 // resized desktop window.
