@@ -52,7 +52,14 @@ export async function generateViewport(): Promise<Viewport> {
   const mode: DisplayMode = isDisplayMode(cookieMode) ? cookieMode : "auto";
 
   if (mode === "desktop") {
-    return { width: DESKTOP_VIEWPORT_WIDTH };
+    // initialScale must be explicitly undefined, not merely omitted - Next's
+    // own createDefaultViewport() bakes in initialScale: 1, and its merge
+    // only touches keys actually present on what we return here, so leaving
+    // this key off entirely lets that default value survive into the final
+    // tag (confirmed by inspecting the served HTML, not assumed). Only an
+    // explicit `undefined` clears it, per resolveViewportLayout's own
+    // falsy-check before writing the key to the meta content string.
+    return { width: DESKTOP_VIEWPORT_WIDTH, initialScale: undefined };
   }
   if (mode === "mobile") {
     return { width: MOBILE_VIEWPORT_WIDTH, initialScale: 1 };
