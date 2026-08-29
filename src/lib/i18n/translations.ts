@@ -203,6 +203,8 @@ const he = {
   "squad.recommendedXI": "הרכב מומלץ",
   "squad.recommendedConfirm": "לבחור אוטומטית את ההרכב החזק ביותר במקום ההרכב הנוכחי?",
   "squad.resetTactics": "אפס טקטיקה",
+  "squad.tactics.moreSettings": "הגדרות נוספות",
+  "squad.tactics.keyRoles": "תפקידי מפתח",
 
   "squad.mentality.title": "סגנון משחק",
   "squad.mentality.defensive": "הגנתי",
@@ -817,6 +819,8 @@ const en: Record<keyof typeof he, string> = {
   "squad.recommendedXI": "Recommended XI",
   "squad.recommendedConfirm": "Replace the current lineup with the strongest available XI?",
   "squad.resetTactics": "Reset tactics",
+  "squad.tactics.moreSettings": "More settings",
+  "squad.tactics.keyRoles": "Key roles",
 
   "squad.mentality.title": "Mentality",
   "squad.mentality.defensive": "Defensive",
@@ -1428,6 +1432,8 @@ const ar: Record<keyof typeof he, string> = {
   "squad.recommendedXI": "التشكيلة الموصى بها",
   "squad.recommendedConfirm": "استبدال التشكيلة الحالية بأقوى تشكيلة متاحة؟",
   "squad.resetTactics": "إعادة ضبط التكتيك",
+  "squad.tactics.moreSettings": "إعدادات إضافية",
+  "squad.tactics.keyRoles": "الأدوار الرئيسية",
 
   "squad.mentality.title": "أسلوب اللعب",
   "squad.mentality.defensive": "دفاعي",

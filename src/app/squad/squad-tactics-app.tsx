@@ -547,7 +547,15 @@ export function SquadTacticsApp({
           </ul>
         </div>
       ) : (
-        <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
+        // Three grid items in this exact order (not two) so mobile - which
+        // simply stacks grid children top to bottom with no explicit
+        // template-columns below lg - reads as Pitch+bench, then the
+        // (now compact) tactics panel, then formation/fit/squad-list. On
+        // lg+, the tactics panel lands beside the pitch (row 1, col 2) and
+        // the formation/fit/squad-list block continues below the pitch
+        // (row 2, col 1), leaving the tactics column narrow instead of a
+        // full-height sidebar.
+        <div className="grid gap-6 lg:grid-cols-[1fr_300px] lg:items-start">
           <div className="space-y-4">
             {formation === CUSTOM_FORMATION_ID && (
               <CustomFormationBuilder
@@ -623,7 +631,125 @@ export function SquadTacticsApp({
                 ))}
               </div>
             </div>
+          </div>
 
+          <div className="space-y-3 lg:sticky lg:top-4">
+            <CompactDial
+              titleKey="squad.mentality.title"
+              value={mentality}
+              options={MENTALITY_OPTIONS as readonly string[]}
+              prefix="squad.mentality"
+              onChange={(v) => applyAndSave({ mentality: v }, () => setMentality(v))}
+            />
+            <CompactDial
+              titleKey="squad.attackingStyle.title"
+              value={attackingStyle}
+              options={ATTACKING_STYLE_OPTIONS as readonly string[]}
+              prefix="squad.attackingStyle"
+              onChange={(v) => applyAndSave({ attackingStyle: v }, () => setAttackingStyle(v))}
+            />
+            <CompactDial
+              titleKey="squad.tempo.title"
+              value={tempo}
+              options={TEMPO_OPTIONS as readonly string[]}
+              prefix="squad.tempo"
+              onChange={(v) => applyAndSave({ tempo: v }, () => setTempo(v))}
+            />
+            <CompactDial
+              titleKey="squad.pressing.title"
+              value={pressing}
+              options={PRESSING_OPTIONS as readonly string[]}
+              prefix="squad.pressing"
+              onChange={(v) => applyAndSave({ pressing: v }, () => setPressing(v))}
+            />
+            <CompactDial
+              titleKey="squad.defensiveLine.title"
+              value={defensiveLine}
+              options={DEFENSIVE_LINE_OPTIONS as readonly string[]}
+              prefix="squad.defensiveLine"
+              onChange={(v) => applyAndSave({ defensiveLine: v }, () => setDefensiveLine(v))}
+            />
+
+            <CollapsibleSection title={t("squad.tactics.moreSettings")}>
+              <CompactDial
+                titleKey="squad.width.title"
+                value={width}
+                options={WIDTH_OPTIONS as readonly string[]}
+                prefix="squad.width"
+                onChange={(v) => applyAndSave({ width: v }, () => setWidth(v))}
+              />
+              <CompactDial
+                titleKey="squad.creativeFreedom.title"
+                value={creativeFreedom}
+                options={CREATIVE_FREEDOM_OPTIONS as readonly string[]}
+                prefix="squad.creativeFreedom"
+                onChange={(v) => applyAndSave({ creativeFreedom: v }, () => setCreativeFreedom(v))}
+              />
+              <CompactDial
+                titleKey="squad.dribbleFrequency.title"
+                value={dribbleFrequency}
+                options={DRIBBLE_FREQUENCY_OPTIONS as readonly string[]}
+                prefix="squad.dribbleFrequency"
+                onChange={(v) => applyAndSave({ dribbleFrequency: v }, () => setDribbleFrequency(v))}
+              />
+              <CompactDial
+                titleKey="squad.passingType.title"
+                value={passingType}
+                options={PASSING_TYPE_OPTIONS as readonly string[]}
+                prefix="squad.passingType"
+                onChange={(v) => applyAndSave({ passingType: v }, () => setPassingType(v))}
+              />
+              <CompactDial
+                titleKey="squad.attackDirection.title"
+                value={attackDirection}
+                options={ATTACK_DIRECTION_OPTIONS as readonly string[]}
+                prefix="squad.attackDirection"
+                onChange={(v) => applyAndSave({ attackDirection: v }, () => setAttackDirection(v))}
+              />
+              <CompactDial
+                titleKey="squad.fullbackOverlaps.title"
+                value={fullbackOverlaps}
+                options={FULLBACK_OVERLAP_OPTIONS as readonly string[]}
+                prefix="squad.fullbackOverlaps"
+                onChange={(v) => applyAndSave({ fullbackOverlaps: v }, () => setFullbackOverlaps(v))}
+              />
+              <CompactToggle
+                titleKey="squad.offsideTrap.title"
+                descKey="squad.offsideTrap.desc"
+                value={offsideTrap}
+                onChange={(v) => applyAndSave({ offsideTrap: v }, () => setOffsideTrap(v))}
+              />
+            </CollapsibleSection>
+
+            <CollapsibleSection title={t("squad.tactics.keyRoles")}>
+              <RoleSelect
+                label={t("squad.captain")}
+                players={players}
+                value={captainId}
+                onChange={(v) => applyAndSave({ captainId: v }, () => setCaptainId(v))}
+              />
+              <RoleSelect
+                label={t("squad.penaltyTaker")}
+                players={players}
+                value={penaltyTakerId}
+                onChange={(v) => applyAndSave({ penaltyTakerId: v }, () => setPenaltyTakerId(v))}
+              />
+              <RoleSelect
+                label={t("squad.freeKickTaker")}
+                players={players}
+                value={freeKickTakerId}
+                onChange={(v) => applyAndSave({ freeKickTakerId: v }, () => setFreeKickTakerId(v))}
+              />
+              <RoleSelect
+                label={t("squad.cornerTaker")}
+                players={players}
+                value={cornerTakerId}
+                onChange={(v) => applyAndSave({ cornerTakerId: v }, () => setCornerTakerId(v))}
+              />
+            </CollapsibleSection>
+          </div>
+
+          <div className="space-y-4">
             <div className="flex flex-wrap items-center gap-3">
               <label className="flex items-center gap-2 text-sm">
                 <span className="font-medium">{t("squad.formation")}</span>
@@ -665,119 +791,6 @@ export function SquadTacticsApp({
                   </li>
                 ))}
               </ul>
-            </div>
-          </div>
-
-          <div className="space-y-6">
-            <TacticDial
-              titleKey="squad.mentality.title"
-              value={mentality}
-              options={MENTALITY_OPTIONS as readonly string[]}
-              prefix="squad.mentality"
-              onChange={(v) => applyAndSave({ mentality: v }, () => setMentality(v))}
-            />
-            <TacticDial
-              titleKey="squad.attackingStyle.title"
-              value={attackingStyle}
-              options={ATTACKING_STYLE_OPTIONS as readonly string[]}
-              prefix="squad.attackingStyle"
-              onChange={(v) => applyAndSave({ attackingStyle: v }, () => setAttackingStyle(v))}
-            />
-            <TacticDial
-              titleKey="squad.tempo.title"
-              value={tempo}
-              options={TEMPO_OPTIONS as readonly string[]}
-              prefix="squad.tempo"
-              onChange={(v) => applyAndSave({ tempo: v }, () => setTempo(v))}
-            />
-            <TacticDial
-              titleKey="squad.pressing.title"
-              value={pressing}
-              options={PRESSING_OPTIONS as readonly string[]}
-              prefix="squad.pressing"
-              onChange={(v) => applyAndSave({ pressing: v }, () => setPressing(v))}
-            />
-            <TacticDial
-              titleKey="squad.defensiveLine.title"
-              value={defensiveLine}
-              options={DEFENSIVE_LINE_OPTIONS as readonly string[]}
-              prefix="squad.defensiveLine"
-              onChange={(v) => applyAndSave({ defensiveLine: v }, () => setDefensiveLine(v))}
-            />
-            <ToggleDial
-              titleKey="squad.offsideTrap.title"
-              descKey="squad.offsideTrap.desc"
-              value={offsideTrap}
-              onChange={(v) => applyAndSave({ offsideTrap: v }, () => setOffsideTrap(v))}
-            />
-            <TacticDial
-              titleKey="squad.width.title"
-              value={width}
-              options={WIDTH_OPTIONS as readonly string[]}
-              prefix="squad.width"
-              onChange={(v) => applyAndSave({ width: v }, () => setWidth(v))}
-            />
-            <TacticDial
-              titleKey="squad.creativeFreedom.title"
-              value={creativeFreedom}
-              options={CREATIVE_FREEDOM_OPTIONS as readonly string[]}
-              prefix="squad.creativeFreedom"
-              onChange={(v) => applyAndSave({ creativeFreedom: v }, () => setCreativeFreedom(v))}
-            />
-            <TacticDial
-              titleKey="squad.dribbleFrequency.title"
-              value={dribbleFrequency}
-              options={DRIBBLE_FREQUENCY_OPTIONS as readonly string[]}
-              prefix="squad.dribbleFrequency"
-              onChange={(v) => applyAndSave({ dribbleFrequency: v }, () => setDribbleFrequency(v))}
-            />
-            <TacticDial
-              titleKey="squad.passingType.title"
-              value={passingType}
-              options={PASSING_TYPE_OPTIONS as readonly string[]}
-              prefix="squad.passingType"
-              onChange={(v) => applyAndSave({ passingType: v }, () => setPassingType(v))}
-            />
-            <TacticDial
-              titleKey="squad.attackDirection.title"
-              value={attackDirection}
-              options={ATTACK_DIRECTION_OPTIONS as readonly string[]}
-              prefix="squad.attackDirection"
-              onChange={(v) => applyAndSave({ attackDirection: v }, () => setAttackDirection(v))}
-            />
-            <TacticDial
-              titleKey="squad.fullbackOverlaps.title"
-              value={fullbackOverlaps}
-              options={FULLBACK_OVERLAP_OPTIONS as readonly string[]}
-              prefix="squad.fullbackOverlaps"
-              onChange={(v) => applyAndSave({ fullbackOverlaps: v }, () => setFullbackOverlaps(v))}
-            />
-
-            <div className="space-y-3">
-              <RoleSelect
-                label={t("squad.captain")}
-                players={players}
-                value={captainId}
-                onChange={(v) => applyAndSave({ captainId: v }, () => setCaptainId(v))}
-              />
-              <RoleSelect
-                label={t("squad.penaltyTaker")}
-                players={players}
-                value={penaltyTakerId}
-                onChange={(v) => applyAndSave({ penaltyTakerId: v }, () => setPenaltyTakerId(v))}
-              />
-              <RoleSelect
-                label={t("squad.freeKickTaker")}
-                players={players}
-                value={freeKickTakerId}
-                onChange={(v) => applyAndSave({ freeKickTakerId: v }, () => setFreeKickTakerId(v))}
-              />
-              <RoleSelect
-                label={t("squad.cornerTaker")}
-                players={players}
-                value={cornerTakerId}
-                onChange={(v) => applyAndSave({ cornerTakerId: v }, () => setCornerTakerId(v))}
-              />
             </div>
           </div>
         </div>
@@ -1331,7 +1344,14 @@ function CustomFormationBuilder({
   )
 }
 
-function TacticDial({
+/**
+ * A tactics dial as a small segmented control (iOS/macOS style) - the whole
+ * point of this round's redesign: same setting, same options, same per-value
+ * description, just compact enough that the manager can see most of the
+ * panel without scrolling. Only the active option's description is ever
+ * shown - never a full legend of all the choices.
+ */
+function CompactDial({
   titleKey,
   value,
   options,
@@ -1347,30 +1367,31 @@ function TacticDial({
   const t = useT()
   return (
     <div>
-      <h3 className="mb-2 text-sm font-semibold">{t(titleKey)}</h3>
-      <div className="flex flex-wrap gap-2">
+      <h3 className="mb-1 text-xs font-semibold">{t(titleKey)}</h3>
+      <div className="flex gap-0.5 rounded-lg bg-muted/60 p-0.5">
         {options.map((option) => (
           <button
             key={option}
             type="button"
             onClick={() => onChange(option)}
             className={cn(
-              "flex-1 rounded-md border px-2 py-1.5 text-sm",
-              value === option ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground"
+              "flex-1 rounded-md px-1 py-1 text-[11px] font-medium leading-tight transition-colors",
+              value === option ? "bg-background text-primary shadow-sm" : "text-muted-foreground hover:text-foreground"
             )}
           >
             {t(`${prefix}.${option}` as TranslationKey)}
           </button>
         ))}
       </div>
-      <p className="mt-1.5 text-xs text-muted-foreground">
+      <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
         {t(`${prefix}.${value}Desc` as TranslationKey)}
       </p>
     </div>
   )
 }
 
-function ToggleDial({
+/** Same compact treatment as CompactDial, for the one boolean tactic (offside trap). */
+function CompactToggle({
   titleKey,
   descKey,
   value,
@@ -1384,21 +1405,48 @@ function ToggleDial({
   const t = useT()
   return (
     <div>
-      <div className="mb-1 flex items-center justify-between">
-        <h3 className="text-sm font-semibold">{t(titleKey)}</h3>
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-xs font-semibold">{t(titleKey)}</h3>
         <button
           type="button"
           onClick={() => onChange(!value)}
           className={cn(
-            "rounded-full border px-3 py-1 text-xs font-medium",
+            "shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium",
             value ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground"
           )}
         >
           {t(value ? "squad.offsideTrap.on" : "squad.offsideTrap.off")}
         </button>
       </div>
-      <p className="text-xs text-muted-foreground">{t(descKey)}</p>
+      <p className="mt-1 text-[11px] leading-snug text-muted-foreground">{t(descKey)}</p>
     </div>
+  )
+}
+
+/**
+ * A native <details>/<summary> disclosure - zero extra state, keyboard- and
+ * screen-reader-accessible for free. Used to fold away the secondary tactics
+ * (everything beyond the five headline dials) and the set-piece/captain
+ * roles, so the panel opens compact and the manager expands only what they
+ * need.
+ */
+function CollapsibleSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <details className="group rounded-lg border">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-2.5 py-1.5 text-xs font-semibold text-muted-foreground marker:content-none [&::-webkit-details-marker]:hidden">
+        {title}
+        <svg
+          className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-180"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+        >
+          <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </summary>
+      <div className="space-y-3 border-t px-2.5 pb-2.5 pt-2">{children}</div>
+    </details>
   )
 }
 
