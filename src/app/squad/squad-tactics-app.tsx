@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
-import { useT } from "@/lib/i18n/locale-context"
+import { useT, useLocale } from "@/lib/i18n/locale-context"
 import type { TranslationKey } from "@/lib/i18n/translations"
+import { getCountryName } from "@/lib/countries"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import {
@@ -91,6 +92,28 @@ interface Point {
 type SortKey = "ability" | "position" | "age" | "fitness"
 
 const POSITION_ORDER: PlayerPosition[] = ["GK", "CB", "RB", "LB", "CDM", "CM", "CAM", "RM", "LM", "RW", "LW", "ST"]
+
+// How far a pointer has to move before a press-and-hold on a player card is
+// treated as a drag instead of a tap - crossing this is the only thing that
+// distinguishes "open player details" from "start a swap", on both mouse and
+// touch (see the pointer handlers in SquadTacticsApp).
+const DRAG_THRESHOLD_PX = 6
+
+/** A drag in progress, dragging one player card toward a pitch slot or the bench. */
+interface DragState {
+  playerId: string
+  // null = the player is coming from the bench (no current slot).
+  originSlotIndex: number | null
+  pointerId: number
+  originClientX: number
+  originClientY: number
+  dx: number
+  dy: number
+  width: number
+  height: number
+  overSlotIndex: number | null
+  overBench: boolean
+}
 
 // One Tailwind treatment per tier's cardStyle token (see config.ts's
 // PLAYER_TIERS) - the config stays framework-agnostic, only this map knows
@@ -275,6 +298,7 @@ export function SquadTacticsApp({
   totalWeeklyPlayerSalaries: number
 }) {
   const t = useT()
+  const { locale } = useLocale()
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -324,11 +348,42 @@ export function SquadTacticsApp({
   const [assessment, setAssessment] = useState<TacticalAssessment | null>(null)
 
   const [pickerSlotIndex, setPickerSlotIndex] = useState<number | null>(null)
+  // The same picker dialog fills an empty slot (bench-only candidates, its
+  // original purpose) or swaps a starter with anyone (all candidates) - one
+  // dialog, two contexts, distinguished only by this flag (see pickerCandidates below).
+  const [pickerMode, setPickerMode] = useState<"empty" | "swap">("empty")
   const [selectedSlotIndex, setSelectedSlotIndex] = useState<number | null>(null)
   const [squadSheetOpen, setSquadSheetOpen] = useState(false)
   const [confirmRecommend, setConfirmRecommend] = useState(false)
   const [saveStatus, setSaveStatus] = useState<"idle" | "saved">("idle")
   const savedTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Custom pointer-based drag (native HTML5 DnD doesn't work reliably on
+  // touch) - see startDrag/handlePointerMove/handlePointerUp below. `drag` is
+  // only ever set once real movement crosses DRAG_THRESHOLD_PX; a plain tap
+  // never touches this state at all and falls through to the card's own
+  // onClick, which is exactly what keeps click and drag from fighting.
+  const [drag, setDrag] = useState<DragState | null>(null)
+  const dragRef = useRef<DragState | null>(null)
+  const pendingDragRef = useRef<{
+    playerId: string
+    originSlotIndex: number | null
+    pointerId: number
+    startX: number
+    startY: number
+    width: number
+    height: number
+  } | null>(null)
+  const justDraggedRef = useRef(false)
+  const rafRef = useRef<number | null>(null)
+  const latestPointerRef = useRef<{ x: number; y: number } | null>(null)
+  const slotElsRef = useRef<Map<number, HTMLDivElement>>(new Map())
+  const benchElRef = useRef<HTMLDivElement | null>(null)
+  // Briefly highlighted right after a successful swap/move so the manager
+  // can see at a glance which two cards just traded places - cleared after
+  // a short timeout, never a full animation library.
+  const [justChangedSlots, setJustChangedSlots] = useState<Set<number>>(new Set())
+  const justChangedTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const slots = useMemo(() => resolveFormationSlots(formation, customFormation), [formation, customFormation])
 
@@ -378,19 +433,75 @@ export function SquadTacticsApp({
     }
   }
 
-  function assignPlayer(slotIndex: number, playerId: string | null) {
-    applyAndSave({ assignments: [{ slotIndex, playerId }] }, () => {
+  function flashChanged(slots: number[]) {
+    setJustChangedSlots(new Set(slots))
+    if (justChangedTimeout.current) clearTimeout(justChangedTimeout.current)
+    justChangedTimeout.current = setTimeout(() => setJustChangedSlots(new Set()), 300)
+  }
+
+  function removeFromSlot(slotIndex: number) {
+    applyAndSave({ assignments: [{ slotIndex, playerId: null }] }, () => {
       setAssignments((prev) => {
         const next = new Map(prev)
-        for (const [idx, pid] of next) {
-          if (pid === playerId) next.delete(idx)
-        }
-        if (playerId) next.set(slotIndex, playerId)
-        else next.delete(slotIndex)
+        next.delete(slotIndex)
         return next
       })
     })
+    setSelectedSlotIndex(null)
+  }
+
+  /**
+   * The one place a player ever lands in a slot - covers every case the spec
+   * calls out as its own thing, because they're really the same operation:
+   *  - empty slot <- bench player: single entry, nothing displaced.
+   *  - empty slot <- starter: single entry; their old slot's entry is
+   *    deleted server-side by the `playerId` match before the new one is
+   *    created (see /api/squad's per-entry loop), so it becomes empty.
+   *  - occupied slot <- bench player: single entry; the displaced starter's
+   *    row is deleted (by slotIndex) without a replacement, so they fall
+   *    out of `assignments` - which is exactly what "now on the bench"
+   *    means here (bench is never stored, only "not assigned").
+   *  - occupied slot <- another starter: two entries, the second one
+   *    putting the displaced player exactly where the incoming one came
+   *    from - a true two-way swap, not a bench bump.
+   * All four are one optimistic local update plus one PATCH call; nothing
+   * about this depends on whether the source was a drag or a picker click.
+   */
+  function assignOrSwap(targetSlotIndex: number, incomingPlayerId: string) {
+    const displacedPlayerId = assignments.get(targetSlotIndex) ?? null
+    let incomingCurrentSlot: number | null = null
+    for (const [idx, pid] of assignments) {
+      if (pid === incomingPlayerId) {
+        incomingCurrentSlot = idx
+        break
+      }
+    }
+    if (incomingCurrentSlot === targetSlotIndex) {
+      setPickerSlotIndex(null)
+      return
+    }
+
+    const entries: { slotIndex: number; playerId: string | null }[] = [
+      { slotIndex: targetSlotIndex, playerId: incomingPlayerId },
+    ]
+    if (incomingCurrentSlot !== null) {
+      entries.push({ slotIndex: incomingCurrentSlot, playerId: displacedPlayerId })
+    }
+
+    applyAndSave({ assignments: entries }, () => {
+      setAssignments((prev) => {
+        const next = new Map(prev)
+        next.set(targetSlotIndex, incomingPlayerId)
+        if (incomingCurrentSlot !== null) {
+          if (displacedPlayerId) next.set(incomingCurrentSlot, displacedPlayerId)
+          else next.delete(incomingCurrentSlot)
+        }
+        return next
+      })
+    })
+    flashChanged(incomingCurrentSlot !== null ? [targetSlotIndex, incomingCurrentSlot] : [targetSlotIndex])
     setPickerSlotIndex(null)
+    setSelectedSlotIndex(null)
   }
 
   function changeFormation(next: string) {
@@ -454,22 +565,149 @@ export function SquadTacticsApp({
     })
   }
 
-  function handleDrop(slotIndex: number, e: React.DragEvent) {
-    e.preventDefault()
-    const playerId = e.dataTransfer.getData("text/plain")
-    if (playerId) assignPlayer(slotIndex, playerId)
+  // --- Pointer-based drag (works for mouse, touch and pen alike; native
+  // HTML5 drag-and-drop never fires reliably from touch) ---------------
+  //
+  // A pointerdown only ever records a *pending* drag in a ref - no state,
+  // no re-render, so a plain tap costs nothing extra and the card's own
+  // onClick still fires exactly as if none of this existed. Only once the
+  // pointer has moved past DRAG_THRESHOLD_PX do we promote it to real
+  // `drag` state (one render) and start tracking movement; `justDraggedRef`
+  // is what stops that same gesture's trailing click from also opening the
+  // player-details dialog. Movement after that is throttled to one state
+  // update per animation frame - the actual hit-testing against slot/bench
+  // rects is cheap (at most ~12 elements) and runs entirely client-side, so
+  // nothing here ever calls the server mid-drag; assignOrSwap/removeFromSlot
+  // (the only place that saves) only run once, on a successful pointerup.
+  function handleCardPointerDown(
+    e: React.PointerEvent,
+    playerId: string,
+    originSlotIndex: number | null
+  ) {
+    if (e.pointerType === "mouse" && e.button !== 0) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    pendingDragRef.current = {
+      playerId,
+      originSlotIndex,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      width: rect.width,
+      height: rect.height,
+    }
+    window.addEventListener("pointermove", handleWindowPointerMove)
+    window.addEventListener("pointerup", handleWindowPointerUp)
+    window.addEventListener("pointercancel", handleWindowPointerUp)
   }
 
-  function handleDropOnBench(e: React.DragEvent) {
-    e.preventDefault()
-    const playerId = e.dataTransfer.getData("text/plain")
-    for (const [idx, pid] of assignments) {
-      if (pid === playerId) {
-        assignPlayer(idx, null)
-        return
+  function computeHoverTarget(clientX: number, clientY: number): { slotIndex: number | null; overBench: boolean } {
+    const bench = benchElRef.current?.getBoundingClientRect()
+    if (bench && clientX >= bench.left && clientX <= bench.right && clientY >= bench.top && clientY <= bench.bottom) {
+      return { slotIndex: null, overBench: true }
+    }
+    for (const [slotIndex, el] of slotElsRef.current) {
+      const r = el.getBoundingClientRect()
+      if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) {
+        return { slotIndex, overBench: false }
       }
     }
+    return { slotIndex: null, overBench: false }
   }
+
+  function flushPointerPosition() {
+    rafRef.current = null
+    const p = latestPointerRef.current
+    const current = dragRef.current
+    if (!p || !current) return
+    const { slotIndex, overBench } = computeHoverTarget(p.x, p.y)
+    const next: DragState = {
+      ...current,
+      dx: p.x - current.originClientX,
+      dy: p.y - current.originClientY,
+      overSlotIndex: slotIndex,
+      overBench,
+    }
+    dragRef.current = next
+    setDrag(next)
+  }
+
+  function handleWindowPointerMove(e: PointerEvent) {
+    const pending = pendingDragRef.current
+    if (pending && e.pointerId === pending.pointerId && !dragRef.current) {
+      const moved = Math.hypot(e.clientX - pending.startX, e.clientY - pending.startY)
+      if (moved < DRAG_THRESHOLD_PX) return
+      const started: DragState = {
+        playerId: pending.playerId,
+        originSlotIndex: pending.originSlotIndex,
+        pointerId: pending.pointerId,
+        originClientX: pending.startX,
+        originClientY: pending.startY,
+        dx: e.clientX - pending.startX,
+        dy: e.clientY - pending.startY,
+        width: pending.width,
+        height: pending.height,
+        overSlotIndex: null,
+        overBench: false,
+      }
+      dragRef.current = started
+      setDrag(started)
+      justDraggedRef.current = true
+    }
+    const current = dragRef.current
+    if (!current || e.pointerId !== current.pointerId) return
+    e.preventDefault()
+    latestPointerRef.current = { x: e.clientX, y: e.clientY }
+    if (rafRef.current == null) rafRef.current = requestAnimationFrame(flushPointerPosition)
+  }
+
+  function handleWindowPointerUp(e: PointerEvent) {
+    const pending = pendingDragRef.current
+    const current = dragRef.current
+    if (pending && e.pointerId === pending.pointerId) pendingDragRef.current = null
+    if (current && e.pointerId === current.pointerId) {
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+      const { playerId, originSlotIndex, overSlotIndex, overBench } = current
+      dragRef.current = null
+      setDrag(null)
+      if (overBench) {
+        if (originSlotIndex !== null) removeFromSlot(originSlotIndex)
+      } else if (overSlotIndex !== null && overSlotIndex !== originSlotIndex) {
+        assignOrSwap(overSlotIndex, playerId)
+      }
+      // Any other release point (outside the pitch and the bench) cancels
+      // the drag with no change - the optimistic state was never touched.
+      setTimeout(() => {
+        justDraggedRef.current = false
+      }, 0)
+    }
+    window.removeEventListener("pointermove", handleWindowPointerMove)
+    window.removeEventListener("pointerup", handleWindowPointerUp)
+    window.removeEventListener("pointercancel", handleWindowPointerUp)
+  }
+
+  /** Suppresses the click that trails a real drag's pointerup - a plain tap never sets justDraggedRef, so it's a no-op there. */
+  function handleCardClick(e: React.MouseEvent, onTap: () => void) {
+    if (justDraggedRef.current) {
+      e.preventDefault()
+      e.stopPropagation()
+      return
+    }
+    onTap()
+  }
+
+  useEffect(() => {
+    return () => {
+      window.removeEventListener("pointermove", handleWindowPointerMove)
+      window.removeEventListener("pointerup", handleWindowPointerUp)
+      window.removeEventListener("pointercancel", handleWindowPointerUp)
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
+      if (justChangedTimeout.current) clearTimeout(justChangedTimeout.current)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const sortedSquad = useMemo(() => {
     const arr = [...players]
@@ -602,11 +840,22 @@ export function SquadTacticsApp({
               slots={slots}
               assignments={assignments}
               byId={byId}
-              onDrop={handleDrop}
               selectedSlotIndex={selectedSlotIndex}
               onSelectSlot={setSelectedSlotIndex}
-              onOpenPicker={(slotIndex) => setPickerSlotIndex(slotIndex)}
+              onOpenPicker={(slotIndex) => {
+                setPickerMode("empty")
+                setPickerSlotIndex(slotIndex)
+              }}
+              onOpenDetails={(playerId) => setExpandedPlayerId(playerId)}
               homeKit={homeKit}
+              registerSlotEl={(slotIndex, el) => {
+                if (el) slotElsRef.current.set(slotIndex, el)
+                else slotElsRef.current.delete(slotIndex)
+              }}
+              onCardPointerDown={handleCardPointerDown}
+              onCardClick={handleCardClick}
+              drag={drag}
+              justChangedSlots={justChangedSlots}
             />
 
             {selectedSlotIndex !== null &&
@@ -638,17 +887,22 @@ export function SquadTacticsApp({
                       <Button size="sm" variant="outline" className="h-7 px-2 text-xs sm:h-8 sm:px-3 sm:text-sm" onClick={() => setExpandedPlayerId(player.id)}>
                         {t("squad.action.viewProfile")}
                       </Button>
-                      <Button size="sm" variant="outline" className="h-7 px-2 text-xs sm:h-8 sm:px-3 sm:text-sm" onClick={() => setPickerSlotIndex(selectedSlotIndex)}>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2 text-xs sm:h-8 sm:px-3 sm:text-sm"
+                        onClick={() => {
+                          setPickerMode("swap")
+                          setPickerSlotIndex(selectedSlotIndex)
+                        }}
+                      >
                         {t("squad.action.swap")}
                       </Button>
                       <Button
                         size="sm"
                         variant="ghost"
                         className="h-7 px-2 text-xs sm:h-8 sm:px-3 sm:text-sm"
-                        onClick={() => {
-                          assignPlayer(selectedSlotIndex, null)
-                          setSelectedSlotIndex(null)
-                        }}
+                        onClick={() => removeFromSlot(selectedSlotIndex)}
                       >
                         {t("squad.action.removeFromLineup")}
                       </Button>
@@ -657,11 +911,23 @@ export function SquadTacticsApp({
                 )
               })()}
 
-            <div onDragOver={(e) => e.preventDefault()} onDrop={handleDropOnBench}>
+            <div
+              ref={benchElRef}
+              className={cn(
+                "rounded-xl transition-colors",
+                drag && drag.overBench && "bg-primary/10 ring-2 ring-primary"
+              )}
+            >
               <h2 className="mb-2 text-sm font-medium text-muted-foreground">{t("squad.bench")}</h2>
               <div className="flex flex-wrap gap-2">
                 {benchPlayers.map((p) => (
-                  <BenchChip key={p.id} player={p} onClick={() => setExpandedPlayerId(p.id)} />
+                  <BenchChip
+                    key={p.id}
+                    player={p}
+                    onClick={(e) => handleCardClick(e, () => setExpandedPlayerId(p.id))}
+                    onPointerDown={(e) => handleCardPointerDown(e, p.id, null)}
+                    dragging={drag?.playerId === p.id}
+                  />
                 ))}
               </div>
             </div>
@@ -822,6 +1088,40 @@ export function SquadTacticsApp({
         </div>
       )}
 
+      {/* The dragged card itself, floating at the pointer - a fixed-position
+          clone (translate3d only, no state-driven layout) so 60fps movement
+          never has to re-render the pitch/bench underneath it. The source
+          card stays in place at reduced opacity (see PitchPlayerCard/
+          BenchChip's `dragging` prop) so where it came from stays visible. */}
+      {drag &&
+        (() => {
+          const player = byId.get(drag.playerId)
+          if (!player) return null
+          const slotRole = drag.originSlotIndex !== null ? slots[drag.originSlotIndex]?.role : player.primaryPosition as PlayerPosition
+          const fit = slotRole ? fitOf(player, slotRole) : "natural"
+          return (
+            <div
+              className="pointer-events-none fixed z-50 transition-none"
+              style={{
+                left: 0,
+                top: 0,
+                width: drag.width,
+                height: drag.height,
+                transform: `translate3d(${drag.originClientX + drag.dx - drag.width / 2}px, ${drag.originClientY + drag.dy - drag.height / 2}px, 0) scale(1.08)`,
+              }}
+            >
+              <PitchPlayerCard
+                player={player}
+                slotRole={slotRole ?? (player.primaryPosition as PlayerPosition)}
+                fit={fit}
+                selected={false}
+                homeKit={homeKit}
+                elevated
+              />
+            </div>
+          )
+        })()}
+
       {/* Full squad panel - opened on demand from the button above. Reuses
           SquadList exactly as the Squad tab does; selecting a player here
           just opens the same read-only detail dialog as everywhere else. */}
@@ -846,97 +1146,185 @@ export function SquadTacticsApp({
         </SheetContent>
       </Sheet>
 
-      {/* expanded player modal / full profile */}
+      {/* Expanded player profile - the one place a manager can see everything
+          real that's known about a player. Same Dialog component on every
+          breakpoint; only its position/rounding/animation classes change at
+          sm+, from a full-width sheet sliding up from the bottom (mobile) to
+          a centered card (desktop) - one implementation, not two dialogs. */}
       <Dialog open={!!expandedPlayer} onOpenChange={(open) => !open && setExpandedPlayerId(null)}>
-        <DialogContent className="max-h-[85vh] overflow-y-auto">
-          {expandedPlayer && (
-            <>
-              <DialogHeader>
-                <DialogTitle>
-                  #{expandedPlayer.shirtNumber} {fullName(expandedPlayer)}
-                </DialogTitle>
-              </DialogHeader>
-              <div className="space-y-2 text-sm">
-                <Row label={t("squad.colAbility")} value={String(expandedPlayer.overall)} />
-                {(() => {
-                  const slotEntry = [...assignments.entries()].find(([, playerId]) => playerId === expandedPlayer.id)
-                  if (!slotEntry) return null
-                  const role = slots[slotEntry[0]].role
-                  if (role === (expandedPlayer.primaryPosition as PlayerPosition)) return null
-                  return (
-                    <Row
-                      label={t("squad.currentPositionOverall")}
-                      value={String(calculatePositionOverall(expandedPlayer.attributes, role))}
-                    />
-                  )
-                })()}
-                <Row label={t("squad.colPotential")} value={String(expandedPlayer.potential)} />
-                <Row label={t("squad.sortPosition")} value={t(positionLabelKey(expandedPlayer.primaryPosition))} />
-                {expandedPlayer.secondaryPositions.length > 0 && (
-                  <Row
-                    label={t("squad.secondaryPositionsList")}
-                    value={expandedPlayer.secondaryPositions.map((p) => t(positionLabelKey(p))).join(", ")}
-                  />
-                )}
-                <Row label={t("squad.colAge")} value={String(expandedPlayer.age)} />
-                <Row
-                  label={t("squad.colFitness")}
-                  value={t(`squad.fitness.${getFitnessLevel(expandedPlayer.fitness)}` as TranslationKey)}
-                />
-                <Row
-                  label={t("squad.status.starting")}
-                  value={t(
-                    `squad.status.${getDisplayStatus(expandedPlayer.status, startingIds.has(expandedPlayer.id))}` as TranslationKey
-                  )}
-                />
-                <Row label={t("squad.colMarketValue")} value={formatMarketValue(expandedPlayer.marketValue)} />
-                <Row
-                  label={t("squad.colWeeklySalary")}
-                  value={`${formatMarketValue(expandedPlayer.weeklySalary)} ${t("economy.perWeek")}`}
-                />
-                <Row label={t("squad.colFoot")} value={t(`squad.foot.${expandedPlayer.preferredFoot}` as TranslationKey)} />
-              </div>
-
-              <AttributeCategories player={expandedPlayer} />
-            </>
+        <DialogContent
+          className={cn(
+            "gap-0 overflow-hidden p-0",
+            "fixed inset-x-0 bottom-0 top-auto left-0 max-h-[88vh] w-full max-w-full translate-x-0 translate-y-0 rounded-t-2xl rounded-b-none border-b-0",
+            "sm:inset-x-auto sm:bottom-auto sm:left-[50%] sm:top-[50%] sm:max-h-[85vh] sm:w-full sm:max-w-md sm:translate-x-[-50%] sm:translate-y-[-50%] sm:rounded-2xl sm:border-b"
           )}
+        >
+          {expandedPlayer &&
+            (() => {
+              const slotEntry = [...assignments.entries()].find(([, playerId]) => playerId === expandedPlayer.id)
+              const currentRole = slotEntry ? slots[slotEntry[0]].role : null
+              const isOutOfPosition = currentRole !== null && currentRole !== (expandedPlayer.primaryPosition as PlayerPosition)
+              const countryName = getCountryName(expandedPlayer.nationality, locale)
+
+              return (
+                <div className="flex max-h-[88vh] flex-col overflow-y-auto sm:max-h-[85vh]">
+                  {/* Top: kit + Overall + name + position + age */}
+                  <DialogHeader className="shrink-0 gap-0 space-y-0 border-b bg-muted/30 p-4 text-start sm:p-5">
+                    <DialogTitle className="sr-only">{fullName(expandedPlayer)}</DialogTitle>
+                    <div className="flex items-center gap-3">
+                      <div className="relative size-16 shrink-0 overflow-hidden rounded-lg border bg-card shadow-sm sm:size-20">
+                        <JerseyPreview
+                          template={homeKit.template}
+                          primaryColor={homeKit.primaryColor}
+                          secondaryColor={homeKit.secondaryColor}
+                          accentColor={homeKit.accentColor}
+                          className="h-full w-full"
+                        />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-3xl font-extrabold leading-none text-primary sm:text-4xl">
+                            {expandedPlayer.overall}
+                          </span>
+                          <span className="truncate text-lg font-bold leading-tight">{fullName(expandedPlayer)}</span>
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground sm:text-sm">
+                          <span>#{expandedPlayer.shirtNumber}</span>
+                          <span>·</span>
+                          <span>{t(positionLabelKey(expandedPlayer.primaryPosition))}</span>
+                          <span>·</span>
+                          <span>
+                            {t("squad.colAge")} {expandedPlayer.age}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </DialogHeader>
+
+                  <div className="space-y-5 p-4 sm:p-5">
+                    {/* Player info */}
+                    <div>
+                      <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        {t("squad.playerDetails.info")}
+                      </h3>
+                      <div className="space-y-1.5 text-sm">
+                        {isOutOfPosition && currentRole && (
+                          <Row
+                            label={t("squad.currentPositionOverall")}
+                            value={String(calculatePositionOverall(expandedPlayer.attributes, currentRole))}
+                          />
+                        )}
+                        <Row label={t("squad.colPotential")} value={String(expandedPlayer.potential)} />
+                        {expandedPlayer.secondaryPositions.length > 0 && (
+                          <Row
+                            label={t("squad.secondaryPositionsList")}
+                            value={expandedPlayer.secondaryPositions.map((p) => t(positionLabelKey(p))).join(", ")}
+                          />
+                        )}
+                        <Row
+                          label={t("squad.colFitness")}
+                          value={t(`squad.fitness.${getFitnessLevel(expandedPlayer.fitness)}` as TranslationKey)}
+                        />
+                        <Row
+                          label={t("squad.status.starting")}
+                          value={t(
+                            `squad.status.${getDisplayStatus(expandedPlayer.status, startingIds.has(expandedPlayer.id))}` as TranslationKey
+                          )}
+                        />
+                        <Row label={t("squad.colFoot")} value={t(`squad.foot.${expandedPlayer.preferredFoot}` as TranslationKey)} />
+                        {countryName && <Row label={t("squad.colNationality")} value={countryName} />}
+                        <Row label={t("squad.colMarketValue")} value={formatMarketValue(expandedPlayer.marketValue)} />
+                        <Row
+                          label={t("squad.colWeeklySalary")}
+                          value={`${formatMarketValue(expandedPlayer.weeklySalary)} ${t("economy.perWeek")}`}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Abilities - only real attribute numbers the DB actually has for this player (see attributes.ts) */}
+                    <div>
+                      <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        {t("squad.playerDetails.abilities")}
+                      </h3>
+                      <AttributeCategories player={expandedPlayer} />
+                    </div>
+
+                    {slotEntry && (
+                      <Button
+                        variant="outline"
+                        className="w-full"
+                        onClick={() => {
+                          setExpandedPlayerId(null)
+                          setPickerMode("swap")
+                          setPickerSlotIndex(slotEntry[0])
+                        }}
+                      >
+                        {t("squad.action.swapPosition")}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              )
+            })()}
         </DialogContent>
       </Dialog>
 
-      {/* pick a player for a slot (click-to-assign, mobile-friendly alternative to drag) */}
+      {/* Pick a player for a slot - the click/tap alternative to dragging.
+          Filling an empty slot only offers bench players (there's no one to
+          displace); swapping a starter offers everyone else, bench and
+          starters alike, since assignOrSwap already knows how to handle
+          either - this is the accessible equivalent of dragging one starter
+          onto another (see step 9 of the spec: dragging isn't the only way
+          in). */}
       <Dialog open={pickerSlotIndex !== null} onOpenChange={(open) => !open && setPickerSlotIndex(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{t("squad.pickPlayerTitle")}</DialogTitle>
+            <DialogTitle>{t(pickerMode === "swap" ? "squad.swapPlayerTitle" : "squad.pickPlayerTitle")}</DialogTitle>
           </DialogHeader>
           <ul className="max-h-80 space-y-1 overflow-y-auto">
             {pickerSlotIndex !== null &&
-              benchPlayers
-                .slice()
-                .sort((a, b) => {
-                  const slotRole = slots[pickerSlotIndex].role
-                  const fitScore = (p: PlayerDTO) => {
-                    const fit = fitOf(p, slotRole)
-                    return fit === "natural" ? 2 : fit === "secondary" ? 1 : 0
-                  }
-                  return fitScore(b) - fitScore(a) || b.overall - a.overall
-                })
-                .map((p) => (
-                  <li key={p.id}>
-                    <button
-                      type="button"
-                      onClick={() => assignPlayer(pickerSlotIndex, p.id)}
-                      className="flex w-full items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-accent"
-                    >
-                      <span>
-                        #{p.shirtNumber} {fullName(p)}
-                      </span>
-                      <span className="text-muted-foreground">
-                        {t(positionLabelKey(p.primaryPosition))} · {p.overall}
-                      </span>
-                    </button>
-                  </li>
-                ))}
+              (() => {
+                const currentOccupantId = assignments.get(pickerSlotIndex)
+                const candidates = pickerMode === "swap" ? players.filter((p) => p.id !== currentOccupantId) : benchPlayers
+                const slotRole = slots[pickerSlotIndex].role
+                return candidates
+                  .slice()
+                  .sort((a, b) => {
+                    const fitScore = (p: PlayerDTO) => {
+                      const fit = fitOf(p, slotRole)
+                      return fit === "natural" ? 2 : fit === "secondary" ? 1 : 0
+                    }
+                    return fitScore(b) - fitScore(a) || b.overall - a.overall
+                  })
+                  .map((p) => {
+                    const currentSlot = [...assignments.entries()].find(([, pid]) => pid === p.id)
+                    return (
+                      <li key={p.id}>
+                        <button
+                          type="button"
+                          onClick={() => assignOrSwap(pickerSlotIndex, p.id)}
+                          className="flex w-full items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-accent"
+                        >
+                          <span>
+                            #{p.shirtNumber} {fullName(p)}
+                          </span>
+                          <span className="flex items-center gap-2 text-muted-foreground">
+                            {currentSlot ? (
+                              <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[11px] font-medium text-emerald-800">
+                                {t(positionLabelKey(slots[currentSlot[0]].role))}
+                              </span>
+                            ) : (
+                              <span className="rounded-full bg-muted px-1.5 py-0.5 text-[11px] font-medium">
+                                {t("squad.status.bench")}
+                              </span>
+                            )}
+                            {t(positionLabelKey(p.primaryPosition))} · {p.overall}
+                          </span>
+                        </button>
+                      </li>
+                    )
+                  })
+              })()}
           </ul>
         </DialogContent>
       </Dialog>
@@ -994,7 +1382,7 @@ function AttributeCategories({ player }: { player: PlayerDTO }) {
   const categories = isGoalkeeper ? GOALKEEPER_ATTRIBUTE_CATEGORIES : ATTRIBUTE_CATEGORIES
 
   return (
-    <div className="mt-4 space-y-4 border-t pt-4">
+    <div className="space-y-4">
       {categories.map((category) => (
         <div key={category.id}>
           <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -1073,16 +1461,29 @@ function PlayerCard({
   )
 }
 
-function BenchChip({ player, onClick }: { player: PlayerDTO; onClick: () => void }) {
+function BenchChip({
+  player,
+  onClick,
+  onPointerDown,
+  dragging,
+}: {
+  player: PlayerDTO
+  onClick: (e: React.MouseEvent) => void
+  onPointerDown: (e: React.PointerEvent) => void
+  dragging?: boolean
+}) {
   const t = useT()
   const tier = getPlayerTier(player.overall)
   return (
     <button
       type="button"
-      draggable
-      onDragStart={(e) => e.dataTransfer.setData("text/plain", player.id)}
+      onPointerDown={onPointerDown}
       onClick={onClick}
-      className={cn("flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs hover:brightness-[0.98]", TIER_CARD_CLASSES[tier.cardStyle])}
+      className={cn(
+        "touch-none flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs hover:brightness-[0.98] transition-opacity",
+        TIER_CARD_CLASSES[tier.cardStyle],
+        dragging && "opacity-30"
+      )}
       title={fullName(player)}
     >
       <span className="text-muted-foreground">#{player.shirtNumber}</span>
@@ -1350,16 +1751,28 @@ function PitchPlayerCard({
   fit,
   selected,
   onClick,
-  draggable,
+  onPointerDown,
   homeKit,
+  dragging,
+  dragOver,
+  justChanged,
+  elevated,
 }: {
   player: PlayerDTO
   slotRole: PlayerPosition
   fit: PositionFit
   selected: boolean
-  onClick: () => void
-  draggable?: boolean
+  onClick?: (e: React.MouseEvent) => void
+  onPointerDown?: (e: React.PointerEvent) => void
   homeKit: KitColors
+  /** This exact card is the one currently being dragged - dimmed so the origin stays visible under the floating clone. */
+  dragging?: boolean
+  /** Another card is being dragged and the pointer is currently over this slot - a drop here would land it. */
+  dragOver?: boolean
+  /** Just took part in a swap/move - a brief pulse so the manager sees who traded with whom. */
+  justChanged?: boolean
+  /** This is the floating clone following the pointer, not a real slot's card. */
+  elevated?: boolean
 }) {
   const t = useT()
   const fitnessLevel = getFitnessLevel(player.fitness)
@@ -1378,8 +1791,7 @@ function PitchPlayerCard({
     <button
       type="button"
       onClick={onClick}
-      draggable={draggable}
-      onDragStart={(e) => e.dataTransfer.setData("text/plain", player.id)}
+      onPointerDown={onPointerDown}
       title={
         fit === "unsuitable"
           ? t("squad.positionWarning", {
@@ -1389,11 +1801,16 @@ function PitchPlayerCard({
           : undefined
       }
       className={cn(
-        "relative flex w-[2.875rem] flex-col items-center overflow-hidden rounded-lg px-0.5 py-0.5 transition-transform sm:w-[4.5rem] sm:rounded-xl sm:px-1 sm:py-1.5",
+        "touch-none relative flex w-[2.875rem] flex-col items-center overflow-hidden rounded-lg px-0.5 py-0.5 transition-all sm:w-[4.5rem] sm:rounded-xl sm:px-1 sm:py-1.5",
         gradeStyle.cardBorder,
         gradeStyle.cardBackground,
         gradeStyle.cardShadow,
-        selected ? "ring-1 ring-primary ring-offset-1" : "hover:scale-[1.04]"
+        selected && "ring-1 ring-primary ring-offset-1",
+        !selected && !dragging && !elevated && "hover:scale-[1.04]",
+        dragging && "opacity-30",
+        dragOver && "ring-2 ring-primary ring-offset-2 scale-[1.06]",
+        justChanged && "ring-2 ring-emerald-400 scale-[1.06]",
+        elevated && "shadow-2xl scale-105"
       )}
     >
       {/* The club's own home kit - the same JerseyPreview /club uses, same
@@ -1444,20 +1861,30 @@ function Pitch({
   slots,
   assignments,
   byId,
-  onDrop,
   selectedSlotIndex,
   onSelectSlot,
   onOpenPicker,
+  onOpenDetails,
   homeKit,
+  registerSlotEl,
+  onCardPointerDown,
+  onCardClick,
+  drag,
+  justChangedSlots,
 }: {
   slots: FormationSlot[]
   assignments: Map<number, string>
   byId: Map<string, PlayerDTO>
-  onDrop: (slotIndex: number, e: React.DragEvent) => void
   selectedSlotIndex: number | null
   onSelectSlot: (slotIndex: number | null) => void
   onOpenPicker: (slotIndex: number) => void
+  onOpenDetails: (playerId: string) => void
   homeKit: KitColors
+  registerSlotEl: (slotIndex: number, el: HTMLDivElement | null) => void
+  onCardPointerDown: (e: React.PointerEvent, playerId: string, originSlotIndex: number | null) => void
+  onCardClick: (e: React.MouseEvent, onTap: () => void) => void
+  drag: DragState | null
+  justChangedSlots: Set<number>
 }) {
   const t = useT()
   return (
@@ -1478,12 +1905,12 @@ function Pitch({
         // goal line rather than mid-box - the formation's real y (used for
         // every position/fit calculation) is untouched.
         const visualY = slot.role === "GK" ? Math.max(4, slot.y - 4) : slot.y
+        const isDragOverThisSlot = drag !== null && drag.overSlotIndex === slotIndex
 
         return (
           <div
             key={slotIndex}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => onDrop(slotIndex, e)}
+            ref={(el) => registerSlotEl(slotIndex, el)}
             className="absolute -translate-x-1/2 -translate-y-1/2"
             style={{ left: `${slot.x}%`, top: `${visualY}%` }}
           >
@@ -1493,15 +1920,26 @@ function Pitch({
                 slotRole={slot.role}
                 fit={fit}
                 selected={selectedSlotIndex === slotIndex}
-                draggable
-                onClick={() => onSelectSlot(selectedSlotIndex === slotIndex ? null : slotIndex)}
+                onClick={(e) =>
+                  onCardClick(e, () => {
+                    onSelectSlot(selectedSlotIndex === slotIndex ? null : slotIndex)
+                    onOpenDetails(player.id)
+                  })
+                }
+                onPointerDown={(e) => onCardPointerDown(e, player.id, slotIndex)}
                 homeKit={homeKit}
+                dragging={drag?.playerId === player.id}
+                dragOver={isDragOverThisSlot && drag?.playerId !== player.id}
+                justChanged={justChangedSlots.has(slotIndex)}
               />
             ) : (
               <button
                 type="button"
                 onClick={() => onOpenPicker(slotIndex)}
-                className="flex size-12 flex-col items-center justify-center rounded-full border-2 border-dashed border-white/70 bg-white/10 text-[9px] text-white/85 sm:size-14"
+                className={cn(
+                  "flex size-12 flex-col items-center justify-center rounded-full border-2 border-dashed border-white/70 bg-white/10 text-[9px] text-white/85 transition-colors sm:size-14",
+                  isDragOverThisSlot && "border-white bg-white/30"
+                )}
               >
                 {t(positionLabelKey(slot.role))}
               </button>
