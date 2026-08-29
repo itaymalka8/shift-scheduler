@@ -166,6 +166,14 @@ const he = {
   "squad.sortFitness": "כושר",
   "squad.colAge": "גיל",
   "squad.colFitness": "כושר",
+
+  "squad.filter.all": "הכל",
+  "squad.filter.gk": "שוערים",
+  "squad.filter.df": "הגנה",
+  "squad.filter.mf": "קישור",
+  "squad.filter.fw": "התקפה",
+  "squad.searchPlaceholder": "חפש שחקן",
+  "squad.noPlayersFound": "לא נמצאו שחקנים",
   "squad.colAbility": "יכולת",
 
   "squad.status.starting": "הרכב",
@@ -784,6 +792,14 @@ const en: Record<keyof typeof he, string> = {
   "squad.colFitness": "Fitness",
   "squad.colAbility": "Ability",
 
+  "squad.filter.all": "All",
+  "squad.filter.gk": "Goalkeepers",
+  "squad.filter.df": "Defense",
+  "squad.filter.mf": "Midfield",
+  "squad.filter.fw": "Attack",
+  "squad.searchPlaceholder": "Search player",
+  "squad.noPlayersFound": "No players found",
+
   "squad.status.starting": "Starting",
   "squad.status.bench": "Bench",
   "squad.status.excluded": "Out of squad",
@@ -1396,6 +1412,14 @@ const ar: Record<keyof typeof he, string> = {
   "squad.colAge": "العمر",
   "squad.colFitness": "اللياقة",
   "squad.colAbility": "القدرة",
+
+  "squad.filter.all": "الكل",
+  "squad.filter.gk": "حراس مرمى",
+  "squad.filter.df": "دفاع",
+  "squad.filter.mf": "خط وسط",
+  "squad.filter.fw": "هجوم",
+  "squad.searchPlaceholder": "ابحث عن لاعب",
+  "squad.noPlayersFound": "لم يتم العثور على لاعبين",
 
   "squad.status.starting": "أساسي",
   "squad.status.bench": "احتياط",

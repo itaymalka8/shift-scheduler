@@ -26,7 +26,7 @@ import {
   resolveFormationSlots,
   type FormationSlot,
 } from "@/lib/players/formations"
-import type { PlayerPosition } from "@/lib/players/positions"
+import { POSITION_GROUP, type PlayerPosition } from "@/lib/players/positions"
 import { calculatePositionSuitability, type PositionFit } from "@/lib/players/suitability"
 import { getPlayerTier, getFitnessLevel, getDisplayStatus, type PlayerStatus, type DisplayPlayerStatus } from "@/lib/players/tiers"
 import { formatMarketValue, formatMarketValueCompact } from "@/lib/players/currency"
@@ -125,6 +125,31 @@ const FIT_BADGE_CLASSES: Record<string, string> = {
   average: "bg-amber-100 text-amber-800",
   weak: "bg-red-100 text-red-800",
 }
+
+// Same status colors PlayerCard already uses (starting/injured/suspended get
+// their own color, everything else - bench/unavailable - is neutral) - kept
+// as its own constant rather than reused from PlayerCard so that component
+// (used by the untouched Squad tab) stays exactly as it was.
+const SQUAD_ROW_STATUS_CLASSES: Record<DisplayPlayerStatus, string> = {
+  starting: "bg-emerald-100 text-emerald-800",
+  bench: "bg-muted text-muted-foreground",
+  available: "bg-muted text-muted-foreground",
+  injured: "bg-red-100 text-red-800",
+  suspended: "bg-amber-100 text-amber-800",
+  unavailable: "bg-muted text-muted-foreground",
+}
+
+type SquadPositionFilter = "ALL" | "GK" | "DF" | "MF" | "FW"
+
+const SQUAD_POSITION_FILTERS: { key: SquadPositionFilter; labelKey: TranslationKey }[] = [
+  { key: "ALL", labelKey: "squad.filter.all" },
+  { key: "GK", labelKey: "squad.filter.gk" },
+  { key: "DF", labelKey: "squad.filter.df" },
+  { key: "MF", labelKey: "squad.filter.mf" },
+  { key: "FW", labelKey: "squad.filter.fw" },
+]
+
+type SquadSortKey = "overall" | "position" | "age" | "fitness"
 
 // A sensible starting layout for a manager entering the custom builder for
 // the first time - a plain 4-4-2 shape, already legal within the custom
@@ -776,22 +801,11 @@ export function SquadTacticsApp({
 
             <TacticalFitPanel assessment={assessment} />
 
-            <div className="space-y-1">
-              <h2 className="text-sm font-medium text-muted-foreground">{t("squad.tabSquad")}</h2>
-              <ul className="space-y-1">
-                {sortedSquad.map((player) => (
-                  <li key={player.id}>
-                    <PlayerCard
-                      compact
-                      player={player}
-                      status={getDisplayStatus(player.status, startingIds.has(player.id))}
-                      onClick={() => setExpandedPlayerId(player.id)}
-                      draggable
-                    />
-                  </li>
-                ))}
-              </ul>
-            </div>
+            <SquadList
+              players={players}
+              startingIds={startingIds}
+              onSelect={(playerId) => setExpandedPlayerId(playerId)}
+            />
           </div>
         </div>
       )}
@@ -1039,6 +1053,182 @@ function BenchChip({ player, onClick }: { player: PlayerDTO; onClick: () => void
       <span className="font-medium">{fullName(player)}</span>
       <span className="text-muted-foreground">{t(positionLabelKey(player.primaryPosition))}</span>
       <span className="font-bold text-primary">{player.overall}</span>
+    </button>
+  )
+}
+
+/**
+ * The full squad, as a compact scannable list under the pitch - one row per
+ * player instead of the old attribute-heavy PlayerCard. Filtering, search
+ * and sort all run in memory over the already-loaded `players` prop (no
+ * extra fetches). Clicking a row only opens the existing full-detail dialog
+ * (via onSelect/expandedPlayerId in the parent) - it never touches the
+ * lineup itself.
+ */
+function SquadList({
+  players,
+  startingIds,
+  onSelect,
+}: {
+  players: PlayerDTO[]
+  startingIds: Set<string>
+  onSelect: (playerId: string) => void
+}) {
+  const t = useT()
+  const [query, setQuery] = useState("")
+  const [positionFilter, setPositionFilter] = useState<SquadPositionFilter>("ALL")
+  const [sortKey, setSortKey] = useState<SquadSortKey>("overall")
+
+  const visiblePlayers = useMemo(() => {
+    let arr = players
+    if (positionFilter !== "ALL") {
+      arr = arr.filter((p) => POSITION_GROUP[p.primaryPosition as PlayerPosition] === positionFilter)
+    }
+    const q = query.trim().toLowerCase()
+    if (q) arr = arr.filter((p) => fullName(p).toLowerCase().includes(q))
+
+    const sorted = [...arr]
+    sorted.sort((a, b) => {
+      if (sortKey === "overall") return b.overall - a.overall
+      if (sortKey === "age") return a.age - b.age
+      if (sortKey === "fitness") return b.fitness - a.fitness
+      return (
+        POSITION_ORDER.indexOf(a.primaryPosition as PlayerPosition) -
+        POSITION_ORDER.indexOf(b.primaryPosition as PlayerPosition)
+      )
+    })
+    return sorted
+  }, [players, positionFilter, query, sortKey])
+
+  return (
+    <div className="space-y-1.5">
+      <h2 className="text-sm font-medium text-muted-foreground">{t("squad.tabSquad")}</h2>
+
+      {/* One flex-wrap toolbar for chips + search + sort - on a wide enough
+          screen (desktop) it all fits on a single line; on mobile it wraps
+          exactly like two separate rows would, so nothing is lost there. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <PositionFilter value={positionFilter} onChange={setPositionFilter} />
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={t("squad.searchPlaceholder")}
+          className="min-w-0 flex-1 rounded-md border bg-background px-2.5 py-1 text-sm"
+        />
+        <select
+          value={sortKey}
+          onChange={(e) => setSortKey(e.target.value as SquadSortKey)}
+          className="shrink-0 rounded-md border bg-background px-1.5 py-1 text-xs"
+          aria-label={t("squad.sortBy")}
+        >
+          <option value="overall">{t("squad.sortAbility")}</option>
+          <option value="position">{t("squad.sortPosition")}</option>
+          <option value="age">{t("squad.sortAge")}</option>
+          <option value="fitness">{t("squad.sortFitness")}</option>
+        </select>
+      </div>
+
+      {visiblePlayers.length === 0 ? (
+        <p className="py-6 text-center text-sm text-muted-foreground">{t("squad.noPlayersFound")}</p>
+      ) : (
+        <ul className="space-y-1">
+          {visiblePlayers.map((player) => (
+            <li key={player.id}>
+              <PlayerSquadRow
+                player={player}
+                status={getDisplayStatus(player.status, startingIds.has(player.id))}
+                onClick={() => onSelect(player.id)}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+/** Segmented position-group chips (All / GK / DF / MF / FW) filtering SquadList. */
+function PositionFilter({
+  value,
+  onChange,
+}: {
+  value: SquadPositionFilter
+  onChange: (value: SquadPositionFilter) => void
+}) {
+  const t = useT()
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {SQUAD_POSITION_FILTERS.map((f) => (
+        <button
+          key={f.key}
+          type="button"
+          onClick={() => onChange(f.key)}
+          className={cn(
+            "rounded-full border px-2.5 py-1 text-xs font-medium transition-colors",
+            value === f.key ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted"
+          )}
+        >
+          {t(f.labelKey)}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * One player, one compact row: Overall (tier-colored, most prominent) →
+ * name → position/fitness → status badge. Two lines on mobile (name; then
+ * position + fitness, age dropped as secondary), a single line at sm+.
+ * Reuses the existing tier/fitness color systems verbatim - no new colors.
+ */
+function PlayerSquadRow({
+  player,
+  status,
+  onClick,
+}: {
+  player: PlayerDTO
+  status: DisplayPlayerStatus
+  onClick: () => void
+}) {
+  const t = useT()
+  const tier = getPlayerTier(player.overall)
+  const fitnessLevel = getFitnessLevel(player.fitness)
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={fullName(player)}
+      className={cn(
+        "flex w-full min-w-0 items-center gap-2 rounded-lg border px-2.5 py-1.5 text-start transition-colors hover:brightness-[0.98] sm:gap-3",
+        TIER_CARD_CLASSES[tier.cardStyle]
+      )}
+    >
+      <span className={cn("shrink-0 rounded-md px-1.5 py-0.5 text-sm font-extrabold sm:px-2", TIER_BADGE_CLASSES[tier.cardStyle])}>
+        {player.overall}
+      </span>
+
+      <span className="min-w-0 flex-1 truncate text-sm font-medium">{fullName(player)}</span>
+
+      {/* Position always shows (capped width, truncates on the rare very-long
+          label) - age is secondary and only appears once there's room, at sm+. */}
+      <span className="max-w-[5.5rem] shrink-0 truncate text-xs text-muted-foreground">
+        {t(positionLabelKey(player.primaryPosition))}
+      </span>
+      <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
+        {t("squad.colAge")} {player.age}
+      </span>
+
+      {/* Fitness: a dot always, the word itself only once there's room (sm+) - never a wide progress bar. */}
+      <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+        <span className={cn("size-1.5 rounded-full", FITNESS_DOT_CLASSES[fitnessLevel])} />
+        <span className="hidden sm:inline">{t(`squad.fitness.${fitnessLevel}` as TranslationKey)}</span>
+      </span>
+
+      <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium sm:text-xs", SQUAD_ROW_STATUS_CLASSES[status])}>
+        {t(`squad.status.${status}` as TranslationKey)}
+      </span>
     </button>
   )
 }
