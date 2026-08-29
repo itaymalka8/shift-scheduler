@@ -9,8 +9,6 @@
     "lint": "eslint",
     "balance": "tsx scripts/match-balance-suite.ts",
     "process-fixtures": "tsx scripts/process-due-fixtures.ts",
-    "create-cron-test-fixture": "tsx scripts/create-cron-test-fixture.ts",
-    "check-cron-test-fixture": "tsx scripts/check-cron-test-fixture.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
