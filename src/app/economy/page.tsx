@@ -1,12 +1,7 @@
-import Image from "next/image"
-import Link from "next/link"
 import { notFound } from "next/navigation"
-import { cookies } from "next/headers"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
-import { DEFAULT_LOCALE, getTranslator, isLocale } from "@/lib/i18n/translations"
-import { LanguageSwitcher } from "@/components/language-switcher"
 import { calculateTeamTotalQuality } from "@/lib/players/quality"
 import { ensureStadiumForTeam } from "@/lib/stadium/actions"
 import { calculateStadiumCapacity } from "@/lib/stadium/metrics"
@@ -21,10 +16,6 @@ const COMPETITION = "league" as const
 
 export default async function EconomyPage() {
   const session = await getServerSession(authOptions)
-  const cookieStore = await cookies()
-  const cookieLocale = cookieStore.get("goalx-locale")?.value
-  const locale = isLocale(cookieLocale) ? cookieLocale : DEFAULT_LOCALE
-  const t = getTranslator(locale)
 
   if (!session?.user?.id) notFound()
 
@@ -77,16 +68,6 @@ export default async function EconomyPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="border-b bg-card">
-        <div className="mx-auto max-w-3xl flex items-center justify-between px-4 py-4 sm:px-6">
-          <Link href="/dashboard" className="flex items-center gap-3">
-            <Image src="/logo.png" alt="Goalx Manager" width={40} height={40} className="rounded-full" />
-            <span className="font-semibold text-lg">{t("app.name")}</span>
-          </Link>
-          <LanguageSwitcher />
-        </div>
-      </header>
-
       <main className="mx-auto max-w-3xl px-4 py-6 sm:px-6 sm:py-10">
         <EconomyApp
           balance={freshTeam.balance}

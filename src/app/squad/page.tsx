@@ -1,13 +1,8 @@
-import Image from "next/image"
-import Link from "next/link"
 import { notFound } from "next/navigation"
-import { cookies } from "next/headers"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { Prisma } from "@/generated/prisma"
-import { DEFAULT_LOCALE, getTranslator, isLocale } from "@/lib/i18n/translations"
-import { LanguageSwitcher } from "@/components/language-switcher"
 import { DEFAULT_FORMATION, isFormationId, resolveFormationSlots, CUSTOM_FORMATION_ID } from "@/lib/players/formations"
 import { computeRecommendedLineup } from "@/lib/players/recommend"
 import { calculateTeamTotalQuality, calculateSquadMarketValue } from "@/lib/players/quality"
@@ -16,10 +11,6 @@ import { SquadTacticsApp } from "./squad-tactics-app"
 
 export default async function SquadPage() {
   const session = await getServerSession(authOptions)
-  const cookieStore = await cookies()
-  const cookieLocale = cookieStore.get("goalx-locale")?.value
-  const locale = isLocale(cookieLocale) ? cookieLocale : DEFAULT_LOCALE
-  const t = getTranslator(locale)
 
   if (!session?.user?.id) notFound()
 
@@ -63,16 +54,6 @@ export default async function SquadPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="border-b bg-card">
-        <div className="mx-auto max-w-5xl flex items-center justify-between px-4 py-4 sm:px-6">
-          <Link href="/dashboard" className="flex items-center gap-3">
-            <Image src="/logo.png" alt="Goalx Manager" width={40} height={40} className="rounded-full" />
-            <span className="font-semibold text-lg">{t("app.name")}</span>
-          </Link>
-          <LanguageSwitcher />
-        </div>
-      </header>
-
       <main className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-10">
         <SquadTacticsApp
           players={players.map((p) => ({

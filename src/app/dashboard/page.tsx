@@ -1,4 +1,3 @@
-import Image from "next/image"
 import Link from "next/link"
 import { cookies } from "next/headers"
 import { getServerSession } from "next-auth"
@@ -7,8 +6,6 @@ import { prisma } from "@/lib/prisma"
 import { DEFAULT_LOCALE, getTranslator, isLocale } from "@/lib/i18n/translations"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { TeamCrest } from "@/components/team-crest"
-import { LanguageSwitcher } from "@/components/language-switcher"
-import { SignOutButton } from "./sign-out-button"
 import { getLeagueTiers, getDivisionName } from "@/lib/leagues/config"
 import { computeStandings } from "@/lib/leagues/standings"
 import { ensureIsraelSeasonSeeded } from "@/lib/leagues/seed"
@@ -67,33 +64,6 @@ export default async function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="border-b bg-card">
-        <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-2 px-4 py-4 sm:px-6">
-          <div className="flex items-center gap-3">
-            <Image src="/logo.png" alt="Goalx Manager" width={40} height={40} className="rounded-full" />
-            <span className="hidden font-semibold text-lg sm:inline">{t("app.name")}</span>
-          </div>
-          {/* Squad/stadium/economy quick-links are hidden below sm: - the
-              persistent GoalXNavigation bar already gives every internal
-              screen (mobile included) direct access to all three, so
-              keeping them here too only ate width without adding a route
-              that wasn't already one tap away. */}
-          <div className="flex items-center gap-2 sm:gap-4">
-            <Link href="/squad" className="hidden text-sm font-medium text-primary hover:underline sm:inline">
-              {t("squad.navLink")}
-            </Link>
-            <Link href="/stadium" className="hidden text-sm font-medium text-primary hover:underline sm:inline">
-              {t("stadium.navLink")}
-            </Link>
-            <Link href="/economy" className="hidden text-sm font-medium text-primary hover:underline sm:inline">
-              {t("economy.navLink")}
-            </Link>
-            <LanguageSwitcher />
-            <SignOutButton label={t("dashboard.signOut")} />
-          </div>
-        </div>
-      </header>
-
       <main className="mx-auto max-w-5xl px-6 py-12">
         <Card>
           <CardHeader>

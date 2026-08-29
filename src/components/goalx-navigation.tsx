@@ -8,6 +8,8 @@ import { MoreHorizontal } from "lucide-react"
 import { useT } from "@/lib/i18n/locale-context"
 import { NAV_ITEMS, MOBILE_PRIMARY_ITEMS, MOBILE_OVERFLOW_ITEMS, isNavHiddenRoute, type NavItem } from "@/lib/navigation"
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
+import { LanguageSwitcher } from "@/components/language-switcher"
+import { SignOutButton } from "@/components/sign-out-button"
 import { cn } from "@/lib/utils"
 
 /**
@@ -30,18 +32,23 @@ export function GoalXNavigation() {
 
   return (
     <>
-      {/* Desktop / tablet: sticky top bar */}
+      {/* Desktop / tablet: sticky top bar - the one and only header, logo,
+          nav, language switcher and sign-out all in this single row. */}
       <header data-testid="goalx-nav-desktop" className="sticky top-0 z-40 hidden border-b bg-card md:block">
         <div className="mx-auto flex h-14 max-w-6xl items-center gap-6 px-4 lg:px-6">
           <Link href="/dashboard" className="flex shrink-0 items-center gap-2">
             <Image src="/logo.png" alt="GoalX Manager" width={30} height={30} className="rounded-full" />
             <span className="hidden text-sm font-semibold lg:inline">{t("app.name")}</span>
           </Link>
-          <nav className="flex items-center gap-1">
+          <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
             {NAV_ITEMS.map((item) => (
               <DesktopNavLink key={item.key} item={item} active={item === activeItem} label={t(item.labelKey)} />
             ))}
           </nav>
+          <div className="flex shrink-0 items-center gap-3">
+            <LanguageSwitcher />
+            <SignOutButton label={t("dashboard.signOut")} size="sm" />
+          </div>
         </div>
       </header>
 
@@ -95,6 +102,13 @@ export function GoalXNavigation() {
                 {t(item.labelKey)}
               </Link>
             ))}
+          </div>
+
+          {/* Language switch + sign-out live here on mobile - the "more"
+              sheet is still the one navigation surface, not a second header. */}
+          <div className="flex items-center justify-between gap-3 border-t px-4 py-3">
+            <LanguageSwitcher />
+            <SignOutButton label={t("dashboard.signOut")} size="sm" />
           </div>
         </SheetContent>
       </Sheet>
