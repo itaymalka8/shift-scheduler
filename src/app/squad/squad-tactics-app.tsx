@@ -308,6 +308,33 @@ const RELEASE_ERROR_KEYS: Record<string, TranslationKey> = {
   TRANSFER_CONFLICT: "transfers.releaseErrorConflict",
 }
 
+interface CancelListingOutcome {
+  ok: boolean
+  alreadyCancelled?: boolean
+  errorCode?: string
+}
+
+// listingId travels only in the URL - no body at all, since there is
+// nothing a request body could legitimately contribute (no playerId,
+// teamId, or askingPrice is ever read from the client for this call).
+async function cancelListingRequest(listingId: string): Promise<CancelListingOutcome> {
+  const res = await fetch(`/api/transfers/listings/${listingId}/cancel`, { method: "POST" })
+  const body = await res.json().catch(() => null)
+  if (!res.ok) {
+    return { ok: false, errorCode: typeof body?.error === "string" ? body.error : "INTERNAL_ERROR" }
+  }
+  return { ok: true, alreadyCancelled: body?.alreadyCancelled === true }
+}
+
+// LISTING_ALREADY_SOLD, LISTING_EXPIRED and LISTING_NOT_FOUND each need to
+// clear the player's local activeListing too (handled inline in
+// confirmCancelListing, since only those three imply the listing itself is
+// gone) - this map only covers the failures that leave activeListing as-is.
+const CANCEL_ERROR_KEYS: Record<string, TranslationKey> = {
+  LISTING_NOT_OWNED: "transfers.cancelErrorNotOwned",
+  TRANSFER_CONFLICT: "transfers.cancelErrorConflict",
+}
+
 export function SquadTacticsApp({
   players: initialPlayers,
   initialAssignments,
@@ -440,6 +467,7 @@ export function SquadTacticsApp({
   const [sellDialogPlayerId, setSellDialogPlayerId] = useState<string | null>(null)
   const [askingPriceInput, setAskingPriceInput] = useState("")
   const [releaseDialogPlayerId, setReleaseDialogPlayerId] = useState<string | null>(null)
+  const [cancelDialogPlayerId, setCancelDialogPlayerId] = useState<string | null>(null)
   const [busyPlayerId, setBusyPlayerId] = useState<string | null>(null)
   const [listingFeedback, setListingFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null)
   const listingFeedbackTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -452,6 +480,7 @@ export function SquadTacticsApp({
 
   const sellDialogPlayer = sellDialogPlayerId ? (byId.get(sellDialogPlayerId) ?? null) : null
   const releaseDialogPlayer = releaseDialogPlayerId ? (byId.get(releaseDialogPlayerId) ?? null) : null
+  const cancelDialogPlayer = cancelDialogPlayerId ? (byId.get(cancelDialogPlayerId) ?? null) : null
 
   function openSellDialog(playerId: string) {
     setAskingPriceInput("")
@@ -473,6 +502,41 @@ export function SquadTacticsApp({
         showListingFeedback("success", t("transfers.sellSuccess"))
       } else {
         const key = SELL_ERROR_KEYS[outcome.errorCode ?? ""] ?? "error.UNKNOWN_ERROR"
+        showListingFeedback("error", t(key))
+      }
+    } finally {
+      setBusyPlayerId(null)
+    }
+  }
+
+  async function confirmCancelListing() {
+    const player = cancelDialogPlayer
+    if (!player || !player.activeListing || busyPlayerId) return
+    const listingId = player.activeListing.id
+    setBusyPlayerId(player.id)
+    try {
+      const outcome = await cancelListingRequest(listingId)
+      setCancelDialogPlayerId(null)
+      if (outcome.ok) {
+        // Covers alreadyCancelled:true too - treated as an ordinary success,
+        // never an error, same convention as Release's alreadyProcessed.
+        setPlayers((prev) => prev.map((p) => (p.id === player.id ? { ...p, activeListing: null } : p)))
+        showListingFeedback("success", t("transfers.cancelListingSuccess"))
+        return
+      }
+      const code = outcome.errorCode ?? ""
+      if (code === "LISTING_ALREADY_SOLD") {
+        // Ownership itself changed - a plain local activeListing clear isn't
+        // enough, the squad's whole player list may now be stale (the
+        // player could be gone). A clean server-data refresh, not a full
+        // page reload.
+        showListingFeedback("error", t("transfers.cancelErrorAlreadySold"))
+        router.refresh()
+      } else if (code === "LISTING_EXPIRED" || code === "LISTING_NOT_FOUND") {
+        setPlayers((prev) => prev.map((p) => (p.id === player.id ? { ...p, activeListing: null } : p)))
+        showListingFeedback("error", t(code === "LISTING_EXPIRED" ? "transfers.cancelErrorExpired" : "transfers.cancelErrorNotFound"))
+      } else {
+        const key = CANCEL_ERROR_KEYS[code] ?? "error.UNKNOWN_ERROR"
         showListingFeedback("error", t(key))
       }
     } finally {
@@ -1430,11 +1494,24 @@ export function SquadTacticsApp({
 
                     <div className="space-y-2">
                       {expandedPlayer.activeListing ? (
-                        <div className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm text-primary">
-                          {t("transfers.listedForSale", {
-                            price: formatMarketValue(expandedPlayer.activeListing.askingPrice),
-                          })}
-                        </div>
+                        <>
+                          <div className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm text-primary">
+                            {t("transfers.listedForSale", {
+                              price: formatMarketValue(expandedPlayer.activeListing.askingPrice),
+                            })}
+                          </div>
+                          <Button
+                            variant="outline"
+                            className="w-full"
+                            disabled={busyPlayerId !== null}
+                            onClick={() => {
+                              setExpandedPlayerId(null)
+                              setCancelDialogPlayerId(expandedPlayer.id)
+                            }}
+                          >
+                            {t("transfers.cancelListingAction")}
+                          </Button>
+                        </>
                       ) : (
                         <Button
                           variant="outline"
@@ -1605,6 +1682,36 @@ export function SquadTacticsApp({
                 >
                   {busyPlayerId === sellDialogPlayer.id && <Loader2 className="me-2 size-4 animate-spin" />}
                   {t("transfers.sellSubmit")}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Cancel an active listing - POST
+          /api/transfers/listings/{id}/cancel with no body at all (listingId
+          travels only in the URL). The player stays on the squad and in the
+          lineup exactly as-is; only the listing's own status changes. */}
+      <Dialog open={cancelDialogPlayer !== null} onOpenChange={(open) => !open && !busyPlayerId && setCancelDialogPlayerId(null)}>
+        <DialogContent>
+          {cancelDialogPlayer && cancelDialogPlayer.activeListing && (
+            <>
+              <DialogHeader>
+                <DialogTitle>{t("transfers.cancelDialogTitle")}</DialogTitle>
+              </DialogHeader>
+              <dl className="space-y-2 text-sm">
+                <Row label={t("transfers.confirmPlayerLabel")} value={fullName(cancelDialogPlayer)} />
+                <Row label={t("transfers.sellAskingPriceLabel")} value={formatMarketValue(cancelDialogPlayer.activeListing.askingPrice)} />
+              </dl>
+              <p className="text-sm text-muted-foreground">{t("transfers.cancelDialogBody")}</p>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setCancelDialogPlayerId(null)} disabled={busyPlayerId !== null}>
+                  {t("transfers.cancelListingBack")}
+                </Button>
+                <Button variant="destructive" onClick={confirmCancelListing} disabled={busyPlayerId !== null}>
+                  {busyPlayerId === cancelDialogPlayer.id && <Loader2 className="me-2 size-4 animate-spin" />}
+                  {t("transfers.cancelListingSubmit")}
                 </Button>
               </DialogFooter>
             </>

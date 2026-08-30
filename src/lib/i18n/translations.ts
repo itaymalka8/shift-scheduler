@@ -743,6 +743,17 @@ const he = {
   "transfers.releaseErrorPlayerNotActive": "לא ניתן לשחרר שחקן שאינו פעיל בסגל.",
   "transfers.releaseErrorInsufficientFunds": "אין מספיק כסף בקופה לתשלום עלות השחרור.",
   "transfers.releaseErrorConflict": "הפעולה השתנתה במקביל, נסו שוב.",
+  "transfers.cancelListingAction": "בטל הצעה",
+  "transfers.cancelDialogTitle": "ביטול הצעת מכירה",
+  "transfers.cancelDialogBody": "השחקן יישאר במועדון שלכם - רק ההצעה תוסר משוק ההעברות.",
+  "transfers.cancelListingBack": "חזור",
+  "transfers.cancelListingSubmit": "בטל הצעה",
+  "transfers.cancelListingSuccess": "ההצעה בוטלה בהצלחה.",
+  "transfers.cancelErrorAlreadySold": "ההצעה כבר אינה פעילה כי השחקן נמכר.",
+  "transfers.cancelErrorExpired": "ההצעה כבר פגה.",
+  "transfers.cancelErrorNotFound": "ההצעה כבר אינה קיימת.",
+  "transfers.cancelErrorNotOwned": "אין הרשאה לבטל את ההצעה הזו.",
+  "transfers.cancelErrorConflict": "המצב השתנה במקביל, נסו שוב.",
 }
 
 const en: Record<keyof typeof he, string> = {
@@ -1473,6 +1484,17 @@ const en: Record<keyof typeof he, string> = {
   "transfers.releaseErrorPlayerNotActive": "An inactive squad player can't be released.",
   "transfers.releaseErrorInsufficientFunds": "There isn't enough money in the club balance to cover the release cost.",
   "transfers.releaseErrorConflict": "This action changed at the same time - please try again.",
+  "transfers.cancelListingAction": "Cancel offer",
+  "transfers.cancelDialogTitle": "Cancel sale offer",
+  "transfers.cancelDialogBody": "The player will stay on your club - only the offer will be removed from the transfer market.",
+  "transfers.cancelListingBack": "Back",
+  "transfers.cancelListingSubmit": "Cancel offer",
+  "transfers.cancelListingSuccess": "The offer was cancelled successfully.",
+  "transfers.cancelErrorAlreadySold": "This offer is no longer active because the player was sold.",
+  "transfers.cancelErrorExpired": "This offer has already expired.",
+  "transfers.cancelErrorNotFound": "This offer no longer exists.",
+  "transfers.cancelErrorNotOwned": "You don't have permission to cancel this offer.",
+  "transfers.cancelErrorConflict": "This changed at the same time - please try again.",
 }
 
 const ar: Record<keyof typeof he, string> = {
@@ -2200,6 +2222,17 @@ const ar: Record<keyof typeof he, string> = {
   "transfers.releaseErrorPlayerNotActive": "لا يمكن إطلاق سراح لاعب غير نشط في التشكيلة.",
   "transfers.releaseErrorInsufficientFunds": "لا يوجد رصيد كافٍ في خزينة النادي لتغطية تكلفة الإطلاق.",
   "transfers.releaseErrorConflict": "تغيرت هذه العملية في نفس الوقت، يرجى المحاولة مرة أخرى.",
+  "transfers.cancelListingAction": "إلغاء العرض",
+  "transfers.cancelDialogTitle": "إلغاء عرض البيع",
+  "transfers.cancelDialogBody": "سيبقى اللاعب في ناديك - سيُزال العرض فقط من سوق الانتقالات.",
+  "transfers.cancelListingBack": "رجوع",
+  "transfers.cancelListingSubmit": "إلغاء العرض",
+  "transfers.cancelListingSuccess": "تم إلغاء العرض بنجاح.",
+  "transfers.cancelErrorAlreadySold": "هذا العرض لم يعد نشطًا لأن اللاعب تم بيعه.",
+  "transfers.cancelErrorExpired": "انتهت صلاحية هذا العرض بالفعل.",
+  "transfers.cancelErrorNotFound": "هذا العرض لم يعد موجودًا.",
+  "transfers.cancelErrorNotOwned": "ليس لديك صلاحية لإلغاء هذا العرض.",
+  "transfers.cancelErrorConflict": "تغير هذا في نفس الوقت، يرجى المحاولة مرة أخرى.",
 }
 
 export const TRANSLATIONS: Record<Locale, Record<keyof typeof he, string>> = { he, en, ar }
