@@ -10,6 +10,16 @@ export const TRANSFER_ERROR_CODES = [
   "INVALID_ASKING_PRICE",
   "TRANSFER_WINDOW_CLOSED",
   "LISTING_ALREADY_EXISTS",
+  "LISTING_NOT_FOUND",
+  "LISTING_ALREADY_SOLD",
+  "LISTING_CANCELLED",
+  "LISTING_EXPIRED",
+  "CANNOT_BUY_OWN_LISTING",
+  "ROSTER_FULL",
+  // Not in the requested list - added because step 7 of Purchase explicitly
+  // requires a clear domain error (never a raw Prisma error) when the
+  // buying team doesn't exist, and none of the other codes fit that case.
+  "BUYING_TEAM_NOT_FOUND",
 ] as const
 
 export type TransferErrorCode = (typeof TRANSFER_ERROR_CODES)[number]

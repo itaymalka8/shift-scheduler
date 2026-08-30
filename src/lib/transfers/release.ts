@@ -2,6 +2,7 @@ import { createFinancialTransaction } from "@/lib/economy/service"
 import { InsufficientFundsError } from "@/lib/finance/balance"
 import { TransferError } from "./errors"
 import { runSerializableTransaction } from "./retry"
+import { removePlayerFromSquad } from "./squad-cleanup"
 
 export interface ReleasePlayerInput {
   /**
@@ -104,19 +105,10 @@ export async function releasePlayer(input: ReleasePlayerInput): Promise<ReleaseP
       data: { status: "CANCELLED" },
     })
 
-    // 6. Remove the player's current lineup slot, if any.
-    await tx.lineupSlot.deleteMany({ where: { playerId: player.id } })
-
-    // 7. Clear only the set-piece/captaincy roles that are actually this
-    // player's - never touch a role that belongs to someone else.
-    const roleClears: Record<string, null> = {}
-    if (team.captainId === player.id) roleClears.captainId = null
-    if (team.penaltyTakerId === player.id) roleClears.penaltyTakerId = null
-    if (team.freeKickTakerId === player.id) roleClears.freeKickTakerId = null
-    if (team.cornerTakerId === player.id) roleClears.cornerTakerId = null
-    if (Object.keys(roleClears).length > 0) {
-      await tx.team.update({ where: { id: input.teamId }, data: roleClears })
-    }
+    // 6-7. Remove the player's lineup slot and clear only the set-piece/
+    // captaincy roles that are actually theirs - shared with Purchase,
+    // which needs this exact cleanup on the selling side too.
+    await removePlayerFromSquad(tx, input.teamId, player.id, team)
 
     // 8. Charge exactly one weeklySalary, through the Economy Service - the
     // only place allowed to change Team.balance. allowNegative:false is
