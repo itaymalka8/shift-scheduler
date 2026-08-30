@@ -690,6 +690,20 @@ const he = {
   "resetPassword.submitting": "מעדכן...",
   "resetPassword.success": "הסיסמה עודכנה בהצלחה. אפשר להתחבר עכשיו.",
   "resetPassword.invalidToken": "קישור האיפוס אינו תקין או שפג תוקפו. בקשו קישור חדש.",
+
+  "nav.transfers": "שוק העברות",
+  "transfers.title": "שוק ההעברות",
+  "transfers.subtitle": "שחקנים המוצעים למכירה על ידי מועדונים אחרים",
+  "transfers.emptyTitle": "אין כרגע שחקנים פעילים בשוק ההעברות",
+  "transfers.errorTitle": "לא הצלחנו לטעון את שוק ההעברות כרגע",
+  "transfers.retry": "נסה שוב",
+  "transfers.loadMore": "טען עוד שחקנים",
+  "transfers.loadingMore": "טוען...",
+  "transfers.ownListing": "השחקן שלך",
+  "transfers.askingPrice": "מחיר מבוקש",
+  "transfers.marketValue": "שווי שוק",
+  "transfers.weeklySalary": "משכורת שבועית",
+  "transfers.overallAriaLabel": "דירוג כללי {value}",
 }
 
 const en: Record<keyof typeof he, string> = {
@@ -1367,6 +1381,20 @@ const en: Record<keyof typeof he, string> = {
   "resetPassword.submitting": "Updating...",
   "resetPassword.success": "Your password has been updated. You can sign in now.",
   "resetPassword.invalidToken": "This reset link is invalid or has expired. Please request a new one.",
+
+  "nav.transfers": "Transfers",
+  "transfers.title": "Transfer Market",
+  "transfers.subtitle": "Players listed for sale by other clubs",
+  "transfers.emptyTitle": "There are no active players in the transfer market right now",
+  "transfers.errorTitle": "We couldn't load the transfer market right now",
+  "transfers.retry": "Try again",
+  "transfers.loadMore": "Load more players",
+  "transfers.loadingMore": "Loading...",
+  "transfers.ownListing": "Your player",
+  "transfers.askingPrice": "Asking price",
+  "transfers.marketValue": "Market value",
+  "transfers.weeklySalary": "Weekly salary",
+  "transfers.overallAriaLabel": "Overall rating {value}",
 }
 
 const ar: Record<keyof typeof he, string> = {
@@ -2041,6 +2069,20 @@ const ar: Record<keyof typeof he, string> = {
   "resetPassword.submitting": "جارٍ التحديث...",
   "resetPassword.success": "تم تحديث كلمة المرور بنجاح. يمكنك تسجيل الدخول الآن.",
   "resetPassword.invalidToken": "رابط إعادة التعيين غير صالح أو منتهي الصلاحية. يرجى طلب رابط جديد.",
+
+  "nav.transfers": "الانتقالات",
+  "transfers.title": "سوق الانتقالات",
+  "transfers.subtitle": "لاعبون معروضون للبيع من أندية أخرى",
+  "transfers.emptyTitle": "لا يوجد حاليًا لاعبون نشطون في سوق الانتقالات",
+  "transfers.errorTitle": "تعذر تحميل سوق الانتقالات الآن",
+  "transfers.retry": "حاول مرة أخرى",
+  "transfers.loadMore": "تحميل المزيد من اللاعبين",
+  "transfers.loadingMore": "جارٍ التحميل...",
+  "transfers.ownListing": "لاعبك",
+  "transfers.askingPrice": "السعر المطلوب",
+  "transfers.marketValue": "القيمة السوقية",
+  "transfers.weeklySalary": "الراتب الأسبوعي",
+  "transfers.overallAriaLabel": "التقييم العام {value}",
 }
 
 export const TRANSLATIONS: Record<Locale, Record<keyof typeof he, string>> = { he, en, ar }
