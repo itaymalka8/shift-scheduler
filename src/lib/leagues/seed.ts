@@ -130,7 +130,12 @@ async function seedDivisionTeams(
             status: true,
           },
         })
-        created.push(...rows)
+        for (const row of rows) {
+          if (row.teamId === null) {
+            throw new Error(`Seed invariant violated: player ${row.id} was created without a teamId`)
+          }
+          created.push({ ...row, teamId: row.teamId })
+        }
       }
 
       const byTeam = new Map<string, typeof created>()
