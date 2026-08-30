@@ -11,6 +11,7 @@
     "balance": "tsx scripts/match-balance-suite.ts",
     "process-fixtures": "tsx scripts/process-due-fixtures.ts",
     "expire-transfer-listings": "tsx scripts/expire-transfer-listings.ts",
+    "process-scheduled-jobs": "tsx scripts/process-scheduled-jobs.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
