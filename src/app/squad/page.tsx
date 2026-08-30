@@ -28,12 +28,23 @@ export default async function SquadPage() {
     await prisma.team.update({ where: { id: team.id }, data: { formation, customFormation: Prisma.DbNull } })
   }
 
-  // Independent of each other - one round trip instead of three.
-  const [initialLineupSlots, players, homeKitRow] = await Promise.all([
+  // Independent of each other - one round trip instead of four. The active
+  // listings lookup is a single batched query keyed by sellingTeamId (using
+  // the same @@index([sellingTeamId, status]) the market feed itself never
+  // touches) - never one query per player, and never a read from the global
+  // market GET. A listing whose expiresAt has already passed but is still
+  // OPEN is deliberately excluded here rather than healed - that's the
+  // background expiration job's job, not this read path's.
+  const [initialLineupSlots, players, homeKitRow, activeListings] = await Promise.all([
     prisma.lineupSlot.findMany({ where: { teamId: team.id } }),
     prisma.player.findMany({ where: { teamId: team.id }, orderBy: { overall: "desc" } }),
     prisma.teamKit.findUnique({ where: { teamId_type: { teamId: team.id, type: "HOME" } } }),
+    prisma.transferListing.findMany({
+      where: { sellingTeamId: team.id, status: "OPEN", expiresAt: { gt: new Date() } },
+      select: { id: true, playerId: true, askingPrice: true, expiresAt: true },
+    }),
   ])
+  const activeListingByPlayerId = new Map(activeListings.map((l) => [l.playerId, l]))
   let lineupSlots = initialLineupSlots
 
   // Loaded once for the whole team, never per player - every pitch mini
@@ -97,6 +108,12 @@ export default async function SquadPage() {
             nationality: p.nationality,
             shirtNumber: p.shirtNumber,
             attributes: extractPlayerAttributes(p),
+            activeListing: (() => {
+              const listing = activeListingByPlayerId.get(p.id)
+              return listing
+                ? { id: listing.id, askingPrice: listing.askingPrice, expiresAt: listing.expiresAt.toISOString() }
+                : null
+            })(),
           }))}
           initialAssignments={lineupSlots.map((s) => ({ slotIndex: s.slotIndex, playerId: s.playerId }))}
           initialFormation={formation}

@@ -2,11 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
+import { Loader2 } from "lucide-react"
 import { useT, useLocale } from "@/lib/i18n/locale-context"
 import type { TranslationKey } from "@/lib/i18n/translations"
 import { getCountryName } from "@/lib/countries"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import {
   Dialog,
   DialogContent,
@@ -77,6 +79,7 @@ interface PlayerDTO {
   nationality: string
   shirtNumber: number
   attributes: PlayerAttributes
+  activeListing: { id: string; askingPrice: number; expiresAt: string } | null
 }
 
 interface Assignment {
@@ -244,8 +247,69 @@ async function fetchAssessment(): Promise<TacticalAssessment | null> {
   return (await res.json()) as TacticalAssessment
 }
 
+interface CreateListingOutcome {
+  ok: boolean
+  listing?: { id: string; askingPrice: number; expiresAt: string }
+  errorCode?: string
+}
+
+// Body is exactly {playerId, askingPrice} - the two fields
+// handleCreateListingRequest actually reads. Everything else about the
+// listing (sellingTeamId, windowId, expiresAt, status) is server-derived.
+async function createListing(playerId: string, askingPrice: number): Promise<CreateListingOutcome> {
+  const res = await fetch("/api/transfers/listings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ playerId, askingPrice }),
+  })
+  const body = await res.json().catch(() => null)
+  if (!res.ok) {
+    return { ok: false, errorCode: typeof body?.error === "string" ? body.error : "INTERNAL_ERROR" }
+  }
+  return { ok: true, listing: { id: body.listingId, askingPrice: body.askingPrice, expiresAt: body.expiresAt } }
+}
+
+interface ReleasePlayerOutcome {
+  ok: boolean
+  errorCode?: string
+}
+
+// Body is exactly {playerId} - never weeklySalary, cost, or a referenceId;
+// the release cost and idempotency key are both computed server-side only.
+async function releasePlayerRequest(playerId: string): Promise<ReleasePlayerOutcome> {
+  const res = await fetch("/api/transfers/release", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ playerId }),
+  })
+  const body = await res.json().catch(() => null)
+  if (!res.ok) {
+    return { ok: false, errorCode: typeof body?.error === "string" ? body.error : "INTERNAL_ERROR" }
+  }
+  return { ok: true }
+}
+
+// Whether a create-listing failure should keep the "list for sale" dialog
+// open (so the manager can fix asking price / wait for the window) or the
+// failure is really "someone already changed this player" and should just
+// be reported via the feedback banner after the dialog closes.
+const SELL_ERROR_KEYS: Record<string, TranslationKey> = {
+  INVALID_ASKING_PRICE: "transfers.sellErrorInvalidAskingPrice",
+  TRANSFER_WINDOW_CLOSED: "transfers.sellErrorWindowClosed",
+  PLAYER_NOT_OWNED: "transfers.sellErrorPlayerNotOwned",
+  PLAYER_NOT_ACTIVE: "transfers.sellErrorPlayerNotActive",
+  LISTING_ALREADY_EXISTS: "transfers.sellErrorAlreadyExists",
+}
+
+const RELEASE_ERROR_KEYS: Record<string, TranslationKey> = {
+  PLAYER_NOT_OWNED: "transfers.releaseErrorPlayerNotOwned",
+  PLAYER_NOT_ACTIVE: "transfers.releaseErrorPlayerNotActive",
+  INSUFFICIENT_FUNDS: "transfers.releaseErrorInsufficientFunds",
+  TRANSFER_CONFLICT: "transfers.releaseErrorConflict",
+}
+
 export function SquadTacticsApp({
-  players,
+  players: initialPlayers,
   initialAssignments,
   initialFormation,
   initialCustomFormation,
@@ -302,6 +366,13 @@ export function SquadTacticsApp({
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
+  // Local, mutable mirror of the server-loaded roster - every other prop
+  // here (assignments, tactics dials, etc.) already follows this same
+  // "seed local state from the initial* prop" pattern. Only Create
+  // Listing/Release ever call setPlayers, and only to attach/clear a single
+  // player's activeListing or to remove a released player outright - no
+  // full page refresh needed for either to show up immediately.
+  const [players, setPlayers] = useState(initialPlayers)
   const byId = useMemo(() => new Map(players.map((p) => [p.id, p])), [players])
 
   // The URL is the single source of truth for which tab is showing (not
@@ -357,6 +428,92 @@ export function SquadTacticsApp({
   const [confirmRecommend, setConfirmRecommend] = useState(false)
   const [saveStatus, setSaveStatus] = useState<"idle" | "saved">("idle")
   const savedTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Seller actions (list for sale / release) - sellDialogPlayerId and
+  // releaseDialogPlayerId each drive their own confirmation Dialog;
+  // busyPlayerId names whichever single player has an in-flight POST to
+  // either endpoint right now. Sharing one flag between both actions (the
+  // same one-in-flight-mutation pattern the transfer market's own purchase
+  // flow uses) is what makes "list for sale" and "release" mutually
+  // exclusive for the same player, not just double-submit-safe within
+  // themselves.
+  const [sellDialogPlayerId, setSellDialogPlayerId] = useState<string | null>(null)
+  const [askingPriceInput, setAskingPriceInput] = useState("")
+  const [releaseDialogPlayerId, setReleaseDialogPlayerId] = useState<string | null>(null)
+  const [busyPlayerId, setBusyPlayerId] = useState<string | null>(null)
+  const [listingFeedback, setListingFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null)
+  const listingFeedbackTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  function showListingFeedback(type: "success" | "error", message: string) {
+    setListingFeedback({ type, message })
+    if (listingFeedbackTimeout.current) clearTimeout(listingFeedbackTimeout.current)
+    listingFeedbackTimeout.current = setTimeout(() => setListingFeedback(null), 5000)
+  }
+
+  const sellDialogPlayer = sellDialogPlayerId ? (byId.get(sellDialogPlayerId) ?? null) : null
+  const releaseDialogPlayer = releaseDialogPlayerId ? (byId.get(releaseDialogPlayerId) ?? null) : null
+
+  function openSellDialog(playerId: string) {
+    setAskingPriceInput("")
+    setSellDialogPlayerId(playerId)
+  }
+
+  async function confirmCreateListing() {
+    const player = sellDialogPlayer
+    if (!player || busyPlayerId) return
+    const askingPrice = Math.trunc(Number(askingPriceInput))
+    if (!Number.isFinite(askingPrice) || askingPrice <= 0) return
+    setBusyPlayerId(player.id)
+    try {
+      const outcome = await createListing(player.id, askingPrice)
+      setSellDialogPlayerId(null)
+      if (outcome.ok && outcome.listing) {
+        const listing = outcome.listing
+        setPlayers((prev) => prev.map((p) => (p.id === player.id ? { ...p, activeListing: listing } : p)))
+        showListingFeedback("success", t("transfers.sellSuccess"))
+      } else {
+        const key = SELL_ERROR_KEYS[outcome.errorCode ?? ""] ?? "error.UNKNOWN_ERROR"
+        showListingFeedback("error", t(key))
+      }
+    } finally {
+      setBusyPlayerId(null)
+    }
+  }
+
+  function removePlayerLocally(playerId: string) {
+    setPlayers((prev) => prev.filter((p) => p.id !== playerId))
+    setAssignments((prev) => {
+      const next = new Map(prev)
+      for (const [slotIndex, pid] of prev) {
+        if (pid === playerId) next.delete(slotIndex)
+      }
+      return next
+    })
+    if (captainId === playerId) setCaptainId(null)
+    if (penaltyTakerId === playerId) setPenaltyTakerId(null)
+    if (freeKickTakerId === playerId) setFreeKickTakerId(null)
+    if (cornerTakerId === playerId) setCornerTakerId(null)
+    if (expandedPlayerId === playerId) setExpandedPlayerId(null)
+  }
+
+  async function confirmRelease() {
+    const player = releaseDialogPlayer
+    if (!player || busyPlayerId) return
+    setBusyPlayerId(player.id)
+    try {
+      const outcome = await releasePlayerRequest(player.id)
+      setReleaseDialogPlayerId(null)
+      if (outcome.ok) {
+        removePlayerLocally(player.id)
+        showListingFeedback("success", t("transfers.releaseSuccess"))
+      } else {
+        const key = RELEASE_ERROR_KEYS[outcome.errorCode ?? ""] ?? "error.UNKNOWN_ERROR"
+        showListingFeedback("error", t(key))
+      }
+    } finally {
+      setBusyPlayerId(null)
+    }
+  }
 
   // Custom pointer-based drag (native HTML5 DnD doesn't work reliably on
   // touch) - see startDrag/handlePointerMove/handlePointerUp below. `drag` is
@@ -743,6 +900,28 @@ export function SquadTacticsApp({
           {t("squad.saved")}
         </span>
       </div>
+
+      {listingFeedback && (
+        <div
+          role="status"
+          className={cn(
+            "mb-4 flex items-start justify-between gap-3 rounded-lg border p-3 text-sm",
+            listingFeedback.type === "success"
+              ? "border-primary/30 bg-primary/5 text-primary"
+              : "border-destructive/30 bg-destructive/5 text-destructive"
+          )}
+        >
+          <p className="font-medium">{listingFeedback.message}</p>
+          <button
+            type="button"
+            onClick={() => setListingFeedback(null)}
+            aria-label={t("common.close")}
+            className="shrink-0 opacity-70 hover:opacity-100"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       <div className="mb-6 grid grid-cols-2 gap-2 rounded-lg border bg-card p-3 text-center sm:grid-cols-4 sm:gap-4">
         <div>
@@ -1249,19 +1428,54 @@ export function SquadTacticsApp({
                       <AttributeCategories player={expandedPlayer} />
                     </div>
 
-                    {slotEntry && (
+                    <div className="space-y-2">
+                      {expandedPlayer.activeListing ? (
+                        <div className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm text-primary">
+                          {t("transfers.listedForSale", {
+                            price: formatMarketValue(expandedPlayer.activeListing.askingPrice),
+                          })}
+                        </div>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          className="w-full"
+                          disabled={busyPlayerId !== null}
+                          onClick={() => {
+                            setExpandedPlayerId(null)
+                            openSellDialog(expandedPlayer.id)
+                          }}
+                        >
+                          {t("transfers.sellAction")}
+                        </Button>
+                      )}
+
+                      {slotEntry && (
+                        <Button
+                          variant="outline"
+                          className="w-full"
+                          disabled={busyPlayerId !== null}
+                          onClick={() => {
+                            setExpandedPlayerId(null)
+                            setPickerMode("swap")
+                            setPickerSlotIndex(slotEntry[0])
+                          }}
+                        >
+                          {t("squad.action.swapPosition")}
+                        </Button>
+                      )}
+
                       <Button
-                        variant="outline"
+                        variant="destructive"
                         className="w-full"
+                        disabled={busyPlayerId !== null}
                         onClick={() => {
                           setExpandedPlayerId(null)
-                          setPickerMode("swap")
-                          setPickerSlotIndex(slotEntry[0])
+                          setReleaseDialogPlayerId(expandedPlayer.id)
                         }}
                       >
-                        {t("squad.action.swapPosition")}
+                        {t("transfers.releaseAction")}
                       </Button>
-                    )}
+                    </div>
                   </div>
                 </div>
               )
@@ -1342,6 +1556,98 @@ export function SquadTacticsApp({
             </Button>
             <Button onClick={applyRecommended}>{t("common.confirm")}</Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* List a player for sale - POST /api/transfers/listings with exactly
+          {playerId, askingPrice}. Client-side price validation here is UX
+          only (disables the submit button); the real rule (positive integer,
+          within Prisma's Int range) lives exclusively in createTransferListing
+          and comes back as INVALID_ASKING_PRICE if this input is ever bypassed. */}
+      <Dialog open={sellDialogPlayer !== null} onOpenChange={(open) => !open && !busyPlayerId && setSellDialogPlayerId(null)}>
+        <DialogContent>
+          {sellDialogPlayer && (
+            <>
+              <DialogHeader>
+                <DialogTitle>{t("transfers.sellDialogTitle")}</DialogTitle>
+              </DialogHeader>
+              <dl className="space-y-2 text-sm">
+                <Row label={t("transfers.confirmPlayerLabel")} value={fullName(sellDialogPlayer)} />
+                <Row label={t("squad.colMarketValue")} value={formatMarketValue(sellDialogPlayer.marketValue)} />
+                <Row
+                  label={t("squad.colWeeklySalary")}
+                  value={`${formatMarketValue(sellDialogPlayer.weeklySalary)} ${t("economy.perWeek")}`}
+                />
+              </dl>
+              <p className="text-sm text-muted-foreground">{t("transfers.sellDialogBody")}</p>
+              <div className="space-y-2">
+                <label htmlFor="askingPrice" className="text-sm font-medium">
+                  {t("transfers.sellAskingPriceLabel")}
+                </label>
+                <Input
+                  id="askingPrice"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  step={1}
+                  value={askingPriceInput}
+                  onChange={(e) => setAskingPriceInput(e.target.value)}
+                  disabled={busyPlayerId !== null}
+                />
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setSellDialogPlayerId(null)} disabled={busyPlayerId !== null}>
+                  {t("common.cancel")}
+                </Button>
+                <Button
+                  onClick={confirmCreateListing}
+                  disabled={busyPlayerId !== null || !Number.isFinite(Number(askingPriceInput)) || Math.trunc(Number(askingPriceInput)) <= 0}
+                >
+                  {busyPlayerId === sellDialogPlayer.id && <Loader2 className="me-2 size-4 animate-spin" />}
+                  {t("transfers.sellSubmit")}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Release a player - POST /api/transfers/release with exactly
+          {playerId}, never weeklySalary/cost/referenceId (all server-derived).
+          releaseCostDisplay below is purely informational - the server
+          re-reads the player's current weeklySalary itself and never trusts
+          any number the client sends. Releasing a listed player also
+          cancels that listing atomically server-side - no separate request
+          from here. */}
+      <Dialog open={releaseDialogPlayer !== null} onOpenChange={(open) => !open && !busyPlayerId && setReleaseDialogPlayerId(null)}>
+        <DialogContent>
+          {releaseDialogPlayer && (
+            <>
+              <DialogHeader>
+                <DialogTitle>{t("transfers.releaseDialogTitle")}</DialogTitle>
+              </DialogHeader>
+              <dl className="space-y-2 text-sm">
+                <Row label={t("transfers.confirmPlayerLabel")} value={fullName(releaseDialogPlayer)} />
+                <Row
+                  label={t("transfers.releaseCostLabel")}
+                  value={`${formatMarketValue(releaseDialogPlayer.weeklySalary)} ${t("economy.perWeek")}`}
+                />
+              </dl>
+              <p className="text-sm text-destructive">{t("transfers.releaseDialogBody")}</p>
+              {releaseDialogPlayer.activeListing && (
+                <p className="text-sm text-destructive">{t("transfers.releaseDialogBodyWithListing")}</p>
+              )}
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setReleaseDialogPlayerId(null)} disabled={busyPlayerId !== null}>
+                  {t("common.cancel")}
+                </Button>
+                <Button variant="destructive" onClick={confirmRelease} disabled={busyPlayerId !== null}>
+                  {busyPlayerId === releaseDialogPlayer.id && <Loader2 className="me-2 size-4 animate-spin" />}
+                  {t("transfers.releaseSubmit")}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
         </DialogContent>
       </Dialog>
     </div>
