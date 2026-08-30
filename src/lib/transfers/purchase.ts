@@ -28,8 +28,12 @@ export interface PurchaseTransferListingResult {
   askingPrice: number
 }
 
-function referenceIdFor(listingId: string): string {
+function purchaseReferenceIdFor(listingId: string): string {
   return `PURCHASE_${listingId}`
+}
+
+function saleReferenceIdFor(listingId: string): string {
+  return `SALE_${listingId}`
 }
 
 /**
@@ -143,8 +147,6 @@ export async function purchaseTransferListing(input: PurchaseTransferListingInpu
       throw new TransferError("TRANSFER_CONFLICT", `Listing ${listing.id} could not be closed for an unexpected reason`)
     }
 
-    const referenceId = referenceIdFor(listing.id)
-
     // 11. Charge the buyer. If this ever returns null (its own insert hit
     // the ledger's unique constraint) - something step 10 should already
     // have made impossible - abort loudly instead of continuing on this tx.
@@ -155,7 +157,7 @@ export async function purchaseTransferListing(input: PurchaseTransferListingInpu
         type: "transferPurchase",
         amount: -listing.askingPrice,
         description: `Purchase: ${player.firstName} ${player.lastName}`,
-        referenceId,
+        referenceId: purchaseReferenceIdFor(listing.id),
         allowNegative: false,
       })
     } catch (error) {
@@ -168,13 +170,16 @@ export async function purchaseTransferListing(input: PurchaseTransferListingInpu
       throw new TransferError("TRANSFER_CONFLICT", `Unexpected duplicate purchase debit for listing ${listing.id}`)
     }
 
-    // 12. Credit the seller.
+    // 12. Credit the seller - its own reference id (SALE_, not PURCHASE_):
+    // these are two distinct ledger events under two different teamIds,
+    // not one shared key, even though they originate from the same
+    // purchase.
     const credit = await createFinancialTransaction(tx, {
       teamId: listing.sellingTeamId,
       type: "transferSale",
       amount: listing.askingPrice,
       description: `Sale: ${player.firstName} ${player.lastName}`,
-      referenceId,
+      referenceId: saleReferenceIdFor(listing.id),
     })
     if (!credit) {
       throw new TransferError("TRANSFER_CONFLICT", `Unexpected duplicate purchase credit for listing ${listing.id}`)
