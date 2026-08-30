@@ -122,11 +122,16 @@ export async function releasePlayer(input: ReleasePlayerInput): Promise<ReleaseP
     // only place allowed to change Team.balance. allowNegative:false is
     // defense-in-depth on top of the explicit check in step 4 (same
     // transaction, so it can never actually disagree with it).
+    //
+    // type is "other", not "playerSalaries": the release cost is *sized*
+    // like one weeklySalary, but it isn't a recurring wage payment - a
+    // future report that sums "playerSalaries" as payroll spend must never
+    // pick this up as one.
     let charge: Awaited<ReturnType<typeof createFinancialTransaction>>
     try {
       charge = await createFinancialTransaction(tx, {
         teamId: input.teamId,
-        type: "playerSalaries",
+        type: "other",
         amount: -player.weeklySalary,
         description: `Release: ${player.firstName} ${player.lastName}`,
         referenceId,
