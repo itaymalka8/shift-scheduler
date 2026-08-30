@@ -110,7 +110,22 @@ export async function releasePlayer(input: ReleasePlayerInput): Promise<ReleaseP
     // which needs this exact cleanup on the selling side too.
     await removePlayerFromSquad(tx, input.teamId, player.id, team)
 
-    // 8. Charge exactly one weeklySalary, through the Economy Service - the
+    // 8. Release the player - moved ahead of the financial charge below.
+    // Two concurrent releases of the same player both write this same row,
+    // so this is the statement Postgres's Serializable isolation actually
+    // catches the conflict on: the loser blocks here, and on resuming after
+    // the winner commits, gets a clean serialization failure (P2034) that
+    // the retry wrapper already knows how to handle - re-running the whole
+    // transaction from scratch, which then correctly resolves to the
+    // idempotency check above (alreadyProcessed: true). Doing the charge
+    // first previously let the loser instead block on the ledger's own
+    // unique index and surface a raw P2002-turned-TRANSFER_CONFLICT before
+    // ever reaching this write. careerStatus and stintNumber are untouched.
+    // The whole transaction still rolls back atomically if anything below
+    // fails - this write is not committed on its own.
+    await tx.player.update({ where: { id: player.id }, data: { teamId: null } })
+
+    // 9. Charge exactly one weeklySalary, through the Economy Service - the
     // only place allowed to change Team.balance. allowNegative:false is
     // defense-in-depth on top of the explicit check in step 4 (same
     // transaction, so it can never actually disagree with it).
@@ -140,13 +155,10 @@ export async function releasePlayer(input: ReleasePlayerInput): Promise<ReleaseP
       // hit the (teamId, referenceId) unique constraint - something the
       // ownership check above should already have made impossible here.
       // Never treat this as a quiet success: abort loudly rather than
-      // continue mutating Player on a transaction whose insert just
-      // silently no-opped underneath us.
+      // return success on a transaction whose insert just silently
+      // no-opped underneath us.
       throw new TransferError("TRANSFER_CONFLICT", `Unexpected duplicate release ledger entry for ${referenceId}`)
     }
-
-    // 9. Release the player. careerStatus and stintNumber are untouched.
-    await tx.player.update({ where: { id: player.id }, data: { teamId: null } })
 
     return { playerId: player.id, stintNumber: player.stintNumber, alreadyProcessed: false }
   })
