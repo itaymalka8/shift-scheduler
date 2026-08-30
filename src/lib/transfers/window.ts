@@ -7,6 +7,19 @@ const TRANSFER_WINDOW_TIME_ZONE = "Asia/Jerusalem"
 const WINDOW_OPEN_WEEKDAY = 4 // Sun=0..Sat=6 (JS Date convention) - Thursday
 const WINDOW_DURATION_DAYS = 1
 
+// The window's own weekly cycle runs Monday->Sunday, anchored on the
+// nearest Thursday: Mon/Tue/Wed look forward to their upcoming Thursday,
+// Thu is itself, and Fri/Sat/Sun look back at the Thursday whose window
+// already opened (1/2/3 days earlier). That's "the nearest Thursday" in a
+// circular 7-day sense - the offset is always in [-3, +3], so `% 7` first
+// (giving a value in [0, 6], since JS's `%` can return negative for a
+// negative dividend) then re-centering by subtracting 7 when it's past the
+// halfway point maps every weekday to its correctly-signed distance.
+function daysToNearestThursday(weekday: number): number {
+  const forwardDistance = (WINDOW_OPEN_WEEKDAY - weekday + 7) % 7 // always 0..6
+  return forwardDistance > 3 ? forwardDistance - 7 : forwardDistance
+}
+
 export interface TransferWindowDefinition {
   weekKey: string
   opensAt: Date
@@ -98,18 +111,17 @@ function zonedTimeToUtc(ymd: YMD, hour: number, minute: number, second: number, 
 }
 
 /**
- * Pure - no Prisma, no side effects. Resolves `now` to the transfer window
- * whose Thursday falls in the same Sunday-Saturday Asia/Jerusalem calendar
- * week as `now`, whether that Thursday is still ahead of `now` (a Monday
- * looking at its own week's upcoming window) or already behind it (a
- * Saturday looking back at the window that opened two days earlier).
+ * Pure - no Prisma, no side effects. Resolves `now` (in Asia/Jerusalem local
+ * terms) to its nearest transfer window: Mon/Tue/Wed resolve to their
+ * upcoming Thursday, Thu resolves to itself, and Fri/Sat/Sun resolve back to
+ * the Thursday whose window already opened.
  */
 export function getTransferWindowDefinition(now: Date = new Date()): TransferWindowDefinition {
   assertValidDate(now, "getTransferWindowDefinition")
 
   const localToday = getLocalYMD(now, TRANSFER_WINDOW_TIME_ZONE)
   const weekday = weekdayOf(localToday)
-  const thursday = addDays(localToday, WINDOW_OPEN_WEEKDAY - weekday)
+  const thursday = addDays(localToday, daysToNearestThursday(weekday))
   const friday = addDays(thursday, WINDOW_DURATION_DAYS)
 
   return {
@@ -125,6 +137,29 @@ export function isWithinTransferWindow(window: TransferWindowDefinition, now: Da
   return now.getTime() >= window.opensAt.getTime() && now.getTime() < window.closesAt.getTime()
 }
 
+interface StoredTransferWindow {
+  weekKey: string
+  opensAt: Date
+  closesAt: Date
+}
+
+// Shared by both paths that hand back a pre-existing row (the plain
+// find-first-then-return path, and the "lost the create race" path below) -
+// neither may return a row without checking it against what today's
+// definition would compute first.
+function assertMatchesDefinition(existing: StoredTransferWindow, definition: TransferWindowDefinition): void {
+  if (
+    existing.opensAt.getTime() !== definition.opensAt.getTime() ||
+    existing.closesAt.getTime() !== definition.closesAt.getTime()
+  ) {
+    throw new Error(
+      `Transfer window invariant violation for weekKey ${definition.weekKey}: stored ` +
+        `opensAt=${existing.opensAt.toISOString()} closesAt=${existing.closesAt.toISOString()}, ` +
+        `but recomputing now gives opensAt=${definition.opensAt.toISOString()} closesAt=${definition.closesAt.toISOString()}`
+    )
+  }
+}
+
 /**
  * DB. Upserts the current window by weekKey - safe to call repeatedly, from
  * a Mutation (createListing, purchase, ...) only, never from a GET/read
@@ -133,23 +168,15 @@ export function isWithinTransferWindow(window: TransferWindowDefinition, now: Da
  * rewritten. If the stored values ever disagree with what today's
  * definition would recompute (e.g. a clock or timezone-logic bug, or a
  * manual edit), that's an invariant violation to raise loudly, not
- * auto-correct.
+ * auto-correct - whether this call found the row itself or lost a create
+ * race to a concurrent call that just inserted it.
  */
 export async function ensureTransferWindowExists(now: Date = new Date()) {
   const definition = getTransferWindowDefinition(now)
 
   const existing = await prisma.transferWindow.findUnique({ where: { weekKey: definition.weekKey } })
   if (existing) {
-    if (
-      existing.opensAt.getTime() !== definition.opensAt.getTime() ||
-      existing.closesAt.getTime() !== definition.closesAt.getTime()
-    ) {
-      throw new Error(
-        `Transfer window invariant violation for weekKey ${definition.weekKey}: stored ` +
-          `opensAt=${existing.opensAt.toISOString()} closesAt=${existing.closesAt.toISOString()}, ` +
-          `but recomputing now gives opensAt=${definition.opensAt.toISOString()} closesAt=${definition.closesAt.toISOString()}`
-      )
-    }
+    assertMatchesDefinition(existing, definition)
     return existing
   }
 
@@ -158,8 +185,11 @@ export async function ensureTransferWindowExists(now: Date = new Date()) {
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "P2002") {
       // Lost the create race to a concurrent call for the same weekKey -
-      // the row now exists, so this is a safe no-op, not a failure.
-      return prisma.transferWindow.findUniqueOrThrow({ where: { weekKey: definition.weekKey } })
+      // the row now exists. Still validate it before handing it back: a
+      // concurrent winner is not exempt from the invariant check.
+      const winner = await prisma.transferWindow.findUniqueOrThrow({ where: { weekKey: definition.weekKey } })
+      assertMatchesDefinition(winner, definition)
+      return winner
     }
     throw error
   }

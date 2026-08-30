@@ -3,6 +3,10 @@ import { getTransferWindowDefinition, isWithinTransferWindow } from "./window"
 // Aug 27, 2026 and Jan 8, 2026 are both real Thursdays (verified against a
 // known anchor: Jan 1, 2026 is a Thursday) - not arbitrary picks, so these
 // double as the winter/summer DST-offset assertions the product spec calls for.
+//
+// The window's own week runs Monday->Sunday, anchored on the nearest
+// Thursday: Mon/Tue/Wed look forward to their upcoming Thursday, Fri/Sat/Sun
+// look back at the Thursday whose window already opened.
 
 describe("getTransferWindowDefinition", () => {
   it("1. winter (Jan 8, 2026 Thursday) resolves to the UTC+2 instant", () => {
@@ -19,24 +23,39 @@ describe("getTransferWindowDefinition", () => {
     expect(window.closesAt.toISOString()).toBe("2026-08-27T21:00:00.000Z")
   })
 
-  it("9. Monday before the window still produces that same local week's Thursday window", () => {
-    const monday = getTransferWindowDefinition(new Date("2026-08-24T08:00:00.000Z"))
-    expect(monday.weekKey).toBe("2026-08-27")
-    expect(monday.opensAt.toISOString()).toBe("2026-08-26T21:00:00.000Z")
+  it("Monday (Aug 31, 2026) resolves forward to its own upcoming Thursday", () => {
+    const monday = getTransferWindowDefinition(new Date("2026-08-31T08:00:00.000Z"))
+    expect(monday.weekKey).toBe("2026-09-03")
   })
 
-  it("9. Tuesday before the window still produces that same local week's Thursday window", () => {
-    const tuesday = getTransferWindowDefinition(new Date("2026-08-25T08:00:00.000Z"))
-    expect(tuesday.weekKey).toBe("2026-08-27")
-    expect(tuesday.opensAt.toISOString()).toBe("2026-08-26T21:00:00.000Z")
+  it("Tuesday (Sep 1, 2026) resolves forward to that same upcoming Thursday", () => {
+    const tuesday = getTransferWindowDefinition(new Date("2026-09-01T08:00:00.000Z"))
+    expect(tuesday.weekKey).toBe("2026-09-03")
   })
 
-  it("10. Sunday after the window refers to that Sunday's own week's Thursday, not the just-closed one", () => {
-    // Aug 30, 2026 is the Sunday that starts the week AFTER the Aug 27
-    // window's week - its own week's Thursday is Sep 3, not a relapse to
-    // Aug 27 and not a further, incorrectly-skipped date.
+  it("Wednesday (Sep 2, 2026) resolves forward to that same upcoming Thursday", () => {
+    const wednesday = getTransferWindowDefinition(new Date("2026-09-02T08:00:00.000Z"))
+    expect(wednesday.weekKey).toBe("2026-09-03")
+  })
+
+  it("Friday after closing resolves back to the same Thursday (one day earlier)", () => {
+    const friday = getTransferWindowDefinition(new Date("2026-08-28T08:00:00.000Z"))
+    expect(friday.weekKey).toBe("2026-08-27")
+  })
+
+  it("Saturday after closing resolves back to the same Thursday (two days earlier)", () => {
+    const saturday = getTransferWindowDefinition(new Date("2026-08-29T08:00:00.000Z"))
+    expect(saturday.weekKey).toBe("2026-08-27")
+  })
+
+  it("Sunday, Aug 30, 2026 resolves back to Thursday, Aug 27, 2026 (three days earlier)", () => {
     const sunday = getTransferWindowDefinition(new Date("2026-08-30T08:00:00.000Z"))
-    expect(sunday.weekKey).toBe("2026-09-03")
+    expect(sunday.weekKey).toBe("2026-08-27")
+  })
+
+  it("the following Monday (Sep 7, 2026) moves on to the next Thursday (Sep 10, 2026), not back to Sep 3", () => {
+    const followingMonday = getTransferWindowDefinition(new Date("2026-09-07T08:00:00.000Z"))
+    expect(followingMonday.weekKey).toBe("2026-09-10")
   })
 
   it("11. year boundary: Jan 1, 2027 (a Friday) resolves back to Dec 31, 2026's Thursday window", () => {
