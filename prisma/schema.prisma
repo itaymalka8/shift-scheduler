@@ -59,56 +59,57 @@ model VerificationToken {
 }
 
 model Team {
-  id                  String         @id @default(cuid())
-  name                String
-  crestShape          String?
-  crestPattern        String?
-  crestIcon           String?
-  crestColor          String?
-  crestSecondaryColor String?
-  crestBorderColor    String?
-  crestImageUrl       String?
-  countryCode         String?
-  stadiumStyle        String?
-  crowdStyle          String?
-  balance             Int            @default(5000000)
-  isBot               Boolean        @default(false)
-  formation           String?
+  id                    String                 @id @default(cuid())
+  name                  String
+  crestShape            String?
+  crestPattern          String?
+  crestIcon             String?
+  crestColor            String?
+  crestSecondaryColor   String?
+  crestBorderColor      String?
+  crestImageUrl         String?
+  countryCode           String?
+  stadiumStyle          String?
+  crowdStyle            String?
+  balance               Int                    @default(5000000)
+  isBot                 Boolean                @default(false)
+  formation             String?
   // Custom formation slots (JSON array of {role,x,y}) - only read when
   // formation == "custom"; the named formations live in code.
-  customFormation     Json?
-  mentality           String?
-  tempo               String?
-  pressing            String?
-  width               String?
-  attackingStyle      String?
-  defensiveLine       String?
-  offsideTrap         Boolean  @default(false)
-  creativeFreedom     String?
-  dribbleFrequency    String?
-  passingType         String?
-  attackDirection     String?
-  fullbackOverlaps    String?
-  createdAt           DateTime       @default(now())
-  user                User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId              String?        @unique
-  divisionMemberships DivisionTeam[]
-  homeFixtures        Fixture[]      @relation("HomeFixtures")
-  awayFixtures        Fixture[]      @relation("AwayFixtures")
-  players             Player[]
-  lineupSlots         LineupSlot[]
-  matchEvents         MatchEvent[]
-  stadium             Stadium?
+  customFormation       Json?
+  mentality             String?
+  tempo                 String?
+  pressing              String?
+  width                 String?
+  attackingStyle        String?
+  defensiveLine         String?
+  offsideTrap           Boolean                @default(false)
+  creativeFreedom       String?
+  dribbleFrequency      String?
+  passingType           String?
+  attackDirection       String?
+  fullbackOverlaps      String?
+  createdAt             DateTime               @default(now())
+  user                  User?                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId                String?                @unique
+  divisionMemberships   DivisionTeam[]
+  homeFixtures          Fixture[]              @relation("HomeFixtures")
+  awayFixtures          Fixture[]              @relation("AwayFixtures")
+  players               Player[]
+  lineupSlots           LineupSlot[]
+  matchEvents           MatchEvent[]
+  stadium               Stadium?
   financialTransactions FinancialTransaction[]
-  captainId           String?        @unique
-  captain             Player?        @relation("TeamCaptain", fields: [captainId], references: [id], onDelete: SetNull)
-  penaltyTakerId      String?        @unique
-  penaltyTaker        Player?        @relation("TeamPenaltyTaker", fields: [penaltyTakerId], references: [id], onDelete: SetNull)
-  freeKickTakerId     String?        @unique
-  freeKickTaker       Player?        @relation("TeamFreeKickTaker", fields: [freeKickTakerId], references: [id], onDelete: SetNull)
-  cornerTakerId       String?        @unique
-  cornerTaker         Player?        @relation("TeamCornerTaker", fields: [cornerTakerId], references: [id], onDelete: SetNull)
-  kits                TeamKit[]
+  captainId             String?                @unique
+  captain               Player?                @relation("TeamCaptain", fields: [captainId], references: [id], onDelete: SetNull)
+  penaltyTakerId        String?                @unique
+  penaltyTaker          Player?                @relation("TeamPenaltyTaker", fields: [penaltyTakerId], references: [id], onDelete: SetNull)
+  freeKickTakerId       String?                @unique
+  freeKickTaker         Player?                @relation("TeamFreeKickTaker", fields: [freeKickTakerId], references: [id], onDelete: SetNull)
+  cornerTakerId         String?                @unique
+  cornerTaker           Player?                @relation("TeamCornerTaker", fields: [cornerTakerId], references: [id], onDelete: SetNull)
+  kits                  TeamKit[]
+  transferListings      TransferListing[]
 }
 
 enum KitType {
@@ -140,27 +141,43 @@ model TeamKit {
   @@unique([teamId, type])
 }
 
+enum PlayerCareerStatus {
+  ACTIVE
+  RETIRED
+}
+
 model Player {
-  id                  String      @id @default(cuid())
-  teamId              String
-  team                Team        @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  firstName           String
-  lastName            String
-  age                 Int
-  overall             Int
-  potential           Int
-  primaryPosition     String
-  secondaryPositions  String[]    @default([])
-  fitness             Int         @default(100)
-  status              String      @default("available")
-  marketValue         Int
-  weeklySalary        Int         @default(0)
-  injuryStatus        String?
-  suspensionMatches   Int         @default(0)
-  preferredFoot       String
-  nationality         String
-  shirtNumber         Int
-  createdAt           DateTime    @default(now())
+  id                 String             @id @default(cuid())
+  // Current ownership only - null means Free Agent (released) or Retired.
+  // No history is kept here; a past-teams record would be a separate model
+  // if ever needed.
+  teamId             String?
+  team               Team?              @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  // Career lifecycle, independent of ownership (teamId) and of match-day
+  // availability (the existing `status` field below, e.g. injured/suspended).
+  careerStatus       PlayerCareerStatus @default(ACTIVE)
+  // Counts ownership episodes - increments only when the player enters a
+  // new team's ownership (Purchase, or a future signing path). Release does
+  // NOT increment it: it stays the same stint the player was released from,
+  // so RELEASE_<playerId>_<stintNumber> always names the stint that ended.
+  stintNumber        Int                @default(1)
+  firstName          String
+  lastName           String
+  age                Int
+  overall            Int
+  potential          Int
+  primaryPosition    String
+  secondaryPositions String[]           @default([])
+  fitness            Int                @default(100)
+  status             String             @default("available")
+  marketValue        Int
+  weeklySalary       Int                @default(0)
+  injuryStatus       String?
+  suspensionMatches  Int                @default(0)
+  preferredFoot      String
+  nationality        String
+  shirtNumber        Int
+  createdAt          DateTime           @default(now())
 
   // Attributes (1-100). Overall is never set directly - it's always
   // calculatePlayerOverall(this) run at generation time and cached, per the
@@ -172,69 +189,72 @@ model Player {
   // which fields.
 
   // Attacking
-  shooting              Int?
-  finishing             Int?
-  longShots             Int?
-  heading               Int?
-  attackingPositioning  Int?
+  shooting             Int?
+  finishing            Int?
+  longShots            Int?
+  heading              Int?
+  attackingPositioning Int?
 
   // Technical
-  passing               Int?
-  longPassing           Int?
-  vision                Int?
-  technique             Int?
-  creativity            Int?
-  dribbling             Int?
-  ballControl           Int?
-  crossing              Int?
-  freeKicks             Int?
-  penalties             Int?
-  corners               Int?
+  passing     Int?
+  longPassing Int?
+  vision      Int?
+  technique   Int?
+  creativity  Int?
+  dribbling   Int?
+  ballControl Int?
+  crossing    Int?
+  freeKicks   Int?
+  penalties   Int?
+  corners     Int?
 
   // Defensive
-  tackling              Int?
-  marking               Int?
-  defensivePositioning  Int?
-  interceptions         Int?
-  aerialDuels           Int?
+  tackling             Int?
+  marking              Int?
+  defensivePositioning Int?
+  interceptions        Int?
+  aerialDuels          Int?
 
   // Physical
-  pace                  Int?
-  acceleration          Int?
-  strength              Int?
-  stamina               Int?
-  agility               Int?
-  balance               Int?
-  jumping               Int?
+  pace         Int?
+  acceleration Int?
+  strength     Int?
+  stamina      Int?
+  agility      Int?
+  balance      Int?
+  jumping      Int?
 
   // Mental
-  leadership            Int?
-  composure             Int?
-  decisions             Int?
-  anticipation          Int?
-  teamwork              Int?
-  workRate              Int?
-  concentration         Int?
-  aggression            Int?
-  experience            Int?
-  secondBallAwareness   Int?
+  leadership          Int?
+  composure           Int?
+  decisions           Int?
+  anticipation        Int?
+  teamwork            Int?
+  workRate            Int?
+  concentration       Int?
+  aggression          Int?
+  experience          Int?
+  secondBallAwareness Int?
 
   // Goalkeeping (goalkeepers only)
-  goalkeeping            Int?
-  reflexes               Int?
-  handling               Int?
-  diving                 Int?
-  oneOnOne               Int?
-  aerialAbility          Int?
-  goalkeeperPositioning  Int?
-  distribution           Int?
-  penaltySaving          Int?
-  lineupSlot          LineupSlot?
-  matchStats          PlayerMatchStats[]
-  captainOfTeam       Team?       @relation("TeamCaptain")
-  penaltyTakerOfTeam  Team?       @relation("TeamPenaltyTaker")
-  freeKickTakerOfTeam Team?       @relation("TeamFreeKickTaker")
-  cornerTakerOfTeam   Team?       @relation("TeamCornerTaker")
+  goalkeeping           Int?
+  reflexes              Int?
+  handling              Int?
+  diving                Int?
+  oneOnOne              Int?
+  aerialAbility         Int?
+  goalkeeperPositioning Int?
+  distribution          Int?
+  penaltySaving         Int?
+  lineupSlot            LineupSlot?
+  matchStats            PlayerMatchStats[]
+  captainOfTeam         Team?              @relation("TeamCaptain")
+  penaltyTakerOfTeam    Team?              @relation("TeamPenaltyTaker")
+  freeKickTakerOfTeam   Team?              @relation("TeamFreeKickTaker")
+  cornerTakerOfTeam     Team?              @relation("TeamCornerTaker")
+  transferListings      TransferListing[]
+
+  @@index([teamId, careerStatus])
 }
 
 // A club's stadium - its own entity (not just fields on Team) since it has
@@ -245,35 +265,35 @@ model Player {
 // Total Quality is derived from its players rather than cached and risking
 // going stale.
 model Stadium {
-  id                String                   @id @default(cuid())
-  teamId            String                   @unique
-  team              Team                     @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  name              String
-  regularSeats      Int
-  coveredSeats      Int
-  premiumSeats      Int
-  vipSeats          Int
-  createdAt         DateTime                 @default(now())
-  updatedAt         DateTime                 @updatedAt
-  constructionJobs  StadiumConstructionJob[]
+  id               String                   @id @default(cuid())
+  teamId           String                   @unique
+  team             Team                     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  name             String
+  regularSeats     Int
+  coveredSeats     Int
+  premiumSeats     Int
+  vipSeats         Int
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+  constructionJobs StadiumConstructionJob[]
 }
 
 // One in-progress or finished expansion. At most one pending/active job per
 // stadium at a time - enforced in code (startStadiumConstruction checks
 // before creating one), not just relied on here.
 model StadiumConstructionJob {
-  id                  String    @id @default(cuid())
-  stadiumId           String
-  stadium             Stadium   @relation(fields: [stadiumId], references: [id], onDelete: Cascade)
-  regularSeatsAdded   Int       @default(0)
-  coveredSeatsAdded   Int       @default(0)
-  premiumSeatsAdded   Int       @default(0)
-  vipSeatsAdded       Int       @default(0)
-  totalCost           Int
-  status              String    @default("active")
-  startedAt           DateTime  @default(now())
-  endsAt              DateTime
-  completedAt         DateTime?
+  id                String    @id @default(cuid())
+  stadiumId         String
+  stadium           Stadium   @relation(fields: [stadiumId], references: [id], onDelete: Cascade)
+  regularSeatsAdded Int       @default(0)
+  coveredSeatsAdded Int       @default(0)
+  premiumSeatsAdded Int       @default(0)
+  vipSeatsAdded     Int       @default(0)
+  totalCost         Int
+  status            String    @default("active")
+  startedAt         DateTime  @default(now())
+  endsAt            DateTime
+  completedAt       DateTime?
 }
 
 // The club's financial journal - every balance change, ever, with no
@@ -352,32 +372,32 @@ model DivisionTeam {
 }
 
 model Fixture {
-  id          String       @id @default(cuid())
-  divisionId  String
-  division    Division     @relation(fields: [divisionId], references: [id], onDelete: Cascade)
-  matchday    Int
-  homeTeamId  String
-  homeTeam    Team         @relation("HomeFixtures", fields: [homeTeamId], references: [id], onDelete: Cascade)
-  awayTeamId  String
-  awayTeam    Team         @relation("AwayFixtures", fields: [awayTeamId], references: [id], onDelete: Cascade)
-  homeScore   Int?
-  awayScore   Int?
-  attendance  Int?
-  homeRevenue Int?
+  id               String             @id @default(cuid())
+  divisionId       String
+  division         Division           @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+  matchday         Int
+  homeTeamId       String
+  homeTeam         Team               @relation("HomeFixtures", fields: [homeTeamId], references: [id], onDelete: Cascade)
+  awayTeamId       String
+  awayTeam         Team               @relation("AwayFixtures", fields: [awayTeamId], references: [id], onDelete: Cascade)
+  homeScore        Int?
+  awayScore        Int?
+  attendance       Int?
+  homeRevenue      Int?
   homeMatchExpense Int?
   // Seeds the match engine's RNG, so re-running a fixture's simulation
   // from the same snapshot always produces the identical match.
-  matchSeed   String?
+  matchSeed        String?
   // Team-level match statistics, as produced by the engine (possession,
   // shots, corners, ...). Stored as JSON since it's a read-only result
   // blob the engine defines, never queried field-by-field.
-  homeStats   Json?
-  awayStats   Json?
-  scheduledAt DateTime?
-  playedAt    DateTime?
-  createdAt   DateTime     @default(now())
-  events      MatchEvent[]
-  playerStats PlayerMatchStats[]
+  homeStats        Json?
+  awayStats        Json?
+  scheduledAt      DateTime?
+  playedAt         DateTime?
+  createdAt        DateTime           @default(now())
+  events           MatchEvent[]
+  playerStats      PlayerMatchStats[]
 }
 
 // One row per player per match they appeared in - the raw record every
@@ -430,4 +450,58 @@ model MatchEvent {
   outcome           String?
   context           Json?
   createdAt         DateTime @default(now())
+}
+
+// One recurring weekly transfer window. weekKey is the same stable,
+// sortable "<year>_W<week>" shape already used for payroll references (see
+// payrollWeekKey in src/lib/economy/payroll.ts) - reused here as this
+// window's natural idempotency key (never create a second window for the
+// same week).
+model TransferWindow {
+  id        String            @id @default(cuid())
+  weekKey   String            @unique
+  opensAt   DateTime
+  closesAt  DateTime
+  createdAt DateTime          @default(now())
+  listings  TransferListing[]
+}
+
+enum TransferListingStatus {
+  OPEN
+  SOLD
+  CANCELLED
+  EXPIRED
+}
+
+// A club offering one of its players for transfer. askingPrice is frozen at
+// creation - there is no price-edit path; changing the price means
+// cancelling this listing and creating a new one. Status only ever moves
+// OPEN -> {SOLD, CANCELLED, EXPIRED} - never out of a terminal state - and
+// every transition is a conditional `UPDATE ... WHERE status = 'OPEN'`, so
+// a stale reader can never turn a decided listing back into a live one.
+//
+// IMPORTANT: at most one OPEN listing may exist per playerId. This can't be
+// expressed in Prisma's schema DSL as a partial/filtered unique index (not
+// supported as of Prisma 6.19.3), so it is enforced by a hand-written
+// `CREATE UNIQUE INDEX ... WHERE status = 'OPEN'` statement added directly
+// to this feature's migration.sql. That index exists in the database but
+// has no schema.prisma representation - `prisma migrate dev` in the future
+// must not be allowed to "fix" this apparent drift by dropping it; always
+// review a generated migration diff before applying it.
+model TransferListing {
+  id            String                @id @default(cuid())
+  playerId      String
+  player        Player                @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  sellingTeamId String
+  sellingTeam   Team                  @relation(fields: [sellingTeamId], references: [id], onDelete: Cascade)
+  askingPrice   Int
+  status        TransferListingStatus @default(OPEN)
+  windowId      String
+  window        TransferWindow        @relation(fields: [windowId], references: [id], onDelete: Cascade)
+  expiresAt     DateTime
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  @@index([status, expiresAt])
+  @@index([sellingTeamId, status])
 }
