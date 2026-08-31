@@ -348,7 +348,7 @@ export default function SignUpPage() {
   }
 
   return (
-    <div className="goalx-hero-gradient min-h-screen flex flex-col items-center justify-center px-4 py-12">
+    <div className="goalx-auth-background min-h-screen flex flex-col items-center justify-center px-4 py-12">
       <div className="w-full max-w-lg flex justify-end mb-2">
         <LanguageSwitcher variant="dark" />
       </div>
@@ -356,7 +356,7 @@ export default function SignUpPage() {
         <Image src="/logo.png" alt="Goalx Manager" width={72} height={72} className="rounded-full" />
       </Link>
 
-      <Card className="w-full max-w-lg">
+      <Card className="goalx-auth-card w-full max-w-lg shadow-2xl">
         {step === 1 && (
           <>
             <CardHeader>

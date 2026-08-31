@@ -132,6 +132,56 @@
     linear-gradient(160deg, oklch(0.2 0.07 292) 0%, oklch(0.14 0.05 292) 60%, oklch(0.1 0.03 292) 100%);
 }
 
+/* Photographic background for the four Auth screens only (signin, signup,
+   forgot-password, reset-password) - deliberately a separate class from
+   goalx-hero-gradient above, which the landing page and in-game screens
+   (dashboard, stadium) still use unchanged. The dark gradient layered on
+   top keeps the centered form readable without hiding the manager/stadium
+   photo or the GoalX branding baked into the image itself. background-size:
+   cover preserves the image's own aspect ratio (never stretches it) - only
+   background-position differs by breakpoint, tuned so the manager reads
+   well on both a short/wide desktop viewport and a tall/narrow phone one. */
+.goalx-auth-background {
+  background-image: linear-gradient(
+      180deg,
+      oklch(0.08 0.02 292 / 60%) 0%,
+      oklch(0.08 0.02 292 / 35%) 35%,
+      oklch(0.06 0.02 292 / 80%) 100%
+    ),
+    url("/images/goalx-auth-background.png");
+  background-repeat: no-repeat;
+  background-size: cover;
+  background-position: center 15%;
+}
+
+@media (min-width: 1024px) {
+  .goalx-auth-background {
+    background-position: center 22%;
+  }
+}
+
+/* The default light Card (pure white) reads too flat against the new photo
+   background, so the Auth form itself becomes a dark, semi-transparent
+   glass surface instead. This overrides only the small set of CSS
+   variables Card/Input/Label/Checkbox/CardDescription already read (bg-card,
+   text-card-foreground, text-muted-foreground, text-foreground, border-input)
+   - every element inside a Card carrying this class picks up the new
+   values automatically through Tailwind's existing utility classes, so
+   individual text/link elements scattered across the Auth forms (including
+   signup's 3-step wizard) don't need to be edited one by one. Nothing
+   outside an element carrying this class is affected - the app's light
+   theme and the unrelated `.dark` toggle block are both left untouched. */
+.goalx-auth-card {
+  --card: oklch(0.14 0.03 292 / 55%);
+  --card-foreground: oklch(0.98 0.005 292);
+  --foreground: oklch(0.98 0.005 292);
+  --muted-foreground: oklch(0.82 0.02 292 / 90%);
+  --border: oklch(1 0 0 / 15%);
+  --input: oklch(1 0 0 / 20%);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
 @keyframes goalx-float {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-10px); }

@@ -150,7 +150,7 @@ function SignInForm() {
   }
 
   return (
-    <Card className="w-full max-w-md">
+    <Card className="goalx-auth-card w-full max-w-md shadow-2xl">
       <CardHeader>
         <CardTitle className="text-2xl">{t("signin.title")}</CardTitle>
         <CardDescription>{t("signin.description")}</CardDescription>
@@ -245,7 +245,7 @@ function SignInForm() {
 
 export default function SignInPage() {
   return (
-    <div className="goalx-hero-gradient min-h-screen flex flex-col items-center justify-center px-4 py-12">
+    <div className="goalx-auth-background min-h-screen flex flex-col items-center justify-center px-4 py-12">
       <div className="w-full max-w-md flex justify-end mb-2">
         <LanguageSwitcher variant="dark" />
       </div>
