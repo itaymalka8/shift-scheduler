@@ -5,8 +5,7 @@ import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { DEFAULT_LOCALE, getTranslator, isLocale } from "@/lib/i18n/translations"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { MatchLiveView } from "./match-live-view"
+import { MatchCenter } from "./match-center"
 
 export default async function MatchPage({ params }: { params: Promise<{ fixtureId: string }> }) {
   const { fixtureId } = await params
@@ -18,25 +17,18 @@ export default async function MatchPage({ params }: { params: Promise<{ fixtureI
 
   if (!session?.user?.id) notFound()
 
-  const fixture = await prisma.fixture.findUnique({ where: { id: fixtureId } })
+  const fixture = await prisma.fixture.findUnique({ where: { id: fixtureId }, select: { id: true } })
   if (!fixture) notFound()
 
   return (
     <div className="min-h-screen bg-background">
-      <main className="mx-auto max-w-2xl px-6 py-12">
-        <div className="mb-4">
+      <main className="mx-auto max-w-4xl px-3 py-4 sm:px-6 sm:py-8">
+        <div className="mb-3">
           <Link href="/league" className="text-sm text-primary hover:underline">
             {t("league.backToDashboard")}
           </Link>
         </div>
-        <Card>
-          <CardHeader>
-            <CardTitle>{t("match.title")}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <MatchLiveView fixtureId={fixtureId} />
-          </CardContent>
-        </Card>
+        <MatchCenter fixtureId={fixtureId} />
       </main>
     </div>
   )

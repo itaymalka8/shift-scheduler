@@ -203,3 +203,77 @@
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
 }
+
+/* --- Live Match Center ------------------------------------------------- */
+/* All transform/opacity only, so they stay cheap on mobile even during a
+   goal celebration with several effects running at once. */
+
+@keyframes goalx-goal-banner {
+  0% { opacity: 0; transform: translateY(-12px) scale(0.94); }
+  12% { opacity: 1; transform: translateY(0) scale(1); }
+  85% { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-8px) scale(0.98); }
+}
+.animate-goalx-goal-banner {
+  animation: goalx-goal-banner 2.6s ease-out both;
+}
+
+@keyframes goalx-scorer-pulse {
+  0%, 100% { transform: scale(1); }
+  30% { transform: scale(1.18); }
+}
+.animate-goalx-scorer-pulse {
+  animation: goalx-scorer-pulse 0.7s ease-in-out 2;
+}
+
+@keyframes goalx-crowd-ultras {
+  0%, 100% { transform: translateY(0) scale(1); opacity: 0.9; }
+  50% { transform: translateY(-3px) scale(1.15); opacity: 1; }
+}
+.animate-goalx-crowd-ultras {
+  animation: goalx-crowd-ultras 0.9s ease-in-out infinite;
+}
+
+@keyframes goalx-crowd-calm {
+  0%, 100% { transform: translateY(0); opacity: 0.75; }
+  50% { transform: translateY(-1px); opacity: 0.9; }
+}
+.animate-goalx-crowd-calm {
+  animation: goalx-crowd-calm 2.6s ease-in-out infinite;
+}
+
+@keyframes goalx-flag-wave {
+  0%, 100% { transform: rotate(-8deg); }
+  50% { transform: rotate(8deg); }
+}
+.animate-goalx-flag-wave {
+  animation: goalx-flag-wave 1.1s ease-in-out infinite;
+}
+
+@keyframes goalx-crowd-flash {
+  0% { opacity: 0; }
+  25% { opacity: 1; }
+  100% { opacity: 0; }
+}
+.animate-goalx-crowd-flash {
+  animation: goalx-crowd-flash 1.4s ease-out both;
+}
+
+@keyframes goalx-pitch-ping {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.4); }
+  20% { opacity: 1; transform: translate(-50%, -50%) scale(1.15); }
+  35% { transform: translate(-50%, -50%) scale(1); }
+  80% { opacity: 1; }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(0.9); }
+}
+.animate-goalx-pitch-ping {
+  animation: goalx-pitch-ping 1.6s ease-out both;
+}
+
+@keyframes goalx-feed-in {
+  0% { opacity: 0; transform: translateY(-6px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.animate-goalx-feed-in {
+  animation: goalx-feed-in 0.4s ease-out both;
+}
