@@ -82,6 +82,50 @@ export function MatchCenter({ fixtureId }: { fixtureId: string }) {
     }
   }, [pollOnce])
 
+  // Kickoff activation: nudges the fixture's simulation to happen the
+  // moment kickoff arrives, instead of waiting up to ~2 minutes for the
+  // next Cron tick (see render.yaml) - the Cron is untouched and keeps
+  // running as the fallback for fixtures nobody is watching. Sent AT MOST
+  // ONCE per page visit, from either of the two trigger sites below - a
+  // failure here never breaks the screen, since normal GET polling (above)
+  // continues regardless and will simply pick up the Cron's result once it
+  // lands.
+  const kickoffAttemptedRef = useRef(false)
+  const triggerKickoffActivation = useCallback(async () => {
+    if (kickoffAttemptedRef.current) return
+    kickoffAttemptedRef.current = true
+    try {
+      await fetch(`/api/matches/${fixtureId}/ensure-simulated`, { method: "POST" })
+    } catch {
+      // Best-effort only - the Cron remains the fallback if this fails.
+    } finally {
+      // Re-poll immediately so the UI reflects the outcome without waiting
+      // for the next scheduled tick.
+      pollOnce()
+    }
+  }, [fixtureId, pollOnce])
+
+  // Trigger site 1: countdown reaches kickoff while the user is watching a
+  // still-scheduled match. Timed directly off scheduledAt (not the 15s
+  // scheduled-poll cadence), so it fires within moments of kickoff.
+  const status = data?.status
+  const scheduledAt = data?.scheduledAt
+  const simulationReady = data?.simulationReady
+  useEffect(() => {
+    if (status !== "scheduled" || !scheduledAt) return
+    const msUntilKickoff = new Date(scheduledAt).getTime() - Date.now()
+    const timer = setTimeout(triggerKickoffActivation, Math.max(0, msUntilKickoff))
+    return () => clearTimeout(timer)
+  }, [status, scheduledAt, triggerKickoffActivation])
+
+  // Trigger site 2: the user arrives (or a poll lands) already live, but
+  // the engine hasn't run yet - fires once immediately, never re-fires on
+  // subsequent polls (kickoffAttemptedRef already guards that).
+  useEffect(() => {
+    if (status !== "live" || simulationReady) return
+    triggerKickoffActivation()
+  }, [status, simulationReady, triggerKickoffActivation])
+
   const clockSeconds = useMatchClock(data?.scheduledAt ?? null, clockOffsetMs, data?.status ?? "scheduled")
 
   if (!data) {

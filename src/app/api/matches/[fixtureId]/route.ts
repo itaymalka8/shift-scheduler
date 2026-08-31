@@ -42,6 +42,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ fix
     select: {
       id: true,
       scheduledAt: true,
+      // Not a spoiler on its own (a boolean "has the engine run yet",
+      // never the score) - lets the client know whether kickoff activation
+      // (POST .../ensure-simulated) is still worth trying, without ever
+      // selecting homeScore/awayScore/homeStats/awayStats here.
+      playedAt: true,
       homeTeamId: true,
       awayTeamId: true,
       homeTeam: {
@@ -79,6 +84,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ fix
     minute,
     scheduledAt: fixture.scheduledAt,
     serverNow: serverNow.toISOString(),
+    // True once ensureFixtureSimulated has actually run for this fixture
+    // (Cron, or kickoff activation - see .../ensure-simulated/route.ts).
+    // Lets a "live" client tell "kicked off, waiting on simulation" apart
+    // from "kicked off, already simulated" without exposing the result.
+    simulationReady: !!fixture.playedAt,
     homeTeam: { ...homeTeam, stadiumCapacity },
     awayTeam: fixture.awayTeam,
   }

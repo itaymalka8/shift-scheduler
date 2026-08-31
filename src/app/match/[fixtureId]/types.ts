@@ -37,6 +37,14 @@ export interface FinalStatsView {
   away: Record<string, number> | null
 }
 
+// Response shape of POST /api/matches/[fixtureId]/ensure-simulated -
+// deliberately carries no score/stats/events, only operational status.
+export interface EnsureSimulatedResponse {
+  ready: boolean
+  alreadySimulated: boolean
+  reason?: string
+}
+
 export interface MatchApiResponse {
   status: "scheduled" | "live" | "finished"
   minute: number
@@ -45,6 +53,11 @@ export interface MatchApiResponse {
   // only to correct for local clock skew when driving the smooth match
   // clock (see use-match-clock.ts). Never used for event visibility.
   serverNow: string
+  // True once the engine has actually run for this fixture (Cron, or the
+  // client's own kickoff-activation POST) - lets the client tell "live but
+  // waiting on simulation" apart from "live and simulated" without any
+  // score/stat ever being exposed for that purpose.
+  simulationReady: boolean
   homeTeam: HomeMatchTeamView
   awayTeam: MatchTeamView
   liveScore: { home: number; away: number } | null
