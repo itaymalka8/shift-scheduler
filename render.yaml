@@ -100,7 +100,7 @@ services:
     env: node
     schedule: "*/2 * * * *"
     buildCommand: npm install --include=dev && npx prisma generate
-    startCommand: npm run process-fixtures
+    startCommand: npm run process-scheduled-jobs
     envVars:
       - key: DATABASE_URL
         sync: false
