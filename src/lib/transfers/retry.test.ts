@@ -5,6 +5,14 @@ function p2034(): Error & { code: string } {
   return Object.assign(new Error("could not serialize access due to concurrent update"), { code: "P2034" })
 }
 
+/** How the same Postgres failure arrives when it is raised inside a raw query. */
+function rawSqlState(sqlState: string): Error & { code: string; meta: { code: string } } {
+  return Object.assign(new Error("Raw query failed"), {
+    code: "P2010",
+    meta: { code: sqlState, message: "raw query failed" },
+  })
+}
+
 describe("withSerializableRetry", () => {
   it("succeeds on the first attempt when the run function never throws", async () => {
     const run = jest.fn().mockResolvedValue("ok")
@@ -31,6 +39,32 @@ describe("withSerializableRetry", () => {
       code: "TRANSFER_CONFLICT",
     })
     expect(run).toHaveBeenCalledTimes(3)
+  })
+
+  it("retries a serialization failure that arrives through a raw query as P2010/40001", async () => {
+    const run = jest.fn().mockRejectedValueOnce(rawSqlState("40001")).mockResolvedValueOnce("ok")
+    await expect(withSerializableRetry(run)).resolves.toBe("ok")
+    expect(run).toHaveBeenCalledTimes(2)
+  })
+
+  it("retries a deadlock that arrives through a raw query as P2010/40P01", async () => {
+    const run = jest.fn().mockRejectedValueOnce(rawSqlState("40P01")).mockResolvedValueOnce("ok")
+    await expect(withSerializableRetry(run)).resolves.toBe("ok")
+    expect(run).toHaveBeenCalledTimes(2)
+  })
+
+  it("never retries an unrelated raw query failure, whatever its SQLSTATE", async () => {
+    const notRetryable = rawSqlState("23505")
+    const run = jest.fn().mockRejectedValue(notRetryable)
+    await expect(withSerializableRetry(run)).rejects.toBe(notRetryable)
+    expect(run).toHaveBeenCalledTimes(1)
+  })
+
+  it("never retries a P2010 with no structured SQLSTATE metadata", async () => {
+    const noMeta = Object.assign(new Error("Raw query failed"), { code: "P2010" })
+    const run = jest.fn().mockRejectedValue(noMeta)
+    await expect(withSerializableRetry(run)).rejects.toBe(noMeta)
+    expect(run).toHaveBeenCalledTimes(1)
   })
 
   it("never retries a plain domain TransferError - it propagates on the first attempt", async () => {

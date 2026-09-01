@@ -4,6 +4,8 @@ import { TransferError } from "./errors"
 import { runSerializableTransaction } from "./retry"
 import { removePlayerFromSquad } from "./squad-cleanup"
 import { ensureTransferWindowExists, getTransferWindowDefinition, isWithinTransferWindow } from "./window"
+import { lockPlayerRow } from "@/lib/players/locks"
+import { prisma } from "@/lib/prisma"
 
 const MAX_ACTIVE_ROSTER_SIZE = 22
 
@@ -67,11 +69,45 @@ export async function purchaseTransferListing(input: PurchaseTransferListingInpu
   }
   await ensureTransferWindowExists(now)
 
+  // Pre-read, OUTSIDE the transaction, for one purpose only: discovering
+  // which player this listing is for, so the transaction below can take
+  // that player's row lock as its very first statement (the shared
+  // lock-ordering contract - see lockPlayerRow). Nothing read here is
+  // trusted for any decision: every field, this listing's own existence
+  // included, is re-read and re-validated inside the transaction under the
+  // lock. A listing that disappears between the two fails as a domain
+  // LISTING_NOT_FOUND there, never as a raw error.
+  const discovery = await prisma.transferListing.findUnique({
+    where: { id: input.listingId },
+    select: { playerId: true },
+  })
+  if (!discovery) {
+    throw new TransferError("LISTING_NOT_FOUND", `No such listing: ${input.listingId}`)
+  }
+
   return runSerializableTransaction(async (tx) => {
-    // 1. Read the listing plus its player.
+    // 0. Player row lock FIRST, before the listing, lineup, team and
+    // financial rows below.
+    const locked = await lockPlayerRow(tx, discovery.playerId)
+    if (!locked) {
+      throw new TransferError("PLAYER_NOT_OWNED", `No such player: ${discovery.playerId}`)
+    }
+
+    // 1. Re-read the listing plus its player, under the lock.
     const listing = await tx.transferListing.findUnique({ where: { id: input.listingId }, include: { player: true } })
     if (!listing) {
       throw new TransferError("LISTING_NOT_FOUND", `No such listing: ${input.listingId}`)
+    }
+
+    // 1b. The locked player must still be this listing's player. A listing's
+    // playerId is immutable, so this can only disagree if the row was
+    // replaced entirely between the pre-read and here - a conflict, not a
+    // state to guess at.
+    if (listing.playerId !== discovery.playerId) {
+      throw new TransferError(
+        "TRANSFER_CONFLICT",
+        `Listing ${listing.id} changed player between discovery and transaction`
+      )
     }
 
     // 2. Status must be OPEN to proceed at all.
@@ -108,6 +144,15 @@ export async function purchaseTransferListing(input: PurchaseTransferListingInpu
     if (player.teamId !== listing.sellingTeamId) {
       throw new TransferError("PLAYER_NOT_OWNED", `Player ${player.id} is no longer owned by selling team ${listing.sellingTeamId}`)
     }
+
+    // 6b. Lock BOTH clubs' rows now, in ascending id order, before any team
+    // read or write below (balance check, the two ledger writes, the selling
+    // side's role cleanup). Deterministic order matters: two concurrent
+    // deals between the same two clubs in opposite directions would
+    // otherwise take these two rows in opposite orders and deadlock. Player
+    // is still locked first - Player -> Team is the contract.
+    const teamLockIds = [listing.sellingTeamId, input.buyingTeamId].sort()
+    await tx.$queryRaw`SELECT id FROM "Team" WHERE id IN (${teamLockIds[0]}, ${teamLockIds[1]}) ORDER BY id FOR UPDATE`
 
     // 7. Buying team must exist - never let a missing team surface as a
     // raw Prisma error.

@@ -2,6 +2,7 @@ import { Prisma } from "@/generated/prisma"
 import { TransferError } from "./errors"
 import { runSerializableTransaction } from "./retry"
 import { ensureTransferWindowExists, getTransferWindowDefinition, isWithinTransferWindow } from "./window"
+import { lockPlayerRow } from "@/lib/players/locks"
 
 // The largest value Prisma's `Int` column type can hold (signed 32-bit).
 const PRISMA_INT_MAX = 2_147_483_647
@@ -64,7 +65,17 @@ export async function createTransferListing(input: CreateTransferListingInput): 
 
   try {
     return await runSerializableTransaction(async (tx) => {
-      // 1. Re-read the player inside this transaction.
+      // 0. Player row lock FIRST, before the listing rows below - the same
+      // lock Retirement takes first, so a concurrent retirement can never
+      // interleave between this player read and the listing insert (which
+      // would leave a RETIRED player carrying an OPEN listing). See
+      // lockPlayerRow for the ordering contract.
+      const locked = await lockPlayerRow(tx, input.playerId)
+      if (!locked) {
+        throw new TransferError("PLAYER_NOT_OWNED", `Player ${input.playerId} is not owned by team ${input.teamId}`)
+      }
+
+      // 1. Re-read the player inside this transaction, under the lock.
       const player = await tx.player.findUnique({ where: { id: input.playerId } })
       if (!player || player.teamId !== input.teamId) {
         throw new TransferError("PLAYER_NOT_OWNED", `Player ${input.playerId} is not owned by team ${input.teamId}`)

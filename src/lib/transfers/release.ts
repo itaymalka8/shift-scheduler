@@ -3,6 +3,7 @@ import { InsufficientFundsError } from "@/lib/finance/balance"
 import { TransferError } from "./errors"
 import { runSerializableTransaction } from "./retry"
 import { removePlayerFromSquad } from "./squad-cleanup"
+import { lockPlayerRow } from "@/lib/players/locks"
 
 export interface ReleasePlayerInput {
   /**
@@ -52,8 +53,17 @@ function referenceIdFor(playerId: string, stintNumber: number): string {
  */
 export async function releasePlayer(input: ReleasePlayerInput): Promise<ReleasePlayerResult> {
   return runSerializableTransaction(async (tx) => {
-    // 1. Re-read the player inside this transaction - never trust a value
-    // read before the transaction started.
+    // 0. Player row lock FIRST - before the listing, lineup, team-role and
+    // ownership writes below. Shared with Retirement and the other transfer
+    // paths so none of them can deadlock against each other; see
+    // lockPlayerRow for the full ordering contract.
+    const locked = await lockPlayerRow(tx, input.playerId)
+    if (!locked) {
+      throw new TransferError("PLAYER_NOT_OWNED", `No such player: ${input.playerId}`)
+    }
+
+    // 1. Re-read the player inside this transaction, under the lock - never
+    // trust a value read before the lock was held.
     const player = await tx.player.findUnique({ where: { id: input.playerId } })
     if (!player) {
       throw new TransferError("PLAYER_NOT_OWNED", `No such player: ${input.playerId}`)
