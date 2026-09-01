@@ -2,6 +2,7 @@ import { Prisma } from "@/generated/prisma"
 import { prisma } from "@/lib/prisma"
 import { YouthError } from "./errors"
 import { generateYouthProspects } from "./generate"
+import { closeIntakeAndExpireRemaining, lockYouthIntake } from "./deadline"
 import { INTAKE_WINDOW_HOURS, PROSPECTS_PER_INTAKE } from "./config"
 
 export interface GenerateYouthIntakeInput {
@@ -192,4 +193,66 @@ export async function generateSeasonYouthIntakes(
   }
 
   return summary
+}
+
+export interface FinalizeYouthIntakeInput {
+  /** Resolved server-side from the session - never trust a client-supplied teamId. */
+  teamId: string
+  intakeId: string
+  /** Injectable for tests; defaults to the real current time. */
+  now?: Date
+}
+
+export interface FinalizeYouthIntakeResult {
+  intakeId: string
+  status: "CLOSED"
+  promotedCount: number
+  /** true when the intake was already CLOSED (by 3 promotions, its own deadline, or an earlier Finalize) - this call changed nothing. */
+  alreadyClosed: boolean
+}
+
+/**
+ * A manager's "I'm done choosing" action. Always ends with the intake
+ * CLOSED and reports that state - idempotent whether it's called on an
+ * intake with 0, 1, 2 promotions, one already at 3 (auto-closed by the
+ * promotion engine itself), or one whose deadline already passed.
+ *
+ * Unlike Promotion, Finalize is never rejected by the deadline: closing
+ * early is the whole point of the button, so it closes right now
+ * regardless of whether closesAt has technically passed yet. There is no
+ * auto-promotion here - prospects still PENDING when this runs go straight
+ * to EXPIRED, never promoted on the manager's behalf.
+ */
+export async function finalizeYouthIntake(input: FinalizeYouthIntakeInput): Promise<FinalizeYouthIntakeResult> {
+  const now = input.now ?? new Date()
+
+  const existing = await prisma.youthIntake.findUnique({ where: { id: input.intakeId }, select: { teamId: true } })
+  if (!existing) {
+    throw new YouthError("INTAKE_NOT_FOUND", `No such intake: ${input.intakeId}`)
+  }
+  if (existing.teamId !== input.teamId) {
+    throw new YouthError("INTAKE_NOT_OWNED", `Intake ${input.intakeId} does not belong to team ${input.teamId}`)
+  }
+
+  const team = await prisma.team.findUnique({ where: { id: input.teamId }, select: { isBot: true } })
+  if (!team) {
+    throw new YouthError("TEAM_NOT_FOUND", `No such team: ${input.teamId}`)
+  }
+  if (team.isBot) {
+    throw new YouthError("TEAM_IS_BOT", `Team ${input.teamId} is a bot club`)
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const intake = await lockYouthIntake(tx, input.intakeId)
+    // Re-checked under the lock too - defense in depth, even though
+    // YouthIntake.teamId never changes after creation.
+    if (intake.teamId !== input.teamId) {
+      throw new YouthError("INTAKE_NOT_OWNED", `Intake ${input.intakeId} does not belong to team ${input.teamId}`)
+    }
+    if (intake.status !== "OPEN") {
+      return { intakeId: intake.id, status: "CLOSED" as const, promotedCount: intake.promotedCount, alreadyClosed: true }
+    }
+    const closed = await closeIntakeAndExpireRemaining(tx, intake.id, now)
+    return { intakeId: closed.id, status: "CLOSED" as const, promotedCount: closed.promotedCount, alreadyClosed: false }
+  })
 }

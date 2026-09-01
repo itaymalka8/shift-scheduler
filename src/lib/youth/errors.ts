@@ -7,7 +7,9 @@ export const YOUTH_ERROR_CODES = [
   "TEAM_NOT_FOUND",
   "TEAM_NOT_IN_SEASON",
   "INTAKE_NOT_FOUND",
+  "INTAKE_NOT_OWNED",
   "INTAKE_CLOSED",
+  "INTAKE_EXPIRED",
   "PROSPECT_NOT_FOUND",
   "PROSPECT_NOT_IN_INTAKE",
   "PROSPECT_NOT_PENDING",
@@ -15,6 +17,7 @@ export const YOUTH_ERROR_CODES = [
   "ROSTER_FULL",
   "PROSPECT_INTEGRITY",
   "TEAM_NOT_BOT",
+  "TEAM_IS_BOT",
 ] as const
 
 export type YouthErrorCode = (typeof YOUTH_ERROR_CODES)[number]

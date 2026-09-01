@@ -217,6 +217,20 @@ export default async function DashboardPage() {
   // until then this simply reports "not recently completed" rather than completing it.
   const stadiumUpgradeRecentlyCompleted = !!recentStadiumCompletion
 
+  // Read-only, same discipline as stadiumUpgradeRecentlyCompleted above:
+  // never calls settleIntakeDeadline (that lazy settlement belongs to the
+  // Youth Academy tab's own GET). closesAt is still checked here, not just
+  // status - an intake whose deadline has quietly passed but hasn't been
+  // settled by anything yet must not keep showing this CTA.
+  const youthIntakeRow =
+    team && division
+      ? await prisma.youthIntake.findUnique({
+          where: { teamId_seasonId: { teamId: team.id, seasonId: division.seasonId } },
+          select: { status: true, closesAt: true },
+        })
+      : null
+  const youthIntakeOpen = youthIntakeRow?.status === "OPEN" && youthIntakeRow.closesAt.getTime() > Date.now()
+
   const managerTasks = getManagerTasks(
     {
       requiredLineupSize,
@@ -229,6 +243,7 @@ export default async function DashboardPage() {
       balance: team?.balance ?? 0,
       weeklyWageBill,
       stadiumUpgradeRecentlyCompleted,
+      youthIntakeOpen,
     },
     t
   ).slice(0, 3)

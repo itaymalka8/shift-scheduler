@@ -6,6 +6,7 @@ import {
   Wallet,
   Activity,
   Landmark,
+  GraduationCap,
   type LucideIcon,
 } from "lucide-react"
 import type { TranslationKey } from "@/lib/i18n/translations"
@@ -42,6 +43,8 @@ export interface ManagerTasksInput {
   weeklyWageBill: number
   /** A StadiumConstructionJob finished within a recent window (see the dashboard page for the cutoff). */
   stadiumUpgradeRecentlyCompleted: boolean
+  /** true only while THIS human manager has an OPEN YouthIntake still awaiting a decision - never true for a bot, and gone the moment it's promotedCount===3 or otherwise CLOSED. */
+  youthIntakeOpen: boolean
 }
 
 type Translator = (key: TranslationKey, vars?: Record<string, string>) => string
@@ -57,7 +60,8 @@ const CATEGORY_ORDER = {
   tacticsUndefined: 4,
   lowBudget: 5,
   lowFitness: 6,
-  stadiumUpgradeDone: 7,
+  youthIntakeReady: 7,
+  stadiumUpgradeDone: 8,
 } as const
 
 /**
@@ -153,6 +157,19 @@ export function getManagerTasks(input: ManagerTasksInput, t: Translator): Manage
       href: "/squad?tab=tactics",
       severity: "attention",
       order: CATEGORY_ORDER.lowFitness,
+    })
+  }
+
+  if (input.youthIntakeOpen) {
+    tasks.push({
+      id: "youth-intake-ready",
+      icon: GraduationCap,
+      title: t("dashboard.tasks.youthIntakeReady.title"),
+      description: t("dashboard.tasks.youthIntakeReady.desc"),
+      actionLabel: t("dashboard.tasks.actionYouth"),
+      href: "/squad?tab=youth",
+      severity: "attention",
+      order: CATEGORY_ORDER.youthIntakeReady,
     })
   }
 

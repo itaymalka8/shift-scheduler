@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
-import { Loader2 } from "lucide-react"
+import { Loader2, CheckCircle2, GraduationCap } from "lucide-react"
 import { useT, useLocale } from "@/lib/i18n/locale-context"
-import type { TranslationKey } from "@/lib/i18n/translations"
+import type { TranslationKey, Translator, Locale } from "@/lib/i18n/translations"
 import { getCountryName } from "@/lib/countries"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -61,6 +61,44 @@ import {
   type PlayerAttributes,
 } from "@/lib/players/attributes"
 import { calculatePositionOverall } from "@/lib/players/overall"
+import type { AttributeHighlight } from "@/lib/players/position-weights"
+
+// --- Youth Academy: server-shaped DTOs for GET /api/youth/intake ---------
+
+interface YouthProspectDTO {
+  id: string
+  firstName: string
+  lastName: string
+  age: number
+  nationality: string
+  primaryPosition: string
+  secondaryPositions: string[]
+  preferredFoot: "left" | "right" | "both"
+  overall: number
+  potential: number
+  status: "PENDING" | "PROMOTED" | "EXPIRED"
+  promotedPlayerId: string | null
+  attributes: AttributeHighlight[]
+}
+
+interface YouthIntakeDTO {
+  id: string
+  status: "OPEN" | "CLOSED"
+  openedAt: string
+  closesAt: string
+  closedAt: string | null
+  promotedCount: number
+}
+
+interface YouthAcademyData {
+  season: { id: string; number: number } | null
+  intake: YouthIntakeDTO | null
+  prospects: YouthProspectDTO[]
+  roster: { activeCount: number; maxSize: number; availableSlots: number }
+  serverNow: string
+}
+
+const MAX_YOUTH_PROMOTIONS_PER_INTAKE = 3
 
 interface PlayerDTO {
   id: string
@@ -335,6 +373,66 @@ const CANCEL_ERROR_KEYS: Record<string, TranslationKey> = {
   TRANSFER_CONFLICT: "transfers.cancelErrorConflict",
 }
 
+// --- Youth Academy fetch helpers ------------------------------------------
+
+async function fetchYouthAcademy(): Promise<YouthAcademyData | null> {
+  const res = await fetch("/api/youth/intake")
+  if (!res.ok) return null
+  return (await res.json()) as YouthAcademyData
+}
+
+interface PromoteProspectOutcome {
+  ok: boolean
+  errorCode?: string
+  data?: {
+    promotedPlayer: { id: string; name: string; age: number; position: string; overall: number; potential: number; shirtNumber: number }
+    intake: { promotedCount: number; status: "OPEN" | "CLOSED" }
+    roster: { activeCount: number; availableSlots: number }
+  }
+}
+
+async function promoteProspectRequest(prospectId: string): Promise<PromoteProspectOutcome> {
+  const res = await fetch(`/api/youth/prospects/${prospectId}/promote`, { method: "POST" })
+  const body = await res.json().catch(() => null)
+  if (!res.ok) {
+    return { ok: false, errorCode: typeof body?.error === "string" ? body.error : "INTERNAL_ERROR" }
+  }
+  return { ok: true, data: body }
+}
+
+interface FinalizeIntakeOutcome {
+  ok: boolean
+  errorCode?: string
+}
+
+async function finalizeIntakeRequest(intakeId: string): Promise<FinalizeIntakeOutcome> {
+  const res = await fetch(`/api/youth/intakes/${intakeId}/finalize`, { method: "POST" })
+  const body = await res.json().catch(() => null)
+  if (!res.ok) {
+    return { ok: false, errorCode: typeof body?.error === "string" ? body.error : "INTERNAL_ERROR" }
+  }
+  return { ok: true }
+}
+
+const YOUTH_PROMOTE_ERROR_KEYS: Record<string, TranslationKey> = {
+  INTAKE_CLOSED: "youth.promoteErrorIntakeClosed",
+  INTAKE_EXPIRED: "youth.promoteErrorIntakeExpired",
+  PROSPECT_NOT_PENDING: "youth.promoteErrorAlreadyPromoted",
+  PROMOTION_LIMIT_REACHED: "youth.promoteErrorLimitReached",
+  ROSTER_FULL: "youth.promoteErrorRosterFull",
+  PROSPECT_NOT_FOUND: "youth.promoteErrorNotFound",
+}
+
+/** mm:ss under an hour, hh:mm:ss once there's an hour or more left - never negative. */
+function formatCountdown(msRemaining: number): string {
+  const totalSeconds = Math.max(0, Math.floor(msRemaining / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return hours > 0 ? `${pad(hours)}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`
+}
+
 export function SquadTacticsApp({
   players: initialPlayers,
   initialAssignments,
@@ -409,11 +507,12 @@ export function SquadTacticsApp({
   // instance would never learn about it (a prop change alone doesn't reset
   // useState after the first render). It's also what makes a refresh and a
   // direct link to /squad?tab=tactics land correctly.
-  const tab: "squad" | "tactics" = searchParams.get("tab") === "tactics" ? "tactics" : "squad"
+  const tab: "squad" | "tactics" | "youth" =
+    searchParams.get("tab") === "tactics" ? "tactics" : searchParams.get("tab") === "youth" ? "youth" : "squad"
 
-  const setTab = (next: "squad" | "tactics") => {
+  const setTab = (next: "squad" | "tactics" | "youth") => {
     const params = new URLSearchParams(searchParams.toString())
-    if (next === "tactics") params.set("tab", "tactics")
+    if (next !== "squad") params.set("tab", next)
     else params.delete("tab")
     const query = params.toString()
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false })
@@ -476,6 +575,129 @@ export function SquadTacticsApp({
     setListingFeedback({ type, message })
     if (listingFeedbackTimeout.current) clearTimeout(listingFeedbackTimeout.current)
     listingFeedbackTimeout.current = setTimeout(() => setListingFeedback(null), 5000)
+  }
+
+  // --- Youth Academy tab state --------------------------------------------
+  // Fetched on demand when the tab first becomes active (same lazy-fetch
+  // pattern as the Tactics tab's assessment, see refreshAssessment below) -
+  // never threaded through page.tsx's initial server props, since this data
+  // is time-sensitive (a live deadline countdown, a roster that can change
+  // from a concurrent transfer) and reading it fresh on tab-open is simpler
+  // than trying to keep a server-rendered snapshot correct.
+  const [youthState, setYouthState] = useState<"idle" | "loading" | "loaded" | "error">("idle")
+  const [youthData, setYouthData] = useState<YouthAcademyData | null>(null)
+  // serverTimeOffsetMs = server's clock minus this browser's clock at fetch
+  // time - the countdown below is always `closesAt - (Date.now() +
+  // serverTimeOffsetMs)`, never a bare client `Date.now()` comparison, so a
+  // wrong local clock can't show a manager extra (or too little) time.
+  const [serverTimeOffsetMs, setServerTimeOffsetMs] = useState(0)
+  const [nowTick, setNowTick] = useState(() => Date.now())
+  const [promotingProspectId, setPromotingProspectId] = useState<string | null>(null)
+  const [finalizeDialogOpen, setFinalizeDialogOpen] = useState(false)
+  const [finalizing, setFinalizing] = useState(false)
+  // Guards the deadline-reached auto-refresh below to firing exactly once
+  // per loaded intake, not on every one-second tick after zero.
+  const deadlineRefreshedRef = useRef(false)
+
+  async function refreshYouthAcademy() {
+    setYouthState("loading")
+    const data = await fetchYouthAcademy()
+    if (!data) {
+      setYouthState("error")
+      return
+    }
+    deadlineRefreshedRef.current = false
+    setServerTimeOffsetMs(new Date(data.serverNow).getTime() - Date.now())
+    setYouthData(data)
+    setYouthState("loaded")
+  }
+
+  useEffect(() => {
+    if (tab === "youth" && youthState === "idle") refreshYouthAcademy()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab])
+
+  // Ticks once a second only while the tab is actually open - never a
+  // background timer running for a tab the manager isn't looking at.
+  useEffect(() => {
+    if (tab !== "youth") return
+    const interval = setInterval(() => setNowTick(Date.now()), 1000)
+    return () => clearInterval(interval)
+  }, [tab])
+
+  const estimatedServerNow = nowTick + serverTimeOffsetMs
+  const youthMsRemaining = youthData?.intake ? new Date(youthData.intake.closesAt).getTime() - estimatedServerNow : null
+
+  // Server is authoritative, never the client-side countdown alone: once the
+  // ticking clock says the deadline has passed on a still-OPEN intake, this
+  // re-fetches GET /api/youth/intake, whose own lazy settlement (see
+  // handleGetYouthIntake) is what actually flips it to CLOSED. Until that
+  // response comes back the UI still shows 00:00:00 briefly - it never
+  // pretends the intake is closed based on the countdown alone.
+  useEffect(() => {
+    if (!youthData?.intake || youthData.intake.status !== "OPEN") return
+    if (youthMsRemaining !== null && youthMsRemaining <= 0 && !deadlineRefreshedRef.current) {
+      deadlineRefreshedRef.current = true
+      refreshYouthAcademy()
+    }
+  }, [youthMsRemaining, youthData?.intake])
+
+  async function handlePromoteProspect(prospectId: string) {
+    if (promotingProspectId) return
+    setPromotingProspectId(prospectId)
+    try {
+      const outcome = await promoteProspectRequest(prospectId)
+      if (outcome.ok && outcome.data) {
+        const { promotedPlayer, intake: intakeUpdate, roster } = outcome.data
+        setYouthData((prev) =>
+          prev
+            ? {
+                ...prev,
+                intake: prev.intake ? { ...prev.intake, promotedCount: intakeUpdate.promotedCount, status: intakeUpdate.status } : prev.intake,
+                prospects: prev.prospects.map((p) =>
+                  p.id === prospectId ? { ...p, status: "PROMOTED", promotedPlayerId: promotedPlayer.id } : p
+                ),
+                roster: { ...prev.roster, activeCount: roster.activeCount, availableSlots: roster.availableSlots },
+              }
+            : prev
+        )
+        showListingFeedback("success", t("youth.promoteSuccess"))
+      } else {
+        const key = YOUTH_PROMOTE_ERROR_KEYS[outcome.errorCode ?? ""] ?? "error.UNKNOWN_ERROR"
+        showListingFeedback("error", t(key))
+        // These all mean this client's view of the intake is stale (closed,
+        // expired, or the prospect already resolved by another tab/request)
+        // - resync the whole tab rather than leave five cards showing a
+        // state the server no longer agrees with.
+        if (
+          outcome.errorCode === "INTAKE_CLOSED" ||
+          outcome.errorCode === "INTAKE_EXPIRED" ||
+          outcome.errorCode === "PROMOTION_LIMIT_REACHED" ||
+          outcome.errorCode === "PROSPECT_NOT_PENDING"
+        ) {
+          refreshYouthAcademy()
+        }
+      }
+    } finally {
+      setPromotingProspectId(null)
+    }
+  }
+
+  async function handleFinalizeIntake() {
+    if (!youthData?.intake || finalizing) return
+    setFinalizing(true)
+    try {
+      const outcome = await finalizeIntakeRequest(youthData.intake.id)
+      setFinalizeDialogOpen(false)
+      if (outcome.ok) {
+        showListingFeedback("success", t("youth.finalizeSuccess"))
+        await refreshYouthAcademy()
+      } else {
+        showListingFeedback("error", t("error.UNKNOWN_ERROR"))
+      }
+    } finally {
+      setFinalizing(false)
+    }
   }
 
   const sellDialogPlayer = sellDialogPlayerId ? (byId.get(sellDialogPlayerId) ?? null) : null
@@ -1027,6 +1249,16 @@ export function SquadTacticsApp({
         >
           {t("squad.tabTactics")}
         </button>
+        <button
+          type="button"
+          onClick={() => setTab("youth")}
+          className={cn(
+            "px-4 py-2 text-sm font-medium border-b-2 -mb-px",
+            tab === "youth" ? "border-primary text-primary" : "border-transparent text-muted-foreground"
+          )}
+        >
+          {t("squad.tabYouth")}
+        </button>
       </div>
 
       {tab === "squad" ? (
@@ -1060,7 +1292,7 @@ export function SquadTacticsApp({
             ))}
           </ul>
         </div>
-      ) : (
+      ) : tab === "tactics" ? (
         // Three grid items in this exact order (not two) so mobile - which
         // simply stacks grid children top to bottom with no explicit
         // template-columns below lg - reads as Pitch+bench, then the
@@ -1329,6 +1561,22 @@ export function SquadTacticsApp({
             </Button>
           </div>
         </div>
+      ) : (
+        <YouthAcademyPanel
+          state={youthState}
+          data={youthData}
+          msRemaining={youthMsRemaining}
+          promotingProspectId={promotingProspectId}
+          finalizeDialogOpen={finalizeDialogOpen}
+          finalizing={finalizing}
+          onPromote={handlePromoteProspect}
+          onOpenFinalize={() => setFinalizeDialogOpen(true)}
+          onCloseFinalize={() => !finalizing && setFinalizeDialogOpen(false)}
+          onConfirmFinalize={handleFinalizeIntake}
+          onRetry={refreshYouthAcademy}
+          t={t}
+          locale={locale}
+        />
       )}
 
       {/* The dragged card itself, floating at the pointer - a fixed-position
@@ -1770,6 +2018,318 @@ function Row({ label, value }: { label: string; value: string }) {
     <div className="flex items-center justify-between border-b py-1 last:border-0">
       <span className="text-muted-foreground">{label}</span>
       <span className="font-medium">{value}</span>
+    </div>
+  )
+}
+
+// --- Youth Academy tab ----------------------------------------------------
+
+/** One stat chip in the Youth hero - the same "big bold number, small muted label" pattern as the squad summary stats grid above (teamTotalQuality etc.), never a new typography scale. */
+/** One stat chip in the Youth hero - a single bold line of already-composed text (the translation string carries its own numbers), never a split number+label pair that would need reconstructing from a templated sentence. */
+function YouthStatChip({ text, tone }: { text: string; tone?: "default" | "warning" }) {
+  return (
+    <div
+      className={cn(
+        "rounded-xl border bg-card/70 px-4 py-2 text-sm font-semibold backdrop-blur-sm",
+        tone === "warning" ? "border-destructive/40 bg-destructive/5 text-destructive" : "text-foreground"
+      )}
+    >
+      {text}
+    </div>
+  )
+}
+
+function YouthHero({
+  seasonNumber,
+  status,
+  promotedCount,
+  activeRoster,
+  maxRoster,
+  msRemaining,
+  t,
+}: {
+  seasonNumber: number | null
+  status: "OPEN" | "CLOSED"
+  promotedCount: number
+  activeRoster: number
+  maxRoster: number
+  msRemaining: number | null
+  t: Translator
+}) {
+  return (
+    <div className="relative overflow-hidden rounded-2xl border border-primary/30 bg-gradient-to-br from-primary/15 via-primary/5 to-transparent p-5 shadow-sm sm:p-6">
+      <div aria-hidden className="pointer-events-none absolute -end-16 -top-16 size-48 rounded-full bg-primary/20 blur-3xl" />
+      <div className="relative space-y-4">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-primary">
+            {status === "CLOSED" ? t("youth.closedTitle") : t("youth.heroKicker")}
+          </p>
+          <h2 className="mt-1 flex items-center gap-2 text-2xl font-bold">
+            <GraduationCap className="size-6 text-primary" aria-hidden />
+            {t("youth.heroTitle")}
+          </h2>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            {t("youth.subtitle")}
+            {seasonNumber != null ? ` · ${t("youth.seasonLabel", { number: String(seasonNumber) })}` : null}
+          </p>
+        </div>
+
+        <p className="text-sm text-muted-foreground">
+          {status === "CLOSED" ? t("youth.closedSummary", { count: String(promotedCount) }) : t("youth.heroBody")}
+        </p>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <YouthStatChip
+            text={t("youth.promotedCounter", { count: String(promotedCount), max: String(MAX_YOUTH_PROMOTIONS_PER_INTAKE) })}
+          />
+          <YouthStatChip text={t("youth.rosterLabel", { active: String(activeRoster), max: String(maxRoster) })} />
+          {status === "OPEN" && msRemaining !== null && (
+            <YouthStatChip
+              text={msRemaining > 0 ? t("youth.deadlineLabel", { time: formatCountdown(msRemaining) }) : t("youth.deadlineExpiredLabel")}
+              tone={msRemaining <= 3600_000 ? "warning" : "default"}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function YouthProspectCard({
+  prospect,
+  disabled,
+  disableReason,
+  busy,
+  onPromote,
+  t,
+  locale,
+}: {
+  prospect: YouthProspectDTO
+  disabled: boolean
+  disableReason: string | null
+  busy: boolean
+  onPromote: () => void
+  t: Translator
+  locale: Locale
+}) {
+  const tier = getPlayerTier(prospect.overall)
+  const countryName = getCountryName(prospect.nationality, locale)
+  const isPromoted = prospect.status === "PROMOTED"
+  const isExpired = prospect.status === "EXPIRED"
+  const isPending = prospect.status === "PENDING"
+
+  return (
+    <div
+      className={cn(
+        "flex flex-col gap-3 rounded-2xl border p-4 transition-shadow",
+        TIER_CARD_CLASSES[tier.cardStyle],
+        isExpired && "opacity-60 saturate-50",
+        isPromoted && "ring-2 ring-primary/50"
+      )}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-base font-semibold">
+            {prospect.firstName} {prospect.lastName}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {t(positionLabelKey(prospect.primaryPosition))} · {t("youth.colAge")} {prospect.age}
+          </p>
+        </div>
+        <span
+          className={cn(
+            "shrink-0 rounded-lg px-2.5 py-1 text-2xl font-extrabold leading-none",
+            TIER_BADGE_CLASSES[tier.cardStyle]
+          )}
+        >
+          {prospect.overall}
+        </span>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+        <span>
+          {t("youth.colPotential")}: <span className="font-semibold text-foreground">{prospect.potential}</span>
+        </span>
+        <span aria-hidden>·</span>
+        <span>{countryName ?? prospect.nationality}</span>
+        <span aria-hidden>·</span>
+        <span>{t(`squad.foot.${prospect.preferredFoot}` as TranslationKey)}</span>
+      </div>
+
+      {prospect.attributes.length > 0 && (
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 border-t pt-3 text-xs sm:grid-cols-4">
+          {prospect.attributes.map((attr) => (
+            <div key={attr.key} className="flex items-center justify-between gap-2 sm:flex-col sm:items-start sm:gap-0.5">
+              <span className="text-muted-foreground">{t(attributeLabelKey(attr.key) as TranslationKey)}</span>
+              <span className="font-semibold">{attr.value}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-auto pt-1">
+        {isPromoted ? (
+          <div className="flex items-center justify-center gap-1.5 rounded-lg bg-primary/10 py-2 text-sm font-medium text-primary motion-safe:animate-in motion-safe:fade-in motion-safe:zoom-in-95">
+            <CheckCircle2 className="size-4" aria-hidden />
+            {t("youth.promotedBadge")}
+          </div>
+        ) : isExpired ? (
+          <div className="rounded-lg bg-muted py-2 text-center text-sm text-muted-foreground">{t("youth.expiredBadge")}</div>
+        ) : (
+          <>
+            <Button className="w-full" disabled={disabled || busy} onClick={onPromote}>
+              {busy && <Loader2 className="me-2 size-4 animate-spin" aria-hidden />}
+              {busy ? t("youth.promotingAction") : t("youth.promoteAction")}
+            </Button>
+            {isPending && disableReason && !busy && (
+              <p className="mt-1.5 text-center text-[11px] text-muted-foreground">{disableReason}</p>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The Youth Academy tab's whole content area - loading/error/empty/open/
+ * closed states, the 5 prospect cards, and the Finalize confirmation
+ * dialog. A separate component (not inlined in SquadTacticsApp's return)
+ * purely to keep that already-2600-line function from growing further;
+ * every piece of state and every mutation still lives in SquadTacticsApp
+ * and is only ever passed down as props/callbacks.
+ */
+function YouthAcademyPanel({
+  state,
+  data,
+  msRemaining,
+  promotingProspectId,
+  finalizeDialogOpen,
+  finalizing,
+  onPromote,
+  onOpenFinalize,
+  onCloseFinalize,
+  onConfirmFinalize,
+  onRetry,
+  t,
+  locale,
+}: {
+  state: "idle" | "loading" | "loaded" | "error"
+  data: YouthAcademyData | null
+  msRemaining: number | null
+  promotingProspectId: string | null
+  finalizeDialogOpen: boolean
+  finalizing: boolean
+  onPromote: (prospectId: string) => void
+  onOpenFinalize: () => void
+  onCloseFinalize: () => void
+  onConfirmFinalize: () => void
+  onRetry: () => void
+  t: Translator
+  locale: Locale
+}) {
+  if (state === "loading" && !data) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" aria-hidden />
+      </div>
+    )
+  }
+
+  if (state === "error") {
+    return (
+      <div className="flex flex-col items-center gap-3 rounded-2xl border border-destructive/30 bg-destructive/5 p-10 text-center">
+        <p className="text-sm text-destructive">{t("youth.loadError")}</p>
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          {t("common.retry")}
+        </Button>
+      </div>
+    )
+  }
+
+  if (!data || !data.intake) {
+    return (
+      <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed p-10 text-center">
+        <GraduationCap className="size-10 text-muted-foreground" aria-hidden />
+        <p className="text-sm font-medium">{t("youth.emptyTitle")}</p>
+        <p className="text-xs text-muted-foreground">{t("youth.emptyBody")}</p>
+      </div>
+    )
+  }
+
+  const { intake, prospects, roster, season } = data
+  const isOpen = intake.status === "OPEN"
+  const rosterFull = roster.availableSlots <= 0
+  const limitReached = intake.promotedCount >= MAX_YOUTH_PROMOTIONS_PER_INTAKE
+  const anyPromotionBusy = promotingProspectId !== null
+
+  return (
+    <div className="space-y-5">
+      <YouthHero
+        seasonNumber={season?.number ?? null}
+        status={intake.status}
+        promotedCount={intake.promotedCount}
+        activeRoster={roster.activeCount}
+        maxRoster={roster.maxSize}
+        msRemaining={msRemaining}
+        t={t}
+      />
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {prospects.map((prospect) => {
+          // The only disabled-with-explanation case that can actually reach
+          // a still-PENDING card: the roster has no free slot. Reaching the
+          // 3-promotion limit or the intake closing both auto-expire every
+          // remaining PENDING prospect server-side (see the promotion
+          // engine), so a PENDING card in either of those states shouldn't
+          // exist by the time this renders.
+          const disableReason = rosterFull
+            ? t("youth.rosterFullReason", { active: String(roster.activeCount), max: String(roster.maxSize) })
+            : null
+          return (
+            <YouthProspectCard
+              key={prospect.id}
+              prospect={prospect}
+              disabled={!isOpen || rosterFull || limitReached || anyPromotionBusy}
+              disableReason={disableReason}
+              busy={promotingProspectId === prospect.id}
+              onPromote={() => onPromote(prospect.id)}
+              t={t}
+              locale={locale}
+            />
+          )
+        })}
+      </div>
+
+      {isOpen && (
+        <div className="flex justify-center pt-1">
+          <Button size="lg" className="w-full sm:w-auto sm:min-w-64" onClick={onOpenFinalize} disabled={anyPromotionBusy}>
+            {t("youth.finalizeButton")}
+          </Button>
+        </div>
+      )}
+
+      <Dialog open={finalizeDialogOpen} onOpenChange={(open) => !open && onCloseFinalize()}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("youth.finalizeConfirmTitle")}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {intake.promotedCount > 0
+              ? t("youth.finalizeConfirmBodyWithChoices", { count: String(intake.promotedCount) })
+              : t("youth.finalizeConfirmBodyNone")}
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={onCloseFinalize} disabled={finalizing}>
+              {t("common.cancel")}
+            </Button>
+            <Button onClick={onConfirmFinalize} disabled={finalizing}>
+              {finalizing && <Loader2 className="me-2 size-4 animate-spin" aria-hidden />}
+              {t("youth.finalizeConfirmSubmit")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

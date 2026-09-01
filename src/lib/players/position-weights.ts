@@ -1,5 +1,5 @@
 import type { PlayerPosition } from "./positions"
-import type { AttributeKey } from "./attributes"
+import type { AttributeKey, PlayerAttributes } from "./attributes"
 
 /**
  * How much each attribute counts toward Overall, per granular position -
@@ -193,4 +193,31 @@ export const POSITION_ATTRIBUTE_WEIGHTS: Record<PlayerPosition, Partial<Record<A
     leadership: 1,
     teamwork: 1,
   },
+}
+
+export interface AttributeHighlight {
+  key: AttributeKey
+  value: number
+}
+
+/**
+ * The `count` attributes that matter most for a position, by weight - a
+ * derivation from POSITION_ATTRIBUTE_WEIGHTS, never a second mapping.
+ * Used wherever a compact "headline attributes" view is needed (a youth
+ * prospect card showing 3-4 stats instead of all 47). Skips any attribute
+ * that's null for this player - a goalkeeper's outfield-only weights, or
+ * vice versa - rather than surfacing a placeholder for a field that
+ * genuinely doesn't apply to their role.
+ */
+export function topAttributesForPosition(
+  position: PlayerPosition,
+  attributes: PlayerAttributes,
+  count: number
+): AttributeHighlight[] {
+  const weights = POSITION_ATTRIBUTE_WEIGHTS[position]
+  return (Object.keys(weights) as AttributeKey[])
+    .filter((key): key is AttributeKey => typeof attributes[key] === "number")
+    .sort((a, b) => (weights[b] ?? 0) - (weights[a] ?? 0))
+    .slice(0, count)
+    .map((key) => ({ key, value: attributes[key] as number }))
 }

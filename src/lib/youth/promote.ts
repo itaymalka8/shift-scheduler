@@ -7,6 +7,7 @@ import { extractPlayerAttributes } from "@/lib/players/attributes"
 import { getAvailableRosterSlots, lockTeamRoster, pickAvailableShirtNumber } from "@/lib/players/roster"
 import { YouthError } from "./errors"
 import { MAX_PROMOTIONS_PER_INTAKE } from "./config"
+import { lockYouthIntake, settleIntakeDeadline } from "./deadline"
 
 export interface PromoteYouthProspectInput {
   intakeId: string
@@ -45,15 +46,11 @@ export async function runPromoteYouthProspect(
   tx: Prisma.TransactionClient,
   input: PromoteYouthProspectInput
 ): Promise<PromoteYouthProspectResult> {
-  // 1. Intake row lock, first - this is what guards promotedCount.
-  const intakeLock = await tx.$queryRaw<{ id: string }[]>`
-    SELECT id FROM "YouthIntake" WHERE id = ${input.intakeId} FOR UPDATE
-  `
-  if (intakeLock.length === 0) {
-    throw new YouthError("INTAKE_NOT_FOUND", `No such intake: ${input.intakeId}`)
-  }
-
-  const intake = await tx.youthIntake.findUniqueOrThrow({ where: { id: input.intakeId } })
+  // 1. Intake row lock, first - this is what guards promotedCount. Shared
+  // with the deadline-settlement and finalize paths (deadline.ts), so
+  // whichever caller gets there first is the one whose view of the intake
+  // is authoritative for the rest of this transaction.
+  const intake = await lockYouthIntake(tx, input.intakeId)
   if (intake.status !== "OPEN") {
     throw new YouthError("INTAKE_CLOSED", `Intake ${intake.id} is ${intake.status}`)
   }
@@ -253,4 +250,80 @@ export async function processBotYouthIntake(intakeId: string): Promise<ProcessBo
   })
 
   return { intakeId: intake.id, teamId: intake.teamId, promoted, expired, alreadyClosed: false }
+}
+
+export interface PromoteAsManagerInput {
+  /** Resolved server-side from the session - never trust a client-supplied teamId. */
+  teamId: string
+  prospectId: string
+  /** Injectable for tests; defaults to the real current time. */
+  now?: Date
+}
+
+/**
+ * The human-manager entry point to the SAME promotion engine bots use
+ * (runPromoteYouthProspect above) - there is no second engine. Resolves
+ * ownership and the deadline before ever touching the shared core:
+ *
+ *   1. Resolve the prospect and its intake, and confirm the intake belongs
+ *      to the calling manager's own team - never someone else's.
+ *   2. Confirm the calling team is not a bot (defense in depth: a bot club
+ *      has no User row, so it can never actually reach this function
+ *      through a real session - but a direct caller gets a clear domain
+ *      error instead of relying on that being true).
+ *   3. Lock the intake and settle its deadline, in the SAME transaction the
+ *      promotion itself runs in - a promotion cannot be squeezed in between
+ *      "deadline has passed" and "intake marked CLOSED" because both
+ *      happen under one held row lock. A deadline that has just passed
+ *      rejects the promotion with INTAKE_EXPIRED, distinct from
+ *      INTAKE_CLOSED (which runPromoteYouthProspect itself raises when the
+ *      intake was already closed for some other reason - three promotions
+ *      already made, or a prior Finalize).
+ */
+export async function promoteYouthProspectAsManager(input: PromoteAsManagerInput): Promise<PromoteYouthProspectResult> {
+  const now = input.now ?? new Date()
+
+  const prospect = await prisma.youthProspect.findUnique({
+    where: { id: input.prospectId },
+    select: { id: true, youthIntakeId: true, youthIntake: { select: { teamId: true } } },
+  })
+  if (!prospect) {
+    throw new YouthError("PROSPECT_NOT_FOUND", `No such prospect: ${input.prospectId}`)
+  }
+  if (prospect.youthIntake.teamId !== input.teamId) {
+    throw new YouthError("INTAKE_NOT_OWNED", `Prospect ${input.prospectId} does not belong to team ${input.teamId}`)
+  }
+
+  const team = await prisma.team.findUnique({ where: { id: input.teamId }, select: { isBot: true } })
+  if (!team) {
+    throw new YouthError("TEAM_NOT_FOUND", `No such team: ${input.teamId}`)
+  }
+  if (team.isBot) {
+    throw new YouthError("TEAM_IS_BOT", `Team ${input.teamId} is a bot club - use processBotYouthIntake`)
+  }
+
+  // Prisma's interactive $transaction rolls back EVERY write the callback
+  // made the moment it throws - including a deadline settlement's own
+  // close+expire, which must persist even when the reason for reporting
+  // failure IS that settlement. So this callback never throws: it returns
+  // a plain "expired" sentinel instead, and only after that transaction
+  // has actually committed does the wrapper below convert it into the
+  // INTAKE_EXPIRED the caller sees. The settlement and the promotion
+  // decision still happen in one transaction - only the error is deferred
+  // past commit, closing the TOCTOU gap two separate transactions would
+  // reopen between "settle" and "promote".
+  const outcome = await prisma.$transaction(async (tx) => {
+    const intake = await lockYouthIntake(tx, prospect.youthIntakeId)
+    const settlement = await settleIntakeDeadline(tx, intake, now)
+    if (settlement.justExpired) {
+      return { expired: true as const }
+    }
+    const result = await runPromoteYouthProspect(tx, { intakeId: intake.id, prospectId: input.prospectId })
+    return { expired: false as const, result }
+  })
+
+  if (outcome.expired) {
+    throw new YouthError("INTAKE_EXPIRED", `Intake ${prospect.youthIntakeId} deadline has passed`)
+  }
+  return outcome.result
 }
