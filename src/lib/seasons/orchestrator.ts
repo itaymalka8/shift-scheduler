@@ -319,21 +319,58 @@ export async function runSeasonEndOrchestrator(
   }
 }
 
+export interface SeasonLifecycleFailure {
+  seasonId: string
+  error: unknown
+}
+
+export interface SeasonLifecycleRunReport {
+  /** How many seasons the discovery query found - not how many advanced. */
+  seasonsChecked: number
+  /** Stage advances that actually happened this run, across every season. */
+  transitionsPerformed: number
+  summaries: OrchestratorRunSummary[]
+  failures: SeasonLifecycleFailure[]
+}
+
 /**
  * Entry point for a scheduled runner: every country's currently-active
- * season, plus any season already mid-offseason. A season whose handover
- * completed is not picked up again - it is no longer active, and its
- * successor is.
+ * season, plus any season already mid-offseason. Discovery is deliberately
+ * keyed on isActive rather than status === "ACTIVE": a season that has
+ * already entered its offseason is still the live season for its country and
+ * still needs driving. COMPLETED seasons are excluded outright - a finished
+ * season is history, and history is never re-run.
+ *
+ * Nothing here is hardcoded to one country: seasons are handled as a list, so
+ * a second league appearing later needs no change to this function.
+ *
+ * One season's failure never denies the others their run. Each season is
+ * caught on its own and recorded in `failures`; the caller decides what a
+ * non-empty `failures` means (the scheduled runner turns it into a non-zero
+ * exit code). Nothing is swallowed - every error is returned intact.
  */
-export async function runSeasonEndOrchestratorForAllSeasons(now: Date = new Date()): Promise<OrchestratorRunSummary[]> {
+export async function runSeasonEndOrchestratorForAllSeasons(now: Date = new Date()): Promise<SeasonLifecycleRunReport> {
   const seasons = await prisma.season.findMany({
-    where: { OR: [{ isActive: true }, { status: "OFFSEASON" }] },
+    where: {
+      status: { not: "COMPLETED" },
+      OR: [{ isActive: true }, { status: "OFFSEASON" }],
+    },
     select: { id: true },
     orderBy: { id: "asc" },
   })
+
   const summaries: OrchestratorRunSummary[] = []
+  const failures: SeasonLifecycleFailure[] = []
   for (const season of seasons) {
-    summaries.push(await runSeasonEndOrchestrator(season.id, now))
+    try {
+      summaries.push(await runSeasonEndOrchestrator(season.id, now))
+    } catch (error) {
+      failures.push({ seasonId: season.id, error })
+    }
   }
-  return summaries
+  const transitionsPerformed = summaries.reduce(
+    (total, summary) => total + summary.steps.filter((step) => step.advanced).length,
+    0
+  )
+  return { seasonsChecked: seasons.length, transitionsPerformed, summaries, failures }
 }

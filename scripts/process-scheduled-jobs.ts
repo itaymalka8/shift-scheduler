@@ -1,29 +1,51 @@
 /**
  * Central scheduled-job entrypoint: runs every periodic background task the
- * app needs today - due-fixture simulation and transfer-listing expiration -
- * back-to-back in one process. This is the one job a scheduler (Render Cron
- * or otherwise) should call going forward; the two single-purpose scripts it
- * wraps (process-due-fixtures.ts, expire-transfer-listings.ts) are left
+ * app needs today - due-fixture simulation, transfer-listing expiration, and
+ * season-lifecycle orchestration - back-to-back in one process. This is the
+ * one job a scheduler (Render Cron or otherwise) should call going forward;
+ * the three single-purpose scripts it wraps (process-due-fixtures.ts,
+ * expire-transfer-listings.ts, process-season-lifecycle.ts) are left
  * completely unchanged and still work on their own for local debugging.
- * Neither task's own logic lives here - this file only calls the existing
- * services (processDueFixtures, expireDueTransferListings), which stay the
- * single source of truth for what each task actually does.
+ * No task's own logic lives here - this file only calls the existing
+ * services (processDueFixtures, expireDueTransferListings,
+ * runSeasonEndOrchestratorForAllSeasons), which stay the single source of
+ * truth for what each task actually does.
  *
- * The two tasks are isolated from each other: a failure in one is logged
- * clearly and does not stop the other from getting its own chance to run,
- * so a problem with transfer expiration never silently prevents fixtures
- * from being played, and vice versa. The process still exits non-zero if
- * either task failed, so a real scheduler sees the run as failed.
+ * ORDER MATTERS in exactly one place: season lifecycle runs AFTER fixture
+ * processing, because fixture processing is what plays the last match of a
+ * season - running the orchestrator first would always see that match as
+ * still unplayed and defer the whole offseason by a full cron tick. Transfer
+ * expiration sits between them only because it is the cheapest and touches
+ * neither: it reads and writes TransferListing rows alone, so it is
+ * genuinely order-independent with respect to the other two.
+ *
+ * The tasks are isolated from each other: a failure in one is logged clearly
+ * and does not stop the others from getting their own chance to run, so a
+ * problem with transfer expiration never silently prevents fixtures from
+ * being played, and a failing season transition never rolls back matches
+ * that were already simulated. There is deliberately no wrapping
+ * transaction - each domain commits its own work as it goes, and a later
+ * failure leaves earlier committed work standing. The process still exits
+ * non-zero if any task failed, so a real scheduler sees the run as failed.
  *
  * Run with: npx tsx scripts/process-scheduled-jobs.ts
  */
 import { processDueFixtures } from "../src/lib/match/simulate"
 import { expireDueTransferListings } from "../src/lib/transfers/expiration"
+import { runSeasonEndOrchestratorForAllSeasons } from "../src/lib/seasons/orchestrator"
 import { prisma } from "../src/lib/prisma"
 
 async function main() {
-  let failed = false
+  const startedAt = Date.now()
+  const failedSubsystems: string[] = []
 
+  let fixturesObserved: number | null = null
+  let listingsExpired: number | null = null
+  let seasonsChecked: number | null = null
+  let seasonTransitions: number | null = null
+  let seasonErrors = 0
+
+  // --- A. Fixture processing ----------------------------------------------
   try {
     // processDueFixtures's own returned processedCount is how many fixtures
     // were found due at the moment this call started - not how many this
@@ -35,21 +57,68 @@ async function main() {
     // once) - only the wording below is adjusted, to never claim this
     // Runner itself simulated a fixture it may not actually have.
     const { processedCount } = await processDueFixtures()
+    fixturesObserved = processedCount
     console.info(`Fixtures due observed: ${processedCount}`)
   } catch (error) {
-    failed = true
+    failedSubsystems.push("fixtures")
     console.error("Fixture processing failed:", error)
   }
 
+  // --- B. Transfer scheduled jobs -----------------------------------------
   try {
     const { expiredCount } = await expireDueTransferListings()
+    listingsExpired = expiredCount
     console.info(`Transfer listings expired: ${expiredCount}`)
   } catch (error) {
-    failed = true
+    failedSubsystems.push("transfers")
     console.error("Transfer listing expiration failed:", error)
   }
 
-  if (failed) {
+  // --- C. Season lifecycle orchestration ----------------------------------
+  try {
+    const report = await runSeasonEndOrchestratorForAllSeasons()
+    seasonsChecked = report.seasonsChecked
+    seasonTransitions = report.transitionsPerformed
+    seasonErrors = report.failures.length
+
+    for (const summary of report.summaries) {
+      const moves = summary.steps.filter((step) => step.advanced)
+      if (moves.length === 0) continue
+      const path = [
+        `${moves[0].fromStatus}/${moves[0].fromStage}`,
+        ...moves.map((step) => `${step.toStatus}/${step.toStage}`),
+      ].join(" -> ")
+      console.info(`Season ${summary.seasonId}: ${path}`)
+    }
+    // One season failing never stops the others (the orchestrator already
+    // isolated them) - but it still fails the run.
+    for (const failure of report.failures) {
+      console.error(`Season lifecycle failed for season ${failure.seasonId}:`, failure.error)
+    }
+    if (report.failures.length > 0) {
+      failedSubsystems.push("seasons")
+    }
+  } catch (error) {
+    failedSubsystems.push("seasons")
+    console.error("Season lifecycle orchestration failed:", error)
+  }
+
+  // --- Summary -------------------------------------------------------------
+  const na = (value: number | null) => (value === null ? "failed" : String(value))
+  console.info(
+    [
+      "Scheduled run summary:",
+      `  Fixtures processed:        ${na(fixturesObserved)}`,
+      `  Transfer listings expired: ${na(listingsExpired)}`,
+      `  Active seasons checked:    ${na(seasonsChecked)}`,
+      `  Season transitions:        ${na(seasonTransitions)}`,
+      `  Season errors:             ${seasonErrors}`,
+      `  Duration:                  ${Date.now() - startedAt}ms`,
+    ].join("\n")
+  )
+
+  if (failedSubsystems.length > 0) {
+    console.error(`Scheduled run FAILED in: ${failedSubsystems.join(", ")}`)
     process.exitCode = 1
   }
 }

@@ -23,13 +23,38 @@ export class NoSeatsRequestedError extends Error {
   }
 }
 
-/** Creates a default stadium for a team that doesn't have one yet - safe to call repeatedly. */
+/**
+ * Creates a default stadium for a team that doesn't have one yet - safe to
+ * call repeatedly AND safe to call concurrently.
+ *
+ * The find-then-create below is not atomic on its own: two callers that both
+ * find nothing will both try to insert, and Stadium.teamId is unique, so the
+ * loser gets a raw P2002. That is not hypothetical - this function is called
+ * from the match engine (simulate.ts, build-snapshot.ts), so two overlapping
+ * scheduled runs playing the same fixture hit it directly, and it is also
+ * called from three separate page loads, so two tabs opened at once on a
+ * club that has no stadium row yet do the same.
+ *
+ * Catching P2002 and re-reading is the fix, matching the convention already
+ * used elsewhere for exactly this shape (generateYouthIntakeForTeam,
+ * upsertNextSeasonRow): the loser of the race simply adopts the row the
+ * winner created. Prisma's own `upsert` would NOT help here - it is
+ * find-then-write client-side, not an atomic INSERT ... ON CONFLICT, so it
+ * races in precisely the same way.
+ */
 export async function ensureStadiumForTeam(teamId: string, name?: string) {
   const existing = await prisma.stadium.findUnique({ where: { teamId } })
   if (existing) return existing
-  return prisma.stadium.create({
-    data: { teamId, name: name ?? DEFAULT_STADIUM_NAME_SUFFIX, ...toSeatColumns(DEFAULT_STARTING_SEATS) },
-  })
+  try {
+    return await prisma.stadium.create({
+      data: { teamId, name: name ?? DEFAULT_STADIUM_NAME_SUFFIX, ...toSeatColumns(DEFAULT_STARTING_SEATS) },
+    })
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      return prisma.stadium.findUniqueOrThrow({ where: { teamId } })
+    }
+    throw error
+  }
 }
 
 /**

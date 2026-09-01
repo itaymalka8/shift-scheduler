@@ -3,12 +3,13 @@
  * currently-active (or already mid-offseason) season as far through the
  * end-of-season machine as it can get right now, then exits.
  *
- * Deliberately NOT wired into render.yaml's cron or into
- * process-scheduled-jobs.ts yet - production scheduling is a separate step,
- * and this script exists so the whole transition can be driven and inspected
- * locally first. Nothing here contains any orchestration logic of its own:
- * it only calls runSeasonEndOrchestratorForAllSeasons, which stays the
- * single source of truth for what a season transition does.
+ * The scheduled path is process-scheduled-jobs.ts, which calls the very same
+ * runSeasonEndOrchestratorForAllSeasons after it has played the day's due
+ * fixtures. This script stays for driving and inspecting a transition on its
+ * own, with the per-stage detail a cron log has no room for. Nothing here
+ * contains any orchestration logic of its own: it only calls
+ * runSeasonEndOrchestratorForAllSeasons, which stays the single source of
+ * truth for what a season transition does.
  *
  * Run with: npm run process-season-lifecycle
  */
@@ -16,14 +17,14 @@ import { runSeasonEndOrchestratorForAllSeasons } from "../src/lib/seasons/orches
 
 async function main() {
   const startedAt = Date.now()
-  const summaries = await runSeasonEndOrchestratorForAllSeasons()
+  const report = await runSeasonEndOrchestratorForAllSeasons()
 
-  if (summaries.length === 0) {
+  if (report.seasonsChecked === 0) {
     console.info("No active or in-offseason season found - nothing to do.")
     return
   }
 
-  for (const summary of summaries) {
+  for (const summary of report.summaries) {
     console.info(`Season ${summary.seasonId}: ${summary.finalStatus}/${summary.finalStage}`)
     for (const step of summary.steps) {
       const move = step.advanced
@@ -35,7 +36,16 @@ async function main() {
       console.info(`  next season: ${summary.nextSeasonId}`)
     }
   }
-  console.info(`Season lifecycle run finished in ${Date.now() - startedAt}ms`)
+  for (const failure of report.failures) {
+    console.error(`Season ${failure.seasonId} failed:`, failure.error)
+  }
+  console.info(
+    `Season lifecycle run finished in ${Date.now() - startedAt}ms - ` +
+      `${report.seasonsChecked} checked, ${report.transitionsPerformed} transition(s), ${report.failures.length} error(s)`
+  )
+  if (report.failures.length > 0) {
+    process.exitCode = 1
+  }
 }
 
 main()
