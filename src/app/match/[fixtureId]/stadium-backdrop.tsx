@@ -1,80 +1,45 @@
 "use client"
 
-import { useMemo } from "react"
-import { StadiumIllustration } from "@/components/stadium-illustration"
-import { cn } from "@/lib/utils"
+import { BroadcastStadiumHero } from "@/components/stadium3d/BroadcastStadiumHero"
 import type { HomeMatchTeamView } from "./types"
 
 /**
- * Ambient stadium banner behind the Match Center - reuses the existing
- * StadiumIllustration (the club's real stadiumStyle + capacity) unmodified,
- * and layers a lightweight crowd/flag overlay on top rather than building a
- * second, heavier stadium renderer. Everything here is CSS transform/
- * opacity animation on plain SVG/div shapes - no Three.js, no canvas, no
- * per-frame JS - so it stays cheap on mobile even during a goal celebration.
+ * The stadium the match is played in, rendered as a real 3D broadcast scene
+ * (see components/stadium3d/BroadcastStadium.tsx) from the home club's own
+ * stadiumStyle, capacity, crowd style and colours.
+ *
+ * This is the hero of the Match Center - the scoreboard and everything below
+ * it sit on top of this scene, not in a separate card beside it.
  */
 export function StadiumBackdrop({ homeTeam, celebrating }: { homeTeam: HomeMatchTeamView; celebrating: boolean }) {
-  const ultras = homeTeam.crowdStyle === "ultras"
-  const accent = homeTeam.crestColor ?? "#6C4FD9"
-  const accent2 = homeTeam.crestSecondaryColor ?? "#F97316"
-
-  const crowdDots = useMemo(() => {
-    const count = ultras ? 46 : 34
-    return Array.from({ length: count }, (_, i) => {
-      const t = i / count
-      // Spread along the near stand only (the bottom arc of the bowl) -
-      // this is ambiance behind the scoreboard, not a full 360 crowd.
-      const x = 8 + t * 84
-      const y = 78 + Math.sin(t * Math.PI) * 10
-      return { id: i, x, y, color: i % 3 === 0 ? accent : i % 3 === 1 ? accent2 : "#e5e7eb" }
-    })
-  }, [ultras, accent, accent2])
-
-  const flags = useMemo(() => {
-    if (!ultras) return []
-    return Array.from({ length: 6 }, (_, i) => ({ id: i, x: 14 + i * 14, delay: (i % 3) * 0.35 }))
-  }, [ultras])
+  const accent = homeTeam.crestColor ?? "#5D4890"
+  const accent2 = homeTeam.crestSecondaryColor ?? "#D3CEDD"
 
   return (
-    <div className="relative overflow-hidden rounded-2xl">
-      <StadiumIllustration style={homeTeam.stadiumStyle} capacity={homeTeam.stadiumCapacity ?? 1000} className="w-full" />
+    <div className="relative h-full w-full">
+      <BroadcastStadiumHero
+        capacity={homeTeam.stadiumCapacity ?? 12_000}
+        stadiumStyle={homeTeam.stadiumStyle}
+        crowdStyle={homeTeam.crowdStyle === "ultras" ? "ultras" : "calm"}
+        primaryColor={accent}
+        secondaryColor={accent2}
+        className="h-full w-full"
+      />
 
-      <svg viewBox="0 0 400 220" className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden>
-        {crowdDots.map((d) => (
-          <circle
-            key={d.id}
-            cx={d.x * 4}
-            cy={d.y * 1}
-            r="2.1"
-            fill={d.color}
-            className={ultras ? "animate-goalx-crowd-ultras" : "animate-goalx-crowd-calm"}
-            style={{ animationDelay: `${(d.id % 10) * 0.13}s`, transformOrigin: `${d.x * 4}px ${d.y}px` }}
-          />
-        ))}
-
-        {flags.map((f) => (
-          <rect
-            key={f.id}
-            x={f.x * 4 - 5}
-            y={64}
-            width="10"
-            height="7"
-            rx="1"
-            fill={f.id % 2 === 0 ? accent : accent2}
-            className="animate-goalx-flag-wave"
-            style={{ animationDelay: `${f.delay}s`, transformOrigin: `${f.x * 4}px 68px` }}
-          />
-        ))}
-      </svg>
-
+      {/* A brief wash of club colour over the whole scene when a goal lands -
+          the cheapest possible "the ground erupts" cue, and the only moment
+          any heavy effect is spent. */}
       {celebrating && (
         <div
           className="pointer-events-none absolute inset-0 animate-goalx-crowd-flash"
-          style={{ background: `radial-gradient(circle at 50% 70%, ${accent}55, transparent 70%)` }}
+          style={{ background: `radial-gradient(circle at 50% 62%, ${accent}66, transparent 68%)` }}
         />
       )}
 
-      <div className={cn("pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-black/40 to-transparent")} />
+      {/* Grades the scene into the panel below it, so the hero has no hard
+          bottom edge cutting across the broadcast. */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-[#0B0917] via-[#0B0917]/70 to-transparent" />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-black/45 to-transparent" />
     </div>
   )
 }

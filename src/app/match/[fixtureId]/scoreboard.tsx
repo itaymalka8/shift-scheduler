@@ -41,50 +41,76 @@ export function Scoreboard({
   const t = useT()
 
   return (
-    <div className="relative overflow-hidden rounded-2xl border bg-card/95 px-3 py-4 shadow-sm sm:px-6 sm:py-6">
-      <div className="flex items-center justify-between gap-2 sm:gap-6">
-        <TeamColumn name={homeTeam.name} crest={<CrestFor team={homeTeam} size={56} />} pulsing={justScored === "home"} />
+    <div className="px-2 pb-2 sm:px-3 sm:pb-3">
+      {/* Broadcast graphic: one low, wide bar composited over the scene -
+          dark broadcast glass, not an opaque box, so the stadium stays
+          visible behind it. */}
+      <div className="mx-auto flex max-w-2xl items-stretch overflow-hidden rounded-lg border border-white/12 bg-[#0B0917]/70 shadow-[0_10px_40px_-12px_rgba(0,0,0,0.9)] backdrop-blur-md">
+        <TeamSide team={homeTeam} align="start" pulsing={justScored === "home"} />
 
-        <div className="flex flex-col items-center gap-1.5 px-1">
-          {status !== "scheduled" && (
-            <div
-              className={cn(
-                "flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-bold tracking-wide",
-                status === "live" ? "bg-red-500/15 text-red-600" : "bg-muted text-muted-foreground"
-              )}
-            >
-              {status === "live" && <span className="size-1.5 animate-pulse rounded-full bg-red-500" />}
-              {status === "live" ? t("match.badgeLive") : t("match.badgeFullTime")}
-            </div>
-          )}
-
+        <div className="flex shrink-0 flex-col items-center justify-center gap-0.5 bg-white/[0.06] px-3 py-1.5 sm:px-5">
           <div
             className={cn(
-              "text-3xl font-extrabold tabular-nums transition-transform sm:text-5xl",
+              "font-mono font-black leading-none tabular-nums text-white transition-transform",
               justScored && "scale-110"
             )}
+            style={{ fontSize: "clamp(2.5rem, 8vw, 4rem)" }}
           >
-            {status === "scheduled" ? "—" : homeScore} <span className="text-muted-foreground">:</span> {status === "scheduled" ? "—" : awayScore}
+            {status === "scheduled" ? "—" : homeScore}
+            <span className="mx-1 text-white/40 sm:mx-2">:</span>
+            {status === "scheduled" ? "—" : awayScore}
           </div>
 
-          {status === "live" && (
-            <div className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-semibold tabular-nums text-muted-foreground">
-              {formatClockFromSeconds(clockSeconds)}
-            </div>
-          )}
+          <div className="flex items-center gap-1.5">
+            {status !== "scheduled" && (
+              <span
+                className={cn(
+                  "flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-widest",
+                  status === "live" ? "bg-red-500 text-white" : "bg-white/15 text-white/75"
+                )}
+              >
+                {status === "live" && <span className="size-1.5 animate-pulse rounded-full bg-white" />}
+                {status === "live" ? t("match.badgeLive") : t("match.badgeFullTime")}
+              </span>
+            )}
+            {status === "live" && (
+              <span className="font-mono text-base font-bold tabular-nums text-white sm:text-lg">
+                {formatClockFromSeconds(clockSeconds)}
+              </span>
+            )}
+          </div>
         </div>
 
-        <TeamColumn name={awayTeam.name} crest={<CrestFor team={awayTeam} size={56} />} pulsing={justScored === "away"} />
+        <TeamSide team={awayTeam} align="end" pulsing={justScored === "away"} />
       </div>
     </div>
   )
 }
 
-function TeamColumn({ name, crest, pulsing }: { name: string; crest: React.ReactNode; pulsing: boolean }) {
+/**
+ * One side of the bar: crest and club name. The name is allowed two lines and
+ * truncates rather than wrapping into the score - long club names are the
+ * normal case in this game, not the exception.
+ */
+function TeamSide({ team, align, pulsing }: { team: MatchTeamView; align: "start" | "end"; pulsing: boolean }) {
   return (
-    <div className="flex min-w-0 flex-1 flex-col items-center gap-1.5 text-center">
-      <div className={cn(pulsing && "animate-goalx-scorer-pulse")}>{crest}</div>
-      <div className="line-clamp-2 text-xs font-semibold sm:text-sm">{name}</div>
+    <div
+      className={cn(
+        "flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 sm:gap-2.5 sm:px-3",
+        align === "end" && "flex-row-reverse"
+      )}
+    >
+      <div className={cn("shrink-0", pulsing && "animate-goalx-scorer-pulse")}>
+        <CrestFor team={team} size={34} />
+      </div>
+      <div
+        className={cn(
+          "line-clamp-2 min-w-0 text-xs font-semibold leading-tight text-white/80 sm:text-sm",
+          align === "end" ? "text-end" : "text-start"
+        )}
+      >
+        {team.name}
+      </div>
     </div>
   )
 }

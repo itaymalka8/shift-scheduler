@@ -129,7 +129,7 @@ export function MatchCenter({ fixtureId }: { fixtureId: string }) {
   const clockSeconds = useMatchClock(data?.scheduledAt ?? null, clockOffsetMs, data?.status ?? "scheduled")
 
   if (!data) {
-    return <div className="animate-pulse rounded-2xl border bg-card p-8 text-center text-sm text-muted-foreground">...</div>
+    return <div className="goalx-broadcast-panel animate-pulse p-8 text-center text-sm text-white/60">...</div>
   }
 
   if (data.status === "scheduled") {
@@ -147,24 +147,41 @@ export function MatchCenter({ fixtureId }: { fixtureId: string }) {
         scorerTeamName={latestGoal?.teamId === data.homeTeam.id ? data.homeTeam.name : data.awayTeam.name}
       />
 
-      <StadiumBackdrop homeTeam={data.homeTeam} celebrating={celebrating} />
+      <div className="goalx-broadcast-panel">
+        {/* The hero IS the scene: the stadium fills a broadcast-shaped frame
+            and the scoreboard is composited onto it, the way a live feed
+            carries its graphics - not stacked underneath as a separate card. */}
+        <div className="relative aspect-[4/5] w-full sm:aspect-[16/10] lg:aspect-[16/9]">
+          <StadiumBackdrop homeTeam={data.homeTeam} celebrating={celebrating} />
 
-      <Scoreboard
-        homeTeam={data.homeTeam}
-        awayTeam={data.awayTeam}
-        status={data.status}
-        clockSeconds={clockSeconds}
-        homeScore={homeScore}
-        awayScore={awayScore}
-        justScored={justScored}
-      />
-
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
-        <div className="lg:col-span-3">
-          <PitchView latestEvents={newEvents} homeTeamId={data.homeTeam.id} />
+          <div className="absolute inset-x-0 bottom-0 z-10">
+            <Scoreboard
+              homeTeam={data.homeTeam}
+              awayTeam={data.awayTeam}
+              status={data.status}
+              clockSeconds={clockSeconds}
+              homeScore={homeScore}
+              awayScore={awayScore}
+              justScored={justScored}
+            />
+          </div>
         </div>
-        <div className="flex flex-col gap-4 lg:col-span-2">
-          <LiveStats liveStats={data.liveStats} finalStats={data.status === "finished" ? data.finalStats : null} />
+
+        {/* 60/40 on desktop: the pitch is the centre of the screen and the
+            feed still gets enough width for a line of commentary to read
+            without wrapping every few words. On mobile everything stacks in
+            watching order - ground, score, pitch, then the numbers and the
+            story of the match. */}
+        <div className="grid grid-cols-1 items-start gap-4 px-3 pb-4 pt-4 sm:px-6 sm:pb-6 lg:grid-cols-[3fr_2fr] lg:gap-6">
+          <div className="flex flex-col gap-4">
+            <PitchView
+              latestEvents={newEvents}
+              homeTeamId={data.homeTeam.id}
+              homeTeamName={data.homeTeam.name}
+              awayTeamName={data.awayTeam.name}
+            />
+            <LiveStats liveStats={data.liveStats} finalStats={data.status === "finished" ? data.finalStats : null} />
+          </div>
           <EventFeed
             events={data.events}
             homeTeam={data.homeTeam}

@@ -205,3 +205,29 @@ export function zoneForEvent(event: MatchEventView, homeTeamId: string): PitchPo
       return { xPct: 50, yPct: 50 }
   }
 }
+
+/**
+ * How loudly an event should be told. A live feed is commentary, not a log:
+ * a goal has to hit differently from a throw-in, or ninety rows of identical
+ * type read as machine output.
+ */
+export type EventEmphasis = "headline" | "high" | "medium" | "low"
+
+export function emphasisForEvent(type: string, outcome: string | null): EventEmphasis {
+  switch (type) {
+    case "goal":
+      return "headline"
+    case "penalty":
+      // An awarded or converted penalty is a headline moment either way; a
+      // missed one is still one of the loudest things in a match.
+      return outcome === "scored" ? "headline" : "high"
+    case "redCard":
+      return "high"
+    case "yellowCard":
+    case "substitution":
+    case "injury":
+      return "medium"
+    default:
+      return "low"
+  }
+}

@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { Controller, useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { signIn } from "next-auth/react"
-import { Eye, EyeOff, Upload, X } from "lucide-react"
+import { Check, Eye, EyeOff, Upload, X } from "lucide-react"
 import {
   makeAccountSchema,
   makeTeamDetailsSchema,
@@ -25,13 +25,9 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
-import { CrowdIllustration } from "@/components/crowd-illustration"
-import {
-  StadiumIllustration,
-  STADIUM_STYLES,
-  DEFAULT_STADIUM_STYLE,
-  type StadiumStyleId,
-} from "@/components/stadium-illustration"
+import { BroadcastStadiumHero } from "@/components/stadium3d/BroadcastStadiumHero"
+import { DEFAULT_STADIUM_STYLE, type StadiumStyleId } from "@/components/stadium-illustration"
+import { getStyleTagKeys } from "@/lib/stadium/stadium3d-config"
 import {
   Select,
   SelectContent,
@@ -100,6 +96,31 @@ const PATTERN_LABEL_KEY: Record<CrestPatternId, TranslationKey> = {
   stripes: "crest.patternStripes",
 }
 
+/**
+ * Two traits per crowd style. The real comparison is the 3D ground above -
+ * these only need to say what changes, not describe it.
+ */
+const CROWD_TRAIT_KEYS: Record<"calm" | "ultras", TranslationKey[]> = {
+  calm: ["team.crowdCalmTrait1", "team.crowdCalmTrait2"],
+  ultras: ["team.crowdUltrasTrait1", "team.crowdUltrasTrait2"],
+}
+
+/**
+ * The order the styles are offered in: the two everyone recognises first, then
+ * the structural variants, then the character grounds. Independent of the
+ * renderer's own list, which is keyed by id and has no display order.
+ */
+const STADIUM_STYLE_ORDER: StadiumStyleId[] = [
+  "classic-bowl",
+  "modern-arena",
+  "four-stand",
+  "athletics",
+  "retractable",
+  "boutique",
+  "historic",
+  "coastal",
+]
+
 const STADIUM_STYLE_LABEL_KEY: Record<StadiumStyleId, TranslationKey> = {
   "classic-bowl": "stadium.classicBowl",
   "modern-arena": "stadium.modernArena",
@@ -109,6 +130,17 @@ const STADIUM_STYLE_LABEL_KEY: Record<StadiumStyleId, TranslationKey> = {
   retractable: "stadium.retractable",
   historic: "stadium.historic",
   coastal: "stadium.coastal",
+}
+
+const STADIUM_STYLE_DESC_KEY: Record<StadiumStyleId, TranslationKey> = {
+  "classic-bowl": "stadium.desc.classicBowl",
+  "modern-arena": "stadium.desc.modernArena",
+  "four-stand": "stadium.desc.fourStand",
+  athletics: "stadium.desc.athletics",
+  boutique: "stadium.desc.boutique",
+  retractable: "stadium.desc.retractable",
+  historic: "stadium.desc.historic",
+  coastal: "stadium.desc.coastal",
 }
 
 function ColorRow({
@@ -122,16 +154,18 @@ function ColorRow({
 }) {
   return (
     <div>
-      <p className="text-xs text-muted-foreground mb-1.5">{label}</p>
-      <div className="flex flex-wrap gap-1.5">
+      <p className="mb-2 text-sm font-medium">{label}</p>
+      <div className="flex flex-wrap gap-2.5">
         {CREST_COLORS.map((c) => (
           <button
             key={c}
             type="button"
+            aria-label={c}
+            aria-pressed={value === c}
             onClick={() => onChange(c)}
             style={{ backgroundColor: c }}
             className={cn(
-              "size-6 rounded-full border border-black/10 transition-all",
+              "size-10 shrink-0 rounded-full border border-black/10 transition-all",
               value === c
                 ? "ring-2 ring-offset-2 ring-primary ring-offset-background"
                 : "opacity-70 hover:opacity-100"
@@ -356,7 +390,7 @@ export default function SignUpPage() {
         <Image src="/logo.png" alt="Goalx Manager" width={72} height={72} className="rounded-full" />
       </Link>
 
-      <Card className="goalx-auth-card w-full max-w-lg shadow-2xl">
+      <Card className={cn("goalx-auth-card w-full shadow-2xl", step === 1 ? "max-w-lg" : "max-w-4xl")}>
         {step === 1 && (
           <>
             <CardHeader>
@@ -473,175 +507,194 @@ export default function SignUpPage() {
               <CardDescription>{t("signup.identityDescription")}</CardDescription>
             </CardHeader>
             <CardContent>
-              <form onSubmit={identityForm.handleSubmit(goToStep3)} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="teamName">{t("auth.teamName")}</Label>
-                  <Input id="teamName" type="text" {...identityForm.register("teamName")} />
-                  {identityForm.formState.errors.teamName && (
-                    <p className="text-sm text-destructive">
-                      {identityForm.formState.errors.teamName.message}
-                    </p>
-                  )}
-                </div>
+              <form onSubmit={identityForm.handleSubmit(goToStep3)} className="space-y-6">
+                <div className="grid gap-6 lg:grid-cols-[300px_1fr] lg:items-start">
+                  {/* Preview - the hero element. Comes first in DOM order so
+                      mobile sees it on top; the team name lives inside this
+                      panel so it reads as part of the crest identity. */}
+                  <div className="lg:sticky lg:top-6">
+                    <div className="goalx-broadcast-panel flex flex-col items-center gap-4 p-6 text-center">
+                      <TeamCrest
+                        shape={shape}
+                        pattern={pattern}
+                        icon={icon}
+                        color={color}
+                        secondaryColor={secondaryColor}
+                        borderColor={borderColor}
+                        imageUrl={crestPreviewUrl}
+                        size={140}
+                      />
+                      <div className="w-full space-y-1.5">
+                        <Input
+                          id="teamName"
+                          type="text"
+                          placeholder={t("auth.teamName")}
+                          className="border-white/20 bg-white/5 text-center text-lg font-bold text-white placeholder:text-white/40 focus-visible:ring-white/40"
+                          {...identityForm.register("teamName")}
+                        />
+                        {identityForm.formState.errors.teamName && (
+                          <p className="text-sm text-red-300">{identityForm.formState.errors.teamName.message}</p>
+                        )}
+                      </div>
 
-                <div className="space-y-4">
-                  <div className="flex items-center gap-4">
-                    <TeamCrest
-                      shape={shape}
-                      pattern={pattern}
-                      icon={icon}
-                      color={color}
-                      secondaryColor={secondaryColor}
-                      borderColor={borderColor}
-                      imageUrl={crestPreviewUrl}
-                      size={80}
-                    />
-                    <div className="flex-1">
                       {crestPreviewUrl && (
-                        <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
-                          <span className="truncate">{crestFile?.name}</span>
-                          <Button
+                        <div className="flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs text-white/80">
+                          <span className="max-w-40 truncate">{crestFile?.name}</span>
+                          <button
                             type="button"
-                            variant="ghost"
-                            size="icon"
                             onClick={clearUploadedFile}
                             aria-label={t("crest.removeFile")}
+                            className="text-white/70 hover:text-white"
                           >
-                            <X className="size-4" />
-                          </Button>
+                            <X className="size-3.5" />
+                          </button>
                         </div>
                       )}
                     </div>
                   </div>
 
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-1.5">{t("crest.shape")}</p>
-                    <div className="flex gap-2">
-                      {CREST_SHAPES.map((s) => (
-                        <button
-                          key={s.id}
-                          type="button"
-                          title={t(SHAPE_LABEL_KEY[s.id])}
-                          onClick={() => setShape(s.id)}
-                          className={cn(
-                            "rounded-full p-0.5 transition-all",
-                            shape === s.id
-                              ? "ring-2 ring-offset-2 ring-primary ring-offset-background"
-                              : "opacity-60 hover:opacity-100"
-                          )}
-                        >
-                          <TeamCrest
-                            shape={s.id}
-                            pattern={pattern}
-                            icon={icon}
-                            color={color}
-                            secondaryColor={secondaryColor}
-                            borderColor={borderColor}
-                            size={40}
+                  {/* Controls */}
+                  <div className="space-y-6">
+                    <div>
+                      <p className="mb-2 text-sm font-medium">{t("crest.shape")}</p>
+                      <div className="grid grid-cols-4 gap-2">
+                        {CREST_SHAPES.map((s) => (
+                          <button
+                            key={s.id}
+                            type="button"
+                            aria-pressed={shape === s.id}
+                            onClick={() => setShape(s.id)}
+                            className={cn(
+                              "flex min-h-11 flex-col items-center gap-1.5 rounded-xl border-2 p-2 transition-colors",
+                              shape === s.id
+                                ? "border-primary bg-primary/10"
+                                : "border-transparent bg-muted/40 hover:bg-muted"
+                            )}
+                          >
+                            <TeamCrest
+                              shape={s.id}
+                              pattern={pattern}
+                              icon={icon}
+                              color={color}
+                              secondaryColor={secondaryColor}
+                              borderColor={borderColor}
+                              size={44}
+                            />
+                            <span className="text-[11px] font-medium leading-tight">{t(SHAPE_LABEL_KEY[s.id])}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {!crestPreviewUrl && (
+                      <>
+                        <div>
+                          <p className="mb-2 text-sm font-medium">{t("crest.pattern")}</p>
+                          <div className="grid grid-cols-3 gap-2">
+                            {CREST_PATTERNS.map((p) => (
+                              <button
+                                key={p.id}
+                                type="button"
+                                aria-pressed={pattern === p.id}
+                                onClick={() => setPattern(p.id)}
+                                className={cn(
+                                  "flex min-h-11 flex-col items-center gap-1.5 rounded-xl border-2 p-2 transition-colors",
+                                  pattern === p.id
+                                    ? "border-primary bg-primary/10"
+                                    : "border-transparent bg-muted/40 hover:bg-muted"
+                                )}
+                              >
+                                <TeamCrest
+                                  shape={shape}
+                                  pattern={p.id}
+                                  icon={icon}
+                                  color={color}
+                                  secondaryColor={secondaryColor}
+                                  borderColor={borderColor}
+                                  size={44}
+                                />
+                                <span className="text-[11px] font-medium leading-tight">{t(PATTERN_LABEL_KEY[p.id])}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <ColorRow label={t("crest.primaryColor")} value={color} onChange={setColor} />
+                        {pattern !== "solid" && (
+                          <ColorRow
+                            label={t("crest.secondaryColor")}
+                            value={secondaryColor}
+                            onChange={setSecondaryColor}
                           />
-                        </button>
-                      ))}
-                    </div>
+                        )}
+
+                        <div>
+                          <p className="mb-2 text-sm font-medium">{t("crest.icon")}</p>
+                          <div className="grid grid-cols-5 gap-1.5 sm:grid-cols-7">
+                            {CREST_ICON_OPTIONS.map((opt) => (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                aria-pressed={icon === opt.id}
+                                onClick={() => setIcon(opt.id)}
+                                className={cn(
+                                  "flex min-h-11 min-w-11 items-center justify-center rounded-lg border-2 p-1.5 transition-colors",
+                                  icon === opt.id
+                                    ? "border-primary bg-primary/10"
+                                    : "border-transparent bg-muted/40 hover:bg-muted"
+                                )}
+                              >
+                                <TeamCrest
+                                  shape="circle"
+                                  pattern="solid"
+                                  icon={opt.id}
+                                  color={color}
+                                  borderColor={color}
+                                  size={28}
+                                />
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </>
+                    )}
+
+                    <ColorRow label={t("crest.borderColor")} value={borderColor} onChange={setBorderColor} />
+
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="flex min-h-11 items-center gap-2 text-sm font-medium text-primary hover:underline"
+                    >
+                      <Upload className="size-4" />
+                      {crestPreviewUrl ? t("crest.chooseAnotherFile") : t("crest.uploadOwn")}
+                    </button>
+
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                      onChange={handleFileChange}
+                      className="hidden"
+                    />
+
+                    {crestError && <p className="text-sm text-destructive">{crestError}</p>}
                   </div>
-
-                  {!crestPreviewUrl && (
-                    <>
-                      <div>
-                        <p className="text-xs text-muted-foreground mb-1.5">{t("crest.pattern")}</p>
-                        <div className="flex gap-2">
-                          {CREST_PATTERNS.map((p) => (
-                            <button
-                              key={p.id}
-                              type="button"
-                              title={t(PATTERN_LABEL_KEY[p.id])}
-                              onClick={() => setPattern(p.id)}
-                              className={cn(
-                                "rounded-full p-0.5 transition-all",
-                                pattern === p.id
-                                  ? "ring-2 ring-offset-2 ring-primary ring-offset-background"
-                                  : "opacity-60 hover:opacity-100"
-                              )}
-                            >
-                              <TeamCrest
-                                shape={shape}
-                                pattern={p.id}
-                                icon={icon}
-                                color={color}
-                                secondaryColor={secondaryColor}
-                                borderColor={borderColor}
-                                size={40}
-                              />
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      <ColorRow label={t("crest.primaryColor")} value={color} onChange={setColor} />
-                      {pattern !== "solid" && (
-                        <ColorRow
-                          label={t("crest.secondaryColor")}
-                          value={secondaryColor}
-                          onChange={setSecondaryColor}
-                        />
-                      )}
-
-                      <div>
-                        <p className="text-xs text-muted-foreground mb-1.5">{t("crest.icon")}</p>
-                        <div className="grid grid-cols-7 gap-1.5">
-                          {CREST_ICON_OPTIONS.map((opt) => (
-                            <button
-                              key={opt.id}
-                              type="button"
-                              onClick={() => setIcon(opt.id)}
-                              className={cn(
-                                "rounded-full p-0.5 transition-all",
-                                icon === opt.id
-                                  ? "ring-2 ring-offset-2 ring-primary ring-offset-background"
-                                  : "opacity-60 hover:opacity-100"
-                              )}
-                            >
-                              <TeamCrest
-                                shape="circle"
-                                pattern="solid"
-                                icon={opt.id}
-                                color={color}
-                                borderColor={color}
-                                size={30}
-                              />
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    </>
-                  )}
-
-                  <ColorRow label={t("crest.borderColor")} value={borderColor} onChange={setBorderColor} />
-
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="flex items-center gap-2 text-sm text-primary hover:underline"
-                  >
-                    <Upload className="size-4" />
-                    {crestPreviewUrl ? t("crest.chooseAnotherFile") : t("crest.uploadOwn")}
-                  </button>
-
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp,image/svg+xml"
-                    onChange={handleFileChange}
-                    className="hidden"
-                  />
-
-                  {crestError && <p className="text-sm text-destructive">{crestError}</p>}
                 </div>
 
-                <div className="flex gap-3">
-                  <Button type="button" variant="outline" className="flex-1" onClick={() => setStep(1)}>
+                <div className="flex items-center gap-3 border-t border-white/10 pt-4">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="lg"
+                    className="border-white/25 bg-transparent text-white hover:bg-white/10 hover:text-white"
+                    onClick={() => setStep(1)}
+                  >
                     {t("signup.back")}
                   </Button>
-                  <Button type="submit" className="flex-1">
+                  {/* The one primary action on the screen - given the width and
+                      weight, so it outranks the swatches and icon tiles above. */}
+                  <Button type="submit" size="lg" className="flex-1 text-base font-bold shadow-lg">
                     {t("signup.next")}
                   </Button>
                 </div>
@@ -653,12 +706,11 @@ export default function SignUpPage() {
         {step === 3 && (
           <>
             <CardHeader>
-              <StadiumIllustration style={stadiumStyle} className="w-full h-36 rounded-lg mb-2" />
               <CardTitle className="text-2xl">{t("team.title")}</CardTitle>
               <CardDescription>{t("team.description")}</CardDescription>
             </CardHeader>
             <CardContent>
-              <form onSubmit={teamForm.handleSubmit(onFinalSubmit)} className="space-y-4">
+              <form onSubmit={teamForm.handleSubmit(onFinalSubmit)} className="space-y-6">
                 <div className="space-y-2">
                   <Label htmlFor="countryCode">{t("team.country")}</Label>
                   <Controller
@@ -705,70 +757,100 @@ export default function SignUpPage() {
                   )}
                 </div>
 
-                <div className="space-y-2">
+                <div data-testid="stadium-selector" className="space-y-3">
                   <Label>{t("team.stadiumStyle")}</Label>
-                  <div className="grid grid-cols-4 gap-2">
-                    {STADIUM_STYLES.map((s) => (
-                      <button
-                        key={s.id}
-                        type="button"
-                        title={t(STADIUM_STYLE_LABEL_KEY[s.id])}
-                        onClick={() => setStadiumStyle(s.id)}
-                        className={cn(
-                          "rounded-md overflow-hidden border-2 transition-colors",
-                          stadiumStyle === s.id ? "border-primary" : "border-transparent opacity-70 hover:opacity-100"
-                        )}
-                      >
-                        <StadiumIllustration style={s.id} className="w-full h-12" />
-                      </button>
-                    ))}
+
+                  {/* The real match renderer, not a thumbnail: the manager sees
+                      the actual ground they are choosing, in their own club
+                      colours, with the crowd style picked below already in it.
+                      This ONE canvas is the preview for both selectors below -
+                      eight live WebGL contexts on a signup form would be
+                      indefensible, and eight drawn thumbnails would only ever
+                      be a second, worse depiction of the same ground. */}
+                  <div data-testid="stadium-hero" className="goalx-broadcast-panel overflow-hidden">
+                    <BroadcastStadiumHero
+                      stadiumStyle={stadiumStyle}
+                      // A demo capacity purely for this preview - every club
+                      // starts small in practice (real seat counts live on the
+                      // Stadium row); this shows the architecture at a size
+                      // where it actually reads.
+                      capacity={22_000}
+                      crowdStyle={teamForm.watch("crowdStyle")}
+                      primaryColor={color}
+                      secondaryColor={secondaryColor}
+                      className="aspect-[16/10] w-full sm:aspect-[16/9]"
+                    />
                   </div>
-                  <p className="text-sm text-muted-foreground">
-                    {t(STADIUM_STYLE_LABEL_KEY[stadiumStyle])}
-                  </p>
+                  <div className="text-center">
+                    <p className="font-semibold">{t(STADIUM_STYLE_LABEL_KEY[stadiumStyle])}</p>
+                    <p className="text-sm text-muted-foreground">{t("team.crowdPreviewHint")}</p>
+                  </div>
+
+                  {/* Just a picker. The 3D ground above is the preview, so a
+                      tile only has to name the style, say what it is in a
+                      line, and show the one or two things that actually differ
+                      between grounds - a second depiction on every tile is
+                      what these replaced. */}
+                  <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+                    {STADIUM_STYLE_ORDER.map((id) => {
+                      const selected = stadiumStyle === id
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          aria-pressed={selected}
+                          onClick={() => setStadiumStyle(id)}
+                          className={cn("goalx-style-tile", selected && "is-selected")}
+                        >
+                          <span className="flex items-start justify-between gap-1.5">
+                            <span className="text-sm font-bold leading-tight text-white">
+                              {t(STADIUM_STYLE_LABEL_KEY[id])}
+                            </span>
+                            {selected && <Check className="mt-0.5 size-4 shrink-0 text-primary" strokeWidth={3} />}
+                          </span>
+                          <span className="mt-1 line-clamp-2 text-[11px] leading-snug text-white/55">
+                            {t(STADIUM_STYLE_DESC_KEY[id])}
+                          </span>
+                          <span className="mt-auto block pt-1.5 text-[11px] font-medium leading-snug text-white/70">
+                            {getStyleTagKeys(id).map((k) => t(k as TranslationKey)).join(" · ")}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
                 </div>
 
-                <div className="space-y-2">
+                <div data-testid="crowd-selector" className="space-y-3">
                   <Label>{t("team.crowdStyle")}</Label>
                   <Controller
                     control={teamForm.control}
                     name="crowdStyle"
                     render={({ field }) => (
-                      <RadioGroup value={field.value} onValueChange={field.onChange} className="gap-3">
-                        <label
-                          className={cn(
-                            "block rounded-lg border p-3 cursor-pointer transition-colors overflow-hidden",
-                            field.value === "calm" ? "border-primary bg-primary/5" : "border-border"
-                          )}
-                        >
-                          <CrowdIllustration style="calm" className="w-full h-24 rounded-md mb-3" />
-                          <span className="flex items-start gap-3">
-                            <RadioGroupItem value="calm" className="mt-1" />
-                            <span>
-                              <span className="block font-medium">{t("team.crowdStyleCalm")}</span>
-                              <span className="block text-sm text-muted-foreground">
-                                {t("team.crowdStyleCalmDesc")}
+                      // No per-tile preview: the real comparison happens in the
+                      // 3D ground above, which rebuilds its crowd the moment one
+                      // of these is picked - different palette, different home
+                      // end, different amount of movement.
+                      <RadioGroup value={field.value} onValueChange={field.onChange} className="grid grid-cols-2 gap-2">
+                        {(["calm", "ultras"] as const).map((option) => {
+                          const selected = field.value === option
+                          return (
+                            <label key={option} className={cn("goalx-style-tile cursor-pointer", selected && "is-selected")}>
+                              <RadioGroupItem value={option} className="sr-only" />
+                              <span className="flex items-start justify-between gap-1.5">
+                                <span className="text-sm font-bold leading-tight text-white">
+                                  {t(option === "calm" ? "team.crowdStyleCalm" : "team.crowdStyleUltras")}
+                                </span>
+                                {selected && <Check className="mt-0.5 size-4 shrink-0 text-primary" strokeWidth={3} />}
                               </span>
-                            </span>
-                          </span>
-                        </label>
-                        <label
-                          className={cn(
-                            "block rounded-lg border p-3 cursor-pointer transition-colors overflow-hidden",
-                            field.value === "ultras" ? "border-primary bg-primary/5" : "border-border"
-                          )}
-                        >
-                          <CrowdIllustration style="ultras" className="w-full h-24 rounded-md mb-3" />
-                          <span className="flex items-start gap-3">
-                            <RadioGroupItem value="ultras" className="mt-1" />
-                            <span>
-                              <span className="block font-medium">{t("team.crowdStyleUltras")}</span>
-                              <span className="block text-sm text-muted-foreground">
-                                {t("team.crowdStyleUltrasDesc")}
+                              <span className="mt-1 line-clamp-2 text-[11px] leading-snug text-white/55">
+                                {t(option === "calm" ? "team.crowdCalmTileDesc" : "team.crowdUltrasTileDesc")}
                               </span>
-                            </span>
-                          </span>
-                        </label>
+                              <span className="mt-auto block pt-1.5 text-[11px] font-medium leading-snug text-white/70">
+                                {CROWD_TRAIT_KEYS[option].map((k) => t(k)).join(" · ")}
+                              </span>
+                            </label>
+                          )
+                        })}
                       </RadioGroup>
                     )}
                   />
@@ -785,17 +867,18 @@ export default function SignUpPage() {
                   </Label>
                 </div>
 
-                <div className="flex gap-3">
+                <div className="flex items-center gap-3 border-t border-white/10 pt-4">
                   <Button
                     type="button"
                     variant="outline"
-                    className="flex-1"
+                    size="lg"
+                    className="border-white/25 bg-transparent text-white hover:bg-white/10 hover:text-white"
                     onClick={() => setStep(2)}
                     disabled={isLoading}
                   >
                     {t("signup.back")}
                   </Button>
-                  <Button type="submit" className="flex-1 gap-2" disabled={isLoading}>
+                  <Button type="submit" size="lg" className="flex-1 gap-2 text-base font-bold shadow-lg" disabled={isLoading}>
                     {t("signup.submit")}
                   </Button>
                 </div>

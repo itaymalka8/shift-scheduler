@@ -35,40 +35,130 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
-/* Goalx Manager — brand palette derived from the club crest (indigo/purple "X" on a ball) */
-:root {
-  --radius: 0.75rem;
+/* ==========================================================================
+   GoalX Design Tokens — Visual Experience Overhaul
+   One brand language for every screen: Premium Football Management, Modern
+   Sports Broadcast, Dark Purple Luxury. Not cartoon, not casino, not a
+   generic admin dashboard.
 
-  --background: oklch(0.98 0.005 292);
+   Brand source colors (fixed, do not change without a new design pass):
+     --goalx-primary    #361D78
+     --goalx-secondary  #5D4890
+     --goalx-white      #FEFEFE
+     --goalx-bg-light   #F7F7F9
+     --goalx-lavender   #D3CEDD
+   Everything else here (ink shades, surfaces, shadows, spacing/typography
+   conventions) is derived from those five and documented inline so a future
+   pass can extend the system without guessing intent.
+   ========================================================================== */
+:root {
+  /* --- Brand source (fixed) ------------------------------------------- */
+  --goalx-primary: #361d78;
+  --goalx-secondary: #5d4890;
+  --goalx-white: #fefefe;
+  --goalx-bg-light: #f7f7f9;
+  --goalx-lavender: #d3cedd;
+
+  /* --- Ink scale — darker purples derived from --goalx-primary, for
+     Match Center / Stadium / any "broadcast" dark surface. Named by
+     distance from black (900 = near-black, 500 = the brand primary
+     itself), the same convention a Tailwind color scale uses. --------- */
+  --goalx-ink-900: #0d0720;
+  --goalx-ink-800: #150c30;
+  --goalx-ink-700: #1e1142;
+  --goalx-ink-600: #291756;
+  --goalx-ink-500: var(--goalx-primary);
+  --goalx-ink-400: var(--goalx-secondary);
+
+  /* --- Semantic surfaces ------------------------------------------------ */
+  /* The one dark "broadcast" surface every Stadium/Match Center panel
+     shares - a gradient, not a flat fill, so panels have depth without
+     needing a photo. */
+  --goalx-surface-stadium: linear-gradient(
+    165deg,
+    var(--goalx-ink-700) 0%,
+    var(--goalx-ink-800) 55%,
+    var(--goalx-ink-900) 100%
+  );
+  /* Frosted glass chrome for controls that float ON TOP of the stadium
+     surface (scoreboard pill, badges) - never a solid white card there. */
+  --goalx-glass-bg: rgb(255 255 255 / 8%);
+  --goalx-glass-border: rgb(255 255 255 / 14%);
+  /* Accent glow used sparingly - floodlights, goal celebration, selected
+     states inside dark surfaces. */
+  --goalx-glow: 0 0 32px 4px rgb(93 72 144 / 45%);
+
+  /* --- Elevation (light surfaces) --------------------------------------
+     Two tiers only: resting cards vs. the one "hero" element per screen
+     (crest preview, selected stadium/crowd card). More tiers than this
+     reads as noise, not hierarchy. */
+  --goalx-shadow-resting: 0 1px 2px rgb(54 29 120 / 6%), 0 1px 1px rgb(54 29 120 / 4%);
+  --goalx-shadow-elevated: 0 12px 32px -8px rgb(54 29 120 / 28%), 0 4px 12px -4px rgb(54 29 120 / 16%);
+
+  /* --- Radius scale (px, mirrored as rem below for Tailwind) ----------- */
+  --goalx-radius-sm: 0.5rem; /* chips, small buttons */
+  --goalx-radius-md: 0.875rem; /* inputs, list rows */
+  --goalx-radius-lg: 1.25rem; /* cards */
+  --goalx-radius-xl: 1.75rem; /* hero panels (stadium, crest preview) */
+
+  /* --- Control sizing (touch targets) ----------------------------------
+     44px is the accessibility floor for anything tappable - selector
+     cards, swatches, and buttons all resolve to at least this. */
+  --goalx-control-height-sm: 2.25rem; /* 36px - dense inline controls */
+  --goalx-control-height-md: 2.75rem; /* 44px - default button/input */
+  --goalx-control-height-lg: 3.25rem; /* 52px - primary CTA */
+  --goalx-swatch-size: 2.5rem; /* 40px visual + padding clears 44px hit area */
+
+  /* --- Page rhythm ------------------------------------------------------ */
+  --goalx-page-padding-mobile: 1rem;
+  --goalx-page-padding-desktop: 2rem;
+  --goalx-content-max-width: 72rem; /* 1152px - tables/squad/transfers */
+  --goalx-narrow-max-width: 40rem; /* 640px - auth/onboarding forms */
+
+  /* --- Typography --------------------------------------------------------
+     Numbers (score, match clock) get a distinct treatment from prose:
+     tabular, heavier, tighter tracking - so they read as data, not text. */
+  --goalx-font-size-page-title: 1.5rem; /* 24px */
+  --goalx-font-size-section-title: 1.0625rem; /* 17px */
+  --goalx-font-size-card-title: 0.9375rem; /* 15px */
+  --goalx-font-size-body: 0.875rem; /* 14px */
+  --goalx-font-size-caption: 0.75rem; /* 12px */
+  --goalx-font-size-score: 2.5rem; /* 40px, tabular-nums, weight 800 */
+  --goalx-font-size-clock: 0.9375rem; /* 15px, tabular-nums, weight 700 */
+  --goalx-icon-size-sm: 1rem;
+  --goalx-icon-size-md: 1.25rem;
+  --goalx-icon-size-lg: 1.75rem;
+
+  --radius: 0.875rem;
+
+  --background: var(--goalx-bg-light);
   --foreground: oklch(0.2 0.06 292);
 
-  --card: oklch(1 0 0);
+  --card: var(--goalx-white);
   --card-foreground: oklch(0.2 0.06 292);
 
-  --popover: oklch(1 0 0);
+  --popover: var(--goalx-white);
   --popover-foreground: oklch(0.2 0.06 292);
 
-  /* #3B2F7A */
-  --primary: oklch(0.36 0.13 292);
-  --primary-foreground: oklch(0.99 0 0);
+  --primary: var(--goalx-primary);
+  --primary-foreground: var(--goalx-white);
 
-  --secondary: oklch(0.95 0.02 292);
-  --secondary-foreground: oklch(0.28 0.1 292);
+  --secondary: var(--goalx-lavender);
+  --secondary-foreground: var(--goalx-primary);
 
   --muted: oklch(0.96 0.01 292);
   --muted-foreground: oklch(0.5 0.03 292);
 
-  /* #6C4FD9 */
-  --accent: oklch(0.53 0.19 292);
-  --accent-foreground: oklch(0.99 0 0);
+  --accent: var(--goalx-secondary);
+  --accent-foreground: var(--goalx-white);
 
   --destructive: oklch(0.577 0.245 27.325);
 
   --border: oklch(0.9 0.015 292);
   --input: oklch(0.9 0.015 292);
-  --ring: oklch(0.53 0.19 292);
+  --ring: var(--goalx-secondary);
 
-  --chart-1: oklch(0.53 0.19 292);
+  --chart-1: var(--goalx-secondary);
   --chart-2: oklch(0.646 0.222 41.116);
   --chart-3: oklch(0.6 0.118 184.704);
   --chart-4: oklch(0.828 0.189 84.429);
@@ -178,6 +268,81 @@
   --muted-foreground: oklch(0.82 0.02 292 / 90%);
   --border: oklch(1 0 0 / 15%);
   --input: oklch(1 0 0 / 20%);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+/* Dark-purple broadcast surface for Match Center / Stadium screens (see
+   Step 7 of the Visual Experience Overhaul: cinematic photo stays confined
+   to Auth, the main game gets its own dark-purple sports-surface language
+   instead). One continuous panel - the stadium hero, the scoreboard
+   overlay, and the pitch/feed/stats sections below all live inside it, so
+   the screen reads as one broadcast rather than "illustration + card". */
+/* Style tiles - the stadium and crowd pickers on signup. These are picks in a
+   game, not rows in a settings form: a low, quiet tile carrying only a name, a
+   line of description and the one or two traits that actually differ between
+   grounds. The 3D hero above is the preview, so a tile never depicts anything.
+   Deliberately short (a fixed min-height) so eight of them scan as a grid
+   rather than scrolling past as a list. */
+.goalx-style-tile {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 6.25rem;
+  padding: 0.625rem 0.7rem;
+  text-align: start;
+  border-radius: 0.7rem;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.045);
+  transition:
+    border-color 150ms ease,
+    background 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.goalx-style-tile:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.075);
+}
+
+.goalx-style-tile.is-selected {
+  border-color: var(--goalx-primary);
+  background: color-mix(in srgb, var(--goalx-primary) 16%, transparent);
+  box-shadow: 0 0 0 1px var(--goalx-primary), 0 8px 24px -12px color-mix(in srgb, var(--goalx-primary) 80%, transparent);
+}
+
+/* Whatever chrome the app shell puts around the match page, the ground behind
+   it is dark too - a strip of white page above or below the environment is the
+   one thing that breaks the illusion that you are watching a match. */
+body:has(.goalx-match-environment) {
+  background-color: var(--goalx-ink-900);
+}
+
+.goalx-match-environment {
+  background:
+    radial-gradient(120% 80% at 50% 0%, rgba(70, 40, 140, 0.42) 0%, rgba(13, 7, 32, 0) 62%),
+    radial-gradient(90% 60% at 50% 100%, rgba(41, 23, 86, 0.35) 0%, rgba(13, 7, 32, 0) 70%),
+    var(--goalx-ink-900);
+  color: var(--goalx-white);
+}
+
+.goalx-broadcast-panel {
+  background: var(--goalx-surface-stadium);
+  border-radius: var(--goalx-radius-xl);
+  overflow: hidden;
+  box-shadow:
+    var(--goalx-shadow-elevated),
+    0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 30px 90px -30px rgba(94, 53, 177, 0.45);
+  color: var(--goalx-white);
+}
+
+/* Frosted glass chrome for content sitting on top of a dark broadcast
+   surface (scoreboard overlay, stat/feed panels) - reuses the same two
+   tokens everywhere so every glass surface in the app looks identical. */
+.goalx-glass-panel {
+  background: var(--goalx-glass-bg);
+  border: 1px solid var(--goalx-glass-border);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
 }

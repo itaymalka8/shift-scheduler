@@ -36,9 +36,11 @@ export function getStadium3DTier(capacity: number): Stadium3DTier {
 
 // --- The fixed pitch -----------------------------------------------------
 // Real full-size pitch proportions (meters) - identical for every stadium,
-// at every capacity. Only the ring around it changes.
-export const PITCH_LENGTH = 105
-export const PITCH_WIDTH = 68
+// at every capacity. Only the ring around it changes. Re-exported (never
+// re-declared) from pitch-geometry.ts, which is the single source of truth
+// for every pitch dimension and marking in the app.
+export { PITCH_LENGTH, PITCH_WIDTH } from "./pitch-geometry"
+import { PITCH_LENGTH, PITCH_WIDTH } from "./pitch-geometry"
 
 // --- Structural anchors ----------------------------------------------------
 // One row per tier's reference capacity. Continuous fields (offset/depth/
@@ -279,4 +281,215 @@ export function computeCameraFraming(structure: Stadium3DStructure, capacity: nu
   const halfFovRad = (CAMERA_FOV_DEG / 2) * (Math.PI / 180)
   const distance = outerRadius / (fill * Math.tan(halfFovRad)) + structure.standHeight * 0.6
   return { distance, polarAngleDeg: CAMERA_POLAR_ANGLE_DEG }
+}
+
+// --- Broadcast camera --------------------------------------------------------
+// A completely different shot from the aerial framing above: this is the
+// camera a televised match is actually shot from - high in the main stand at
+// the halfway line, tilted DOWN at the pitch, not looking at the stadium from
+// outside it. The stadium reads as somewhere you're sitting, not a model on a
+// table.
+
+/** Slight offset off the exact halfway line, so the shot has depth instead of being perfectly symmetric. */
+export const BROADCAST_AZIMUTH_OFFSET_DEG = 7
+
+export interface BroadcastCamera {
+  position: [number, number, number]
+  target: [number, number, number]
+  fov: number
+  far: number
+}
+
+/**
+ * The main broadcast shot: the camera is ON the main-stand gantry - partway up
+ * the near touchline stand, at its front edge, looking across and down at the
+ * pitch. That placement is what makes the frame read as "sitting in a stadium"
+ * rather than "looking at a stadium": the near stand is BEHIND the lens (so it
+ * never clutters the foreground), the pitch fills the middle, and the far
+ * stand with its roof closes the top of the shot.
+ *
+ * A real gantry sits 60-80m back and shoots long; this camera is inside the
+ * bowl and much closer, so it needs a wider lens to still cover most of the
+ * pitch. `aspect` drives that: a phone has far less horizontal room, so it
+ * both widens and lifts slightly rather than shrinking the stadium into a toy.
+ */
+export function computeBroadcastCamera(structure: Stadium3DStructure, aspect: number): BroadcastCamera {
+  const { innerHalfWidth, standDepth, standHeight, roofCoverage } = structure
+  const safeAspect = Math.max(0.45, aspect)
+  const portrait = safeAspect < 1.2
+
+  // The gantry sits high and well back in the near touchline stand - above its
+  // own crowd, looking out over it. Being back is what flattens the angle down
+  // to the near touchline: from the front row the near side of the pitch is
+  // almost underneath the lens and the frame fills with grass at any lens.
+  //
+  // On a covered ground the camera must also stay UNDER the roof (a real
+  // gantry hangs from it) - otherwise it ends up standing on the roof deck,
+  // which then blocks the entire view of the pitch.
+  const roofed = roofCoverage > 0.05
+  const depthFraction = roofed ? 0.68 : portrait ? 0.95 : 0.88
+  const lateral = innerHalfWidth + standDepth * depthFraction
+
+  // The stand's own raked surface directly under the camera.
+  const standSurfaceY = standHeight * depthFraction
+  const roofClearance = Math.max(5, standHeight * 0.22)
+  // The roof deck runs from its inner lip up to the outer edge; interpolate to
+  // the camera's own position to find the real headroom there.
+  const roofInnerFraction = 0.42
+  const roofY = roofed
+    ? standHeight +
+      roofClearance * 0.66 +
+      ((depthFraction - roofInnerFraction) / (1 - roofInnerFraction)) * (roofClearance * 0.34)
+    : Infinity
+  const roofThickness = Math.max(1.2, standDepth * 0.045)
+
+  const desiredHeight = standSurfaceY + Math.max(5, standHeight * (portrait ? 0.4 : 0.3))
+  const headroomCeiling = roofed ? roofY - roofThickness - 1.5 : Infinity
+  const cameraHeight = Math.max(standSurfaceY + 2.5, Math.min(desiredHeight, headroomCeiling))
+
+  const azimuthRad = (BROADCAST_AZIMUTH_OFFSET_DEG * Math.PI) / 180
+  const alongPitch = -Math.tan(azimuthRad) * lateral
+
+  // --- Framing -------------------------------------------------------------
+  // Horizontal coverage is the design decision: how much of the pitch LENGTH
+  // this shot contains. Everything else (vertical angle, tilt) is then derived
+  // so the far roofline lands just inside the top of frame - so a small ground
+  // and a huge one are framed with the same intent rather than the same
+  // numbers.
+  const distanceToCentre = Math.hypot(lateral, cameraHeight)
+  const framedLength = PITCH_LENGTH * (portrait ? 0.74 : 1.02)
+  const hFov = 2 * Math.atan(framedLength / 2 / distanceToCentre)
+  const vFovRaw = 2 * Math.atan(Math.tan(hFov / 2) / safeAspect)
+  const vFov = Math.min((70 * Math.PI) / 180, Math.max((30 * Math.PI) / 180, vFovRaw))
+
+  // Where the far side's roofline (or its back row, on an open ground) sits.
+  const clearance = Math.max(5, standHeight * 0.22)
+  const farStandZ = -(innerHalfWidth + standDepth * (roofCoverage > 0.05 ? 0.42 : 1))
+  const farTopY = standHeight + (roofCoverage > 0.05 ? clearance * 0.66 : 0)
+  const angleToFarTop = Math.atan2(farTopY - cameraHeight, lateral - farStandZ)
+
+  // Tilt so that far top edge sits just inside the upper part of the frame,
+  // leaving the pitch to fill the lower half.
+  const aimAngle = angleToFarTop - vFov * 0.4
+  const aimDistance = lateral + innerHalfWidth * 0.5
+
+  return {
+    position: [alongPitch, cameraHeight, lateral],
+    target: [0, cameraHeight + Math.tan(aimAngle) * aimDistance, lateral - aimDistance],
+    fov: (vFov * 180) / Math.PI,
+    far: (distanceToCentre + standDepth) * 8,
+  }
+}
+
+// --- Stadium style -> architecture ------------------------------------------
+// The stadiumStyle a club picks is a real architectural choice, not a color
+// swap: it changes tier count, how close the stands sit to the touchline, how
+// much roof there is, and whether the corners are filled. These are MODIFIERS
+// applied on top of the capacity-derived structure, so a 30,000-seat compact
+// ground and a 30,000-seat bowl are visibly different buildings.
+//
+// Keys are the existing StadiumStyleId values from components/stadium-illustration.tsx -
+// this file deliberately does not redefine or renumber that enum.
+
+export interface StadiumStyleArchitecture {
+  /** Multiplies standOffset - how far the first row sits from the touchline. */
+  offsetScale: number
+  /** Multiplies standDepth/standHeight - the bulk of the stand itself. */
+  bulkScale: number
+  /** Added to tierCount (clamped 1..3). */
+  tierBonus: number
+  /** Overrides roofCoverage when set (0..1). */
+  roofCoverage?: number
+  /** Overrides cornerFill when set (0..1). */
+  cornerFill?: number
+  /** Whether this ground carries floodlight masts (grounds with heavy roofs light from the roof instead). */
+  floodlightMasts: boolean
+  /** A running track pushes every stand back from the pitch. */
+  athleticsTrack?: boolean
+}
+
+export const STADIUM_STYLE_ARCHITECTURE: Record<string, StadiumStyleArchitecture> = {
+  // Continuous single-tier bowl, open corners filled, modest roof.
+  "classic-bowl": { offsetScale: 1, bulkScale: 1, tierBonus: 0, cornerFill: 0.95, roofCoverage: 0.45, floodlightMasts: true },
+  // Two decks, full roof, LED-heavy - the modern build.
+  "modern-arena": { offsetScale: 0.85, bulkScale: 1.12, tierBonus: 1, cornerFill: 1, roofCoverage: 0.95, floodlightMasts: false },
+  // Four separate steep stands, open corners - the traditional British ground.
+  "four-stand": { offsetScale: 0.8, bulkScale: 1.05, tierBonus: 0, cornerFill: 0.12, roofCoverage: 0.7, floodlightMasts: true },
+  // Running track: everything pushed back, shallow single tier, no roof.
+  athletics: { offsetScale: 2.6, bulkScale: 0.85, tierBonus: 0, cornerFill: 0.85, roofCoverage: 0.1, floodlightMasts: true, athleticsTrack: true },
+  // Small, intimate, stands right on top of the pitch.
+  boutique: { offsetScale: 0.55, bulkScale: 0.78, tierBonus: 0, cornerFill: 0.35, roofCoverage: 0.55, floodlightMasts: true },
+  // Fully enclosed, heaviest roof of all.
+  retractable: { offsetScale: 0.9, bulkScale: 1.15, tierBonus: 1, cornerFill: 1, roofCoverage: 1, floodlightMasts: false },
+  // Old ground: tight, partial roof, sharp corners, masts.
+  historic: { offsetScale: 0.75, bulkScale: 0.95, tierBonus: 0, cornerFill: 0.2, roofCoverage: 0.5, floodlightMasts: true },
+  // Open, airy, low stands - sea on one side.
+  coastal: { offsetScale: 1.1, bulkScale: 0.88, tierBonus: 0, cornerFill: 0.5, roofCoverage: 0.3, floodlightMasts: true },
+}
+
+export const DEFAULT_STYLE_ARCHITECTURE: StadiumStyleArchitecture = STADIUM_STYLE_ARCHITECTURE["classic-bowl"]
+
+export function getStyleArchitecture(styleId: string | null | undefined): StadiumStyleArchitecture {
+  return (styleId && STADIUM_STYLE_ARCHITECTURE[styleId]) || DEFAULT_STYLE_ARCHITECTURE
+}
+
+/**
+ * The architecture tags shown on a style card, DERIVED from that style's own
+ * modifiers rather than typed out per style - so a card can never advertise
+ * "full roof" for a ground the renderer builds without one. Values are
+ * translation keys; the UI resolves them.
+ */
+export function getStyleTagKeys(styleId: string | null | undefined, limit = 2): string[] {
+  const arch = getStyleArchitecture(styleId)
+  const tags: string[] = []
+
+  // Ordered by how much each trait actually distinguishes one ground from
+  // another, because callers take only the first couple. A trait nearly every
+  // style shares (floodlight masts, for one) tells a manager nothing, so it is
+  // not listed at all.
+  if (arch.athleticsTrack) tags.push("stadium.tag.athleticsTrack")
+  if (arch.tierBonus >= 1) tags.push("stadium.tag.twoTiers")
+
+  const roof = arch.roofCoverage ?? 0
+  if (roof >= 0.9) tags.push("stadium.tag.fullRoof")
+  else if (roof <= 0.35) tags.push("stadium.tag.openAir")
+  else tags.push("stadium.tag.partialRoof")
+
+  const corners = arch.cornerFill ?? 0.5
+  if (corners <= 0.3) tags.push("stadium.tag.openCorners")
+  else if (corners >= 0.9) tags.push("stadium.tag.continuousBowl")
+
+  if (arch.offsetScale <= 0.7) tags.push("stadium.tag.closeStands")
+  if (arch.bulkScale <= 0.85) tags.push("stadium.tag.compact")
+
+  return tags.slice(0, limit)
+}
+
+/**
+ * The capacity-derived structure with a style's architecture applied. This is
+ * what every broadcast renderer should call - computeStadium3DStructure alone
+ * only knows how BIG a ground is, not what KIND of ground it is.
+ */
+export function computeStyledStructure(capacity: number, styleId: string | null | undefined): Stadium3DStructure {
+  const base = computeStadium3DStructure(capacity)
+  const arch = getStyleArchitecture(styleId)
+
+  const standOffset = base.standOffset * arch.offsetScale
+  const standDepth = base.standDepth * arch.bulkScale
+  const standHeight = base.standHeight * arch.bulkScale
+  const tierCount = Math.min(3, Math.max(1, base.tierCount + arch.tierBonus))
+
+  return {
+    ...base,
+    standOffset,
+    standDepth,
+    standHeight,
+    tierCount,
+    cornerFill: arch.cornerFill ?? base.cornerFill,
+    roofCoverage: arch.roofCoverage ?? base.roofCoverage,
+    innerHalfLength: PITCH_LENGTH / 2 + standOffset,
+    innerHalfWidth: PITCH_WIDTH / 2 + standOffset,
+    outerHalfLength: PITCH_LENGTH / 2 + standOffset + standDepth,
+    outerHalfWidth: PITCH_WIDTH / 2 + standOffset + standDepth,
+  }
 }

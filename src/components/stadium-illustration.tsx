@@ -56,6 +56,14 @@ function lerp(from: number, to: number, t: number): number {
   return from + (to - from) * t
 }
 
+/** Deterministic pseudo-random in [0,1) - a pure hash of `seed`, never
+ *  Math.random(), so the crowd texture never re-shuffles or flickers when
+ *  the component re-renders (e.g. every poll tick in the Match Center). */
+function seededRandom(seed: number): number {
+  const x = Math.sin(seed * 12.9898) * 43758.5453
+  return x - Math.floor(x)
+}
+
 /** Walks the perimeter of an axis-aligned rectangle (half-extents hw/hh) starting
  *  at the top-left corner and going clockwise; t is the fraction traveled (0..1). */
 function pointOnRectPerimeter(hw: number, hh: number, t: number): { x: number; y: number } {
@@ -69,13 +77,74 @@ function pointOnRectPerimeter(hw: number, hh: number, t: number): { x: number; y
   return { x: -hw, y: hh - (d - 2 * w - h) }
 }
 
+const DEFAULT_CROWD_PRIMARY = "#361D78"
+const DEFAULT_CROWD_SECONDARY = "#5D4890"
+const CALM_CROWD_PALETTE = ["#4B4468", "#635C82", "#8783A0", "#3A3555", "#6E6790"]
+
+function buildUltrasPalette(primary: string, secondary: string): string[] {
+  return [primary, secondary, "#F5F1FF", primary, secondary, "#2A1650"]
+}
+
+// A grid of many thumbnail-sized instances (the style picker) must stay
+// cheap, so the total dot count is capped regardless of tier count/capacity
+// rather than growing unbounded with `growth`.
+const TOTAL_CROWD_DOT_BUDGET = 130
+
+function ovalCrowdDots(
+  rxIn: number,
+  ryIn: number,
+  rxOut: number,
+  ryOut: number,
+  count: number,
+  seedBase: number,
+): { x: number; y: number }[] {
+  return Array.from({ length: count }, (_, i) => {
+    const angle = seededRandom(seedBase + i * 7.13) * Math.PI * 2
+    const depth = seededRandom(seedBase + i * 3.7 + 50)
+    const rx = lerp(rxIn, rxOut, depth)
+    const ry = lerp(ryIn, ryOut, depth)
+    return { x: 200 + Math.cos(angle) * rx, y: 124 + Math.sin(angle) * ry }
+  })
+}
+
+function rectCrowdDots(
+  hwIn: number,
+  hhIn: number,
+  hwOut: number,
+  hhOut: number,
+  count: number,
+  seedBase: number,
+): { x: number; y: number }[] {
+  return Array.from({ length: count }, (_, i) => {
+    const t = seededRandom(seedBase + i * 7.13)
+    const depth = seededRandom(seedBase + i * 3.7 + 50)
+    const hw = lerp(hwIn, hwOut, depth)
+    const hh = lerp(hhIn, hhOut, depth)
+    const p = pointOnRectPerimeter(hw, hh, t)
+    return { x: 200 + p.x, y: 120 + p.y }
+  })
+}
+
 export function StadiumIllustration({
   style,
   capacity = MIN_STADIUM_CAPACITY,
+  crowdStyle,
+  primaryColor,
+  secondaryColor,
+  animated = false,
   className,
 }: {
   style?: string | null
   capacity?: number
+  /** Drives crowd density/palette/movement. Omit for a neutral crowd. */
+  crowdStyle?: "calm" | "ultras" | null
+  /** Tints the crowd + LED perimeter strip - defaults to the GoalX brand purple. */
+  primaryColor?: string | null
+  secondaryColor?: string | null
+  /** Gates CSS-animated crowd motion. Keep false for grids of many
+   *  simultaneous instances (a style picker); true for a single hero
+   *  instance (Match Center, a selected-style preview). */
+  animated?: boolean
   className?: string
 }) {
   const cfg = getStadiumStyleConfig(style)
@@ -96,36 +165,74 @@ export function StadiumIllustration({
   const bowlRy = lerp(bowlBaseRy, bowlMaxRy, growth)
   const wallHeight = lerp(14, 40, growth)
 
+  const primary = primaryColor || DEFAULT_CROWD_PRIMARY
+  const secondary = secondaryColor || DEFAULT_CROWD_SECONDARY
+  const isUltras = crowdStyle === "ultras"
+  const hasCrowd = crowdStyle != null
+  const crowdPalette = isUltras ? buildUltrasPalette(primary, secondary) : CALM_CROWD_PALETTE
+  const crowdMotionClass = !animated ? "" : isUltras ? "animate-goalx-crowd-ultras" : "animate-goalx-crowd-calm"
+
+  // Perspective pitch: narrower at the far (top) touchline, wider at the
+  // near (bottom) one, so it reads as viewed from an elevated stand rather
+  // than a flat top-down rectangle.
+  const pitchTopY = 120 - pitchRy
+  const pitchBottomY = 120 + pitchRy
+  const pitchTopHalf = pitchRx * (cfg.intimate ? 0.68 : 0.62)
+  const pitchBottomHalf = pitchRx * 1.08
+  const halfWidthAt = (y: number) => lerp(pitchTopHalf, pitchBottomHalf, (y - pitchTopY) / (pitchBottomY - pitchTopY))
+
+  const centerLineHalf = halfWidthAt(120)
+  const farPenaltyDepth = pitchRy * 0.32
+  const nearPenaltyDepth = pitchRy * 0.5
+  const farPenaltyOuterHalf = halfWidthAt(pitchTopY + farPenaltyDepth) * 0.46
+  const nearPenaltyOuterHalf = halfWidthAt(pitchBottomY - nearPenaltyDepth) * 0.5
+
   return (
     <svg viewBox="0 0 400 220" className={className} aria-hidden>
       <defs>
         <linearGradient id={`sky-${uid}`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#241a4d" />
-          <stop offset="100%" stopColor="#120c2e" />
+          <stop offset="0%" stopColor="#1e1142" />
+          <stop offset="100%" stopColor="#0d0720" />
         </linearGradient>
         <linearGradient id={`bowl-outer-${uid}`} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={cfg.id === "historic" ? "#e8dcc4" : "#e7e5f0"} />
           <stop offset="100%" stopColor={cfg.id === "historic" ? "#b8a97e" : "#b9b6cc"} />
         </linearGradient>
         <linearGradient id={`bowl-wall-${uid}`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#4a4468" />
-          <stop offset="100%" stopColor="#2e2a47" />
+          <stop offset="0%" stopColor="#372a5c" />
+          <stop offset="100%" stopColor="#1b1436" />
         </linearGradient>
         <linearGradient id={`tier-${uid}`} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={cfg.id === "historic" ? "#d8caa0" : "#d3d1e0"} />
           <stop offset="100%" stopColor={cfg.id === "historic" ? "#a3936a" : "#a29fbb"} />
         </linearGradient>
-        <radialGradient id={`pitch-${uid}`} cx="50%" cy="35%" r="75%">
-          <stop offset="0%" stopColor="#4ade80" />
-          <stop offset="100%" stopColor="#16a34a" />
-        </radialGradient>
+        <linearGradient id={`pitch-${uid}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#3fae6a" />
+          <stop offset="55%" stopColor="#2f9c58" />
+          <stop offset="100%" stopColor="#227a45" />
+        </linearGradient>
         <radialGradient id={`glow-${uid}`} cx="50%" cy="50%" r="50%">
           <stop offset="0%" stopColor="#fef08a" stopOpacity="0.9" />
           <stop offset="100%" stopColor="#fef08a" stopOpacity="0" />
         </radialGradient>
+        <radialGradient id={`pitch-sheen-${uid}`} cx="50%" cy="18%" r="65%">
+          <stop offset="0%" stopColor="#ffffff" stopOpacity="0.16" />
+          <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+        </radialGradient>
       </defs>
 
       <rect width="400" height="220" fill={`url(#sky-${uid})`} rx="12" />
+
+      {/* Evening atmosphere: a few faint stars above the bowl. */}
+      {[
+        { x: 44, y: 20, r: 0.9 },
+        { x: 96, y: 34, r: 0.6 },
+        { x: 300, y: 22, r: 0.7 },
+        { x: 352, y: 40, r: 0.9 },
+        { x: 200, y: 16, r: 0.6 },
+      ].map((s, i) => (
+        <circle key={i} cx={s.x} cy={s.y} r={s.r} fill="#ffffff" opacity="0.5" />
+      ))}
 
       {cfg.id === "coastal" && (
         <path d="M 0 190 Q 100 178 200 190 T 400 190 L 400 220 L 0 220 Z" fill="#0e7490" opacity="0.5" />
@@ -149,7 +256,8 @@ export function StadiumIllustration({
           const { x: ox, y: oy } = pointOnRectPerimeter(pitchRx + 16, pitchRy + 14, i / seatCount)
           const x = 200 + ox
           const y = 120 + oy
-          return <rect key={i} x={x - 3} y={y - 2.5} width="6" height="5" rx="1" fill={cfg.accent} opacity="0.9" />
+          const color = hasCrowd ? crowdPalette[i % crowdPalette.length] : cfg.accent
+          return <rect key={i} x={x - 3} y={y - 2.5} width="6" height="5" rx="1" fill={color} opacity="0.9" />
         })
       ) : cfg.shape === "rect" ? (
         <>
@@ -163,23 +271,44 @@ export function StadiumIllustration({
           />
           {Array.from({ length: tiers + 1 }).map((_, i) => {
             const f = i / tiers
-            const w = lerp(bowlRx + 10, pitchRx + 10, f) * 2
-            const h = lerp(bowlRy, pitchRy + 10, f) * 2
+            const fNext = Math.min(1, (i + 1) / tiers)
+            const hw = lerp(bowlRx + 10, pitchRx + 10, f)
+            const hh = lerp(bowlRy, pitchRy + 10, f)
+            const hwNext = lerp(bowlRx + 10, pitchRx + 10, fNext)
+            const hhNext = lerp(bowlRy, pitchRy + 10, fNext)
+            const dotCount = hasCrowd && i < tiers ? Math.round(TOTAL_CROWD_DOT_BUDGET / tiers) : 0
+            const dots = dotCount > 0 ? rectCrowdDots(hwNext, hhNext, hw, hh, dotCount, i * 97 + 11) : []
             return (
-              <rect
-                key={i}
-                x={200 - w / 2}
-                y={120 - h / 2}
-                width={w}
-                height={h}
-                rx="14"
-                fill={i % 2 === 0 ? `url(#bowl-outer-${uid})` : `url(#tier-${uid})`}
-                stroke="#000000"
-                strokeOpacity="0.22"
-                strokeWidth="1.5"
-              />
+              <g key={i}>
+                <rect
+                  x={200 - hw}
+                  y={120 - hh}
+                  width={hw * 2}
+                  height={hh * 2}
+                  rx="14"
+                  fill={i % 2 === 0 ? `url(#bowl-outer-${uid})` : `url(#tier-${uid})`}
+                  stroke="#000000"
+                  strokeOpacity="0.22"
+                  strokeWidth="1.5"
+                />
+                {dots.map((d, di) => (
+                  <circle
+                    key={di}
+                    cx={d.x}
+                    cy={d.y}
+                    r="1.3"
+                    fill={crowdPalette[di % crowdPalette.length]}
+                    opacity="0.85"
+                    className={crowdMotionClass}
+                    style={animated ? { animationDelay: `${(di % 12) * 0.11}s`, transformOrigin: `${d.x}px ${d.y}px` } : undefined}
+                  />
+                ))}
+              </g>
             )
           })}
+          {/* Tunnel entrances - two dark notches at the base of the near stand. */}
+          <rect x={200 - 22} y={120 + bowlRy - wallHeight * 0.15} width="14" height={wallHeight * 0.75} rx="2" fill="#0d0720" opacity="0.7" />
+          <rect x={200 + 8} y={120 + bowlRy - wallHeight * 0.15} width="14" height={wallHeight * 0.75} rx="2" fill="#0d0720" opacity="0.7" />
         </>
       ) : (
         <>
@@ -189,24 +318,62 @@ export function StadiumIllustration({
           />
           {Array.from({ length: tiers + 1 }).map((_, i) => {
             const f = i / tiers
+            const fNext = Math.min(1, (i + 1) / tiers)
             const rx = lerp(bowlRx, pitchRx + 6, f)
             const ry = lerp(bowlRy, pitchRy + 6, f)
+            const rxNext = lerp(bowlRx, pitchRx + 6, fNext)
+            const ryNext = lerp(bowlRy, pitchRy + 6, fNext)
+            const dotCount = hasCrowd && i < tiers ? Math.round(TOTAL_CROWD_DOT_BUDGET / tiers) : 0
+            const dots = dotCount > 0 ? ovalCrowdDots(rxNext, ryNext, rx, ry, dotCount, i * 97 + 11) : []
             return (
-              <ellipse
-                key={i}
-                cx="200"
-                cy={i === 0 ? 128 : 124}
-                rx={rx}
-                ry={ry}
-                fill={i % 2 === 0 ? `url(#bowl-outer-${uid})` : `url(#tier-${uid})`}
-                stroke="#000000"
-                strokeOpacity="0.22"
-                strokeWidth="1.5"
-              />
+              <g key={i}>
+                <ellipse
+                  cx="200"
+                  cy={i === 0 ? 128 : 124}
+                  rx={rx}
+                  ry={ry}
+                  fill={i % 2 === 0 ? `url(#bowl-outer-${uid})` : `url(#tier-${uid})`}
+                  stroke="#000000"
+                  strokeOpacity="0.22"
+                  strokeWidth="1.5"
+                />
+                {dots.map((d, di) => (
+                  <circle
+                    key={di}
+                    cx={d.x}
+                    cy={d.y}
+                    r="1.3"
+                    fill={crowdPalette[di % crowdPalette.length]}
+                    opacity="0.85"
+                    className={crowdMotionClass}
+                    style={animated ? { animationDelay: `${(di % 12) * 0.11}s`, transformOrigin: `${d.x}px ${d.y}px` } : undefined}
+                  />
+                ))}
+              </g>
             )
           })}
+          {/* Tunnel entrances - two dark notches at the base of the near stand. */}
+          <rect x={200 - 22} y={128 + wallHeight * 0.2} width="14" height={wallHeight * 0.7} rx="2" fill="#0d0720" opacity="0.7" />
+          <rect x={200 + 8} y={128 + wallHeight * 0.2} width="14" height={wallHeight * 0.7} rx="2" fill="#0d0720" opacity="0.7" />
         </>
       )}
+
+      {isUltras &&
+        !seatMode &&
+        [
+          { x: 200 - bowlRx * 0.42, y: 132 },
+          { x: 200, y: 128 },
+          { x: 200 + bowlRx * 0.42, y: 132 },
+        ].map((f, i) => (
+          <path
+            key={i}
+            d={`M${f.x} ${f.y + 9} Q${f.x - 7} ${f.y - 3} ${f.x} ${f.y - 11} Q${f.x + 7} ${f.y - 3} ${f.x} ${f.y + 9} Z`}
+            fill={i % 2 === 0 ? primary : secondary}
+            opacity="0.92"
+            className={animated ? "animate-goalx-flag-wave" : undefined}
+            style={animated ? { animationDelay: `${i * 0.3}s`, transformOrigin: `${f.x}px ${f.y + 6}px` } : undefined}
+          />
+        ))}
 
       {cfg.roof !== "none" &&
         (cfg.roof === "full" ? (
@@ -227,6 +394,12 @@ export function StadiumIllustration({
               strokeLinecap="round"
               opacity="0.5"
             />
+            {/* Glass roof mullions - a modern/retractable structural detail. */}
+            {Array.from({ length: 9 }).map((_, i) => {
+              const t = i / 8
+              const x = lerp(66, 334, t)
+              return <line key={i} x1={x} y1={108} x2={lerp(50, 350, t)} y2={96} stroke={cfg.accent} strokeWidth="1" opacity="0.35" />
+            })}
           </>
         ) : (
           <path
@@ -259,55 +432,72 @@ export function StadiumIllustration({
           )
         })()}
 
-      <rect
-        x={200 - pitchRx}
-        y={120 - pitchRy}
-        width={pitchRx * 2}
-        height={pitchRy * 2}
+      {/* Pitch - drawn as a perspective trapezoid (narrower far edge, wider
+          near edge) rather than a flat top-down rectangle. */}
+      <path
+        d={`M ${200 - pitchTopHalf} ${pitchTopY} L ${200 + pitchTopHalf} ${pitchTopY} L ${200 + pitchBottomHalf} ${pitchBottomY} L ${200 - pitchBottomHalf} ${pitchBottomY} Z`}
         fill={`url(#pitch-${uid})`}
         stroke="#ffffff"
         strokeOpacity="0.7"
         strokeWidth="2"
       />
-      {/* corner arcs */}
-      {[
-        { cx: 200 - pitchRx, cy: 120 - pitchRy, d: "M -1 7 A 8 8 0 0 1 7 -1" },
-        { cx: 200 + pitchRx, cy: 120 - pitchRy, d: "M -7 -1 A 8 8 0 0 1 1 7" },
-        { cx: 200 + pitchRx, cy: 120 + pitchRy, d: "M 1 -7 A 8 8 0 0 1 -7 1" },
-        { cx: 200 - pitchRx, cy: 120 + pitchRy, d: "M 7 1 A 8 8 0 0 1 -1 -7" },
-      ].map((c, i) => (
-        <path
-          key={i}
-          d={c.d}
-          transform={`translate(${c.cx} ${c.cy})`}
-          fill="none"
-          stroke="#ffffff"
-          strokeOpacity="0.6"
-          strokeWidth="1.5"
-        />
-      ))}
-      <line x1="200" y1={120 - pitchRy} x2="200" y2={120 + pitchRy} stroke="#ffffff" strokeOpacity="0.7" strokeWidth="2" />
-      <ellipse cx="200" cy="120" rx="20" ry="9" fill="none" stroke="#ffffff" strokeOpacity="0.7" strokeWidth="2" />
-      <rect
-        x={200 - pitchRx}
-        y={120 - Math.min(pitchRy * 0.85, pitchRy - 4)}
-        width="22"
-        height={Math.min(pitchRy * 0.85, pitchRy - 4) * 2}
+      <path
+        d={`M ${200 - pitchTopHalf} ${pitchTopY} L ${200 + pitchTopHalf} ${pitchTopY} L ${200 + pitchBottomHalf} ${pitchBottomY} L ${200 - pitchBottomHalf} ${pitchBottomY} Z`}
+        fill={`url(#pitch-sheen-${uid})`}
+      />
+      {/* Mowing stripes for a broadcast-pitch feel. */}
+      {Array.from({ length: 6 }).map((_, i) => {
+        const y0 = lerp(pitchTopY, pitchBottomY, i / 6)
+        const y1 = lerp(pitchTopY, pitchBottomY, (i + 1) / 6)
+        if (i % 2 !== 0) return null
+        return (
+          <path
+            key={i}
+            d={`M ${200 - halfWidthAt(y0)} ${y0} L ${200 + halfWidthAt(y0)} ${y0} L ${200 + halfWidthAt(y1)} ${y1} L ${200 - halfWidthAt(y1)} ${y1} Z`}
+            fill="#ffffff"
+            opacity="0.05"
+          />
+        )
+      })}
+      {/* Halfway line + center circle (squashed to match the perspective). */}
+      <line x1="200" y1={pitchTopY} x2="200" y2={pitchBottomY} stroke="#ffffff" strokeOpacity="0.7" strokeWidth="2" />
+      <ellipse cx="200" cy="120" rx={centerLineHalf * 0.34} ry="8" fill="none" stroke="#ffffff" strokeOpacity="0.7" strokeWidth="2" />
+      {/* Far (top) penalty box. */}
+      <path
+        d={`M ${200 - farPenaltyOuterHalf} ${pitchTopY} L ${200 + farPenaltyOuterHalf} ${pitchTopY} L ${200 + farPenaltyOuterHalf * 0.86} ${pitchTopY + farPenaltyDepth} L ${200 - farPenaltyOuterHalf * 0.86} ${pitchTopY + farPenaltyDepth} Z`}
         fill="none"
         stroke="#ffffff"
         strokeOpacity="0.6"
-        strokeWidth="2"
+        strokeWidth="1.5"
       />
-      <rect
-        x={200 + pitchRx - 22}
-        y={120 - Math.min(pitchRy * 0.85, pitchRy - 4)}
-        width="22"
-        height={Math.min(pitchRy * 0.85, pitchRy - 4) * 2}
+      {/* Near (bottom) penalty box - larger, per the perspective. */}
+      <path
+        d={`M ${200 - nearPenaltyOuterHalf * 0.82} ${pitchBottomY - nearPenaltyDepth} L ${200 + nearPenaltyOuterHalf * 0.82} ${pitchBottomY - nearPenaltyDepth} L ${200 + nearPenaltyOuterHalf} ${pitchBottomY} L ${200 - nearPenaltyOuterHalf} ${pitchBottomY} Z`}
         fill="none"
         stroke="#ffffff"
         strokeOpacity="0.6"
-        strokeWidth="2"
+        strokeWidth="1.5"
       />
+
+      {/* LED perimeter strip along the near touchline - tinted by the club's
+          own colors (or the GoalX brand purple by default). */}
+      {Array.from({ length: 10 }).map((_, i) => {
+        const t0 = i / 10
+        const t1 = (i + 1) / 10
+        const x0 = lerp(200 - pitchBottomHalf, 200 + pitchBottomHalf, t0)
+        const x1 = lerp(200 - pitchBottomHalf, 200 + pitchBottomHalf, t1)
+        return (
+          <rect
+            key={i}
+            x={x0}
+            y={pitchBottomY + 2}
+            width={x1 - x0 - 1}
+            height="3.5"
+            fill={i % 2 === 0 ? primary : secondary}
+            opacity="0.9"
+          />
+        )
+      })}
     </svg>
   )
 }

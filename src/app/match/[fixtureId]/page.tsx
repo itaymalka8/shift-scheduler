@@ -21,10 +21,14 @@ export default async function MatchPage({ params }: { params: Promise<{ fixtureI
   if (!fixture) notFound()
 
   return (
-    <div className="min-h-screen bg-background">
-      <main className="mx-auto max-w-4xl px-3 py-4 sm:px-6 sm:py-8">
+    // The whole page is the match environment, not a widget dropped on a
+    // white document: the dark surface runs edge to edge under the app's
+    // navigation, and the Match Center sits inside it with a soft glow, the
+    // way a broadcast fills the screen it is watched on.
+    <div className="goalx-match-environment min-h-screen">
+      <main className="mx-auto max-w-6xl px-3 py-4 sm:px-6 sm:py-8">
         <div className="mb-3">
-          <Link href="/league" className="text-sm text-primary hover:underline">
+          <Link href="/league" className="text-sm font-medium text-white/70 transition-colors hover:text-white">
             {t("league.backToDashboard")}
           </Link>
         </div>

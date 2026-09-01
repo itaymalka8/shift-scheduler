@@ -18,14 +18,14 @@ function StatRow({ labelKey, home, away, suffix }: Row) {
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex items-center justify-between text-xs font-semibold tabular-nums">
+      <div className="flex items-center justify-between text-sm font-semibold tabular-nums text-white">
         <span>{home}{suffix}</span>
-        <span className="text-muted-foreground">{t(labelKey)}</span>
+        <span className="text-white/60">{t(labelKey)}</span>
         <span>{away}{suffix}</span>
       </div>
-      <div className="flex h-1.5 overflow-hidden rounded-full bg-muted">
-        <div className="bg-primary transition-[width] duration-500" style={{ width: `${homePct}%` }} />
-        <div className="flex-1 bg-primary/30 transition-[width] duration-500" />
+      <div className="flex h-1.5 overflow-hidden rounded-full bg-white/12">
+        <div className="bg-[var(--goalx-lavender)] transition-[width] duration-500" style={{ width: `${homePct}%` }} />
+        <div className="flex-1 bg-[var(--goalx-secondary)]/60 transition-[width] duration-500" />
       </div>
     </div>
   )
@@ -53,8 +53,8 @@ export function LiveStats({
     const h = finalStats.home
     const a = finalStats.away
     return (
-      <div className="rounded-2xl border bg-card p-3 sm:p-4">
-        <h3 className="mb-3 text-sm font-semibold text-muted-foreground">{t("match.statsTitle")}</h3>
+      <div className="goalx-glass-panel rounded-2xl p-3 sm:p-4">
+        <h3 className="mb-3 text-sm font-semibold text-white/75">{t("match.statsTitle")}</h3>
         <div className="flex flex-col gap-3">
           <StatRow labelKey="match.stat.possession" home={h.possessionPercent ?? 0} away={a.possessionPercent ?? 0} suffix="%" />
           <StatRow labelKey="match.stat.shots" home={h.shots ?? 0} away={a.shots ?? 0} />
@@ -73,8 +73,8 @@ export function LiveStats({
 
   const { home, away } = liveStats
   return (
-    <div className="rounded-2xl border bg-card p-3 sm:p-4">
-      <h3 className="mb-3 text-sm font-semibold text-muted-foreground">{t("match.statsTitle")}</h3>
+    <div className="goalx-glass-panel rounded-2xl p-3 sm:p-4">
+      <h3 className="mb-3 text-sm font-semibold text-white/75">{t("match.statsTitle")}</h3>
       <div className="flex flex-col gap-3">
         <StatRow labelKey="match.stat.goals" home={home.goals} away={away.goals} />
         <StatRow labelKey="match.stat.corners" home={home.corners} away={away.corners} />
