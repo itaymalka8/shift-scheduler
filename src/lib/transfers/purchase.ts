@@ -5,9 +5,8 @@ import { runSerializableTransaction } from "./retry"
 import { removePlayerFromSquad } from "./squad-cleanup"
 import { ensureTransferWindowExists, getTransferWindowDefinition, isWithinTransferWindow } from "./window"
 import { lockPlayerRow } from "@/lib/players/locks"
+import { getActiveRosterCount, lockTeamRosters, MAX_ACTIVE_ROSTER_SIZE } from "@/lib/players/roster"
 import { prisma } from "@/lib/prisma"
-
-const MAX_ACTIVE_ROSTER_SIZE = 22
 
 export interface PurchaseTransferListingInput {
   /**
@@ -145,14 +144,14 @@ export async function purchaseTransferListing(input: PurchaseTransferListingInpu
       throw new TransferError("PLAYER_NOT_OWNED", `Player ${player.id} is no longer owned by selling team ${listing.sellingTeamId}`)
     }
 
-    // 6b. Lock BOTH clubs' rows now, in ascending id order, before any team
-    // read or write below (balance check, the two ledger writes, the selling
-    // side's role cleanup). Deterministic order matters: two concurrent
-    // deals between the same two clubs in opposite directions would
-    // otherwise take these two rows in opposite orders and deadlock. Player
-    // is still locked first - Player -> Team is the contract.
-    const teamLockIds = [listing.sellingTeamId, input.buyingTeamId].sort()
-    await tx.$queryRaw`SELECT id FROM "Team" WHERE id IN (${teamLockIds[0]}, ${teamLockIds[1]}) ORDER BY id FOR UPDATE`
+    // 6b. Lock BOTH clubs' rows now, through the shared roster helper, before
+    // any team read or write below (the roster cap count, the balance check,
+    // the two ledger writes, the selling side's role cleanup). lockTeamRosters
+    // orders them by id: two concurrent deals between the same two clubs in
+    // opposite directions would otherwise take these rows in opposite orders
+    // and deadlock. Player is still locked first - Player -> Team is the
+    // contract, and it is the same Team lock Youth Promotion takes.
+    await lockTeamRosters(tx, [listing.sellingTeamId, input.buyingTeamId])
 
     // 7. Buying team must exist - never let a missing team surface as a
     // raw Prisma error.
@@ -162,7 +161,7 @@ export async function purchaseTransferListing(input: PurchaseTransferListingInpu
     }
 
     // 8. Roster cap - same transaction as the ownership transfer itself.
-    const activeRosterCount = await tx.player.count({ where: { teamId: input.buyingTeamId, careerStatus: "ACTIVE" } })
+    const activeRosterCount = await getActiveRosterCount(tx, input.buyingTeamId)
     if (activeRosterCount >= MAX_ACTIVE_ROSTER_SIZE) {
       throw new TransferError("ROSTER_FULL", `Team ${input.buyingTeamId} already has ${activeRosterCount} active players`)
     }

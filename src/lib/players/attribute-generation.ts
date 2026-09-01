@@ -35,14 +35,20 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
 }
 
-function randomInt(min: number, max: number): number {
+/** Just enough of SeededRandom to drive this module reproducibly. */
+export interface AttributeRandomSource {
+  int(min: number, max: number): number
+}
+
+function randomInt(min: number, max: number, rng?: AttributeRandomSource): number {
+  if (rng) return rng.int(min, max)
   return Math.floor(Math.random() * (max - min + 1)) + min
 }
 
-function shuffle<T>(items: T[]): T[] {
+function shuffle<T>(items: T[], rng?: AttributeRandomSource): T[] {
   const arr = [...items]
   for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
+    const j = rng ? rng.int(0, i) : Math.floor(Math.random() * (i + 1))
     ;[arr[i], arr[j]] = [arr[j], arr[i]]
   }
   return arr
@@ -60,14 +66,20 @@ function shuffle<T>(items: T[]): T[] {
  * nudges the weighted attributes just enough to close the gap between the
  * scattered draw and the actual target, preserving the shape of the
  * player's profile rather than flattening it.
+ *
+ * Pass `rng` to make the whole draw reproducible - youth generation needs
+ * the same prospect to come out of a re-run identically. Omit it and every
+ * draw comes from Math.random, exactly as squad generation has always used
+ * it.
  */
 export function generateAttributesForTargetOverall(
   position: PlayerPosition,
   targetOverall: number,
-  config: AttributeGenerationConfig = DEFAULT_ATTRIBUTE_GENERATION_CONFIG
+  config: AttributeGenerationConfig = DEFAULT_ATTRIBUTE_GENERATION_CONFIG,
+  rng?: AttributeRandomSource
 ): PlayerAttributes {
   const weights = POSITION_ATTRIBUTE_WEIGHTS[position]
-  const weightedKeys = shuffle(Object.keys(weights) as AttributeKey[])
+  const weightedKeys = shuffle(Object.keys(weights) as AttributeKey[], rng)
   const sortedByWeight = [...weightedKeys].sort((a, b) => (weights[b] ?? 0) - (weights[a] ?? 0))
 
   const attributes: PlayerAttributes = {}
@@ -75,7 +87,7 @@ export function generateAttributesForTargetOverall(
   sortedByWeight.forEach((key, i) => {
     const rank = sortedByWeight.length > 1 ? i / (sortedByWeight.length - 1) : 0
     const variance = config.minVariance + (config.maxVariance - config.minVariance) * rank
-    attributes[key] = clamp(Math.round(targetOverall + randomInt(-variance, variance)), 1, 100)
+    attributes[key] = clamp(Math.round(targetOverall + randomInt(-variance, variance, rng)), 1, 100)
   })
 
   for (let pass = 0; pass < config.correctionPasses; pass++) {
@@ -95,7 +107,11 @@ export function generateAttributesForTargetOverall(
 
   for (const key of fullAttributeSet) {
     if (attributes[key] != null) continue // already set as a weighted attribute above
-    attributes[key] = clamp(Math.round(targetOverall + randomInt(-config.flavorVarianceLow, config.flavorVarianceHigh)), 1, 100)
+    attributes[key] = clamp(
+      Math.round(targetOverall + randomInt(-config.flavorVarianceLow, config.flavorVarianceHigh, rng)),
+      1,
+      100
+    )
   }
 
   return attributes

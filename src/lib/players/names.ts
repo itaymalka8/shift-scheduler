@@ -17,8 +17,19 @@ const LAST_NAMES = [
   "אביטן", "בכר", "גמליאל", "דיין",
 ]
 
-export function generatePlayerName(): { firstName: string; lastName: string } {
-  const firstName = FIRST_NAMES[Math.floor(Math.random() * FIRST_NAMES.length)]
-  const lastName = LAST_NAMES[Math.floor(Math.random() * LAST_NAMES.length)]
-  return { firstName, lastName }
+/** Just enough of SeededRandom for this module, so it needn't import the match engine. */
+export interface NameRandomSource {
+  int(min: number, max: number): number
+}
+
+/**
+ * Pass a seeded source to make the draw reproducible - youth generation
+ * needs the same prospect to come out of a re-run identically. Omit it and
+ * the pools are drawn from Math.random exactly as before, so squad
+ * generation is unchanged.
+ */
+export function generatePlayerName(rng?: NameRandomSource): { firstName: string; lastName: string } {
+  const pick = <T,>(items: readonly T[]): T =>
+    rng ? items[rng.int(0, items.length - 1)] : items[Math.floor(Math.random() * items.length)]
+  return { firstName: pick(FIRST_NAMES), lastName: pick(LAST_NAMES) }
 }

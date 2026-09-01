@@ -70,13 +70,19 @@ const teamRoles = { balance: 100_000_000, captainId: null, penaltyTakerId: null,
 
 function makeTx(): Prisma.TransactionClient {
   const stub = {
-    // Both the Player lock and the Team lock go through $queryRaw; the raw
-    // SQL text distinguishes them.
+    // The Player lock is a locking read; the Team roster lock is a write (it
+    // has to produce a new row version - see lockTeamRoster). So they arrive
+    // on different Prisma raw methods.
     $queryRaw: (strings: TemplateStringsArray) => {
       const sql = strings.join("?")
-      const name = sql.includes('"Player"') ? "LOCK:Player" : sql.includes('"Team"') ? "LOCK:Team" : "LOCK:other"
+      const name = sql.includes('"Player"') ? "LOCK:Player" : "LOCK:other"
       trace.push(name)
-      return Promise.resolve(name === "LOCK:Player" ? [{ id: PLAYER_ID }] : [{ id: SELLER_ID }, { id: BUYER_ID }])
+      return Promise.resolve([{ id: PLAYER_ID }])
+    },
+    $executeRaw: (strings: TemplateStringsArray) => {
+      const sql = strings.join("?")
+      trace.push(sql.includes('"Team"') ? "LOCK:Team" : "LOCK:other")
+      return Promise.resolve(1)
     },
     player: {
       findUnique: () => record("player.findUnique", makePlayer()),
@@ -191,7 +197,9 @@ describe("player lock-ordering contract", () => {
 
     const teamLock = trace.indexOf("LOCK:Team")
     expect(teamLock).toBeGreaterThan(-1)
-    // Both clubs are locked together, before any team read/write or ledger write.
+    // Both clubs are locked - one call each, in ascending id order.
+    expect(trace.filter((op) => op === "LOCK:Team")).toHaveLength(2)
+    // ...before any team read/write or ledger write.
     for (const op of ["team.findUnique", "team.findUniqueOrThrow", "team.update", "financial.create"]) {
       const at = trace.indexOf(op)
       if (at !== -1) expect(at).toBeGreaterThan(teamLock)
