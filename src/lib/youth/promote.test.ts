@@ -61,6 +61,9 @@ function makeTx(options: { intake?: Record<string, unknown>; prospect?: Record<s
       update: (args: { data: Record<string, unknown> }) => record("prospect.update", args.data),
       updateMany: (args: { data: Record<string, unknown> }) => record("prospect.updateMany", { count: 2, ...args.data }),
     },
+    playerSeasonLifecycle: {
+      create: (args: { data: Record<string, unknown> }) => record("lifecycle.create", args.data),
+    },
     player: {
       count: () => record("player.count", options.rosterCount ?? 0),
       findMany: () => record("player.findMany", [{ shirtNumber: 1 }]),
@@ -123,6 +126,15 @@ describe("youth promotion - validation", () => {
     expect(created).toBeGreaterThan(-1)
     // Overall stored on the prospect is what its attributes grade out at.
     expect(calculatePlayerOverall(prospect)).toBe(prospect.overall)
+  })
+
+  it("marks the new player as already done with this season's lifecycle", async () => {
+    const { tx } = makeTx()
+    await run(tx)
+    // Otherwise a concurrent orchestrator still in PLAYER_LIFECYCLE would
+    // age a player who was only just created.
+    expect(trace).toContain("lifecycle.create")
+    expect(trace.indexOf("player.create")).toBeLessThan(trace.indexOf("lifecycle.create"))
   })
 
   it("rejects a closed intake", async () => {

@@ -12,6 +12,7 @@
     "process-fixtures": "tsx scripts/process-due-fixtures.ts",
     "expire-transfer-listings": "tsx scripts/expire-transfer-listings.ts",
     "process-scheduled-jobs": "tsx scripts/process-scheduled-jobs.ts",
+    "process-season-lifecycle": "tsx scripts/process-season-lifecycle.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

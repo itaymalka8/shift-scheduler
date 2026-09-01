@@ -125,6 +125,15 @@ export async function runPromoteYouthProspect(
     select: { id: true },
   })
 
+  // This player has already had their transition for this season - they were
+  // created during it. Writing the ledger row here is what keeps a
+  // concurrent orchestrator still working through PLAYER_LIFECYCLE from
+  // picking up a brand-new 16-year-old and ageing them the moment they
+  // arrive. It also makes "who still needs this season's lifecycle?"
+  // (seasonLifecyclePlayerFilter) answer correctly no matter how the two
+  // stages interleave.
+  await tx.playerSeasonLifecycle.create({ data: { seasonId: intake.seasonId, playerId: player.id } })
+
   await tx.youthProspect.update({
     where: { id: prospect.id },
     data: { status: "PROMOTED", promotedPlayerId: player.id, promotedAt: new Date() },

@@ -221,6 +221,42 @@ export function processPlayerSeasonLifecycle(input: PlayerSeasonLifecycleInput):
 
 export const DEFAULT_LIFECYCLE_BATCH_SIZE = 25
 
+/**
+ * Which players a given season's lifecycle actually covers. One definition,
+ * used by both the batch runner below and the orchestrator's "is this stage
+ * finished?" check, so those two can never drift into disagreeing about who
+ * still needs processing (which would strand a stage forever, or advance it
+ * early).
+ *
+ * Two groups, and deliberately no third:
+ *
+ *  - Players owned by a club that is actually IN this season, resolved
+ *    through the season's own divisions. A club that exists but was never
+ *    entered into this season's league structure - a QA club, or the real
+ *    "Stadium3D FC" that sits outside every division - must not have its
+ *    squad quietly aged, developed and retired by a season it never played
+ *    in. That was true of the first version of this runner, which selected
+ *    every ACTIVE player in the database.
+ *  - Free agents (teamId null). A free agent carries no country or season
+ *    relation at all, and inventing one is not on the table for V1, where
+ *    exactly one country is live: including them here is what keeps a
+ *    released player ageing normally instead of freezing in time. The day a
+ *    second country goes live this needs a real answer - see the report's
+ *    Known Gaps.
+ */
+export function seasonLifecyclePlayerFilter(seasonId: string): Prisma.PlayerWhereInput {
+  return {
+    careerStatus: "ACTIVE",
+    lifecycleRecords: { none: { seasonId } },
+    OR: [{ teamId: null }, { team: { divisionMemberships: { some: { division: { seasonId } } } } }],
+  }
+}
+
+/** How many players this season's lifecycle still has left to process - 0 means the stage is genuinely finished. */
+export function countRemainingSeasonLifecyclePlayers(seasonId: string): Promise<number> {
+  return prisma.player.count({ where: seasonLifecyclePlayerFilter(seasonId) })
+}
+
 export interface SeasonPlayerLifecycleOptions {
   /** How many players to fetch per pass. Each player still gets its own transaction. */
   batchSize?: number
@@ -237,8 +273,9 @@ export interface SeasonPlayerLifecycleSummary {
 }
 
 /**
- * Every ACTIVE player's season transition, owned players and free agents
- * alike (no teamId filter - a free agent still ages and can still retire).
+ * Every player this season's lifecycle covers - see
+ * seasonLifecyclePlayerFilter for exactly who that is (clubs in this
+ * season, plus free agents; never a club outside the season's divisions).
  * RETIRED players are excluded at the query, so they are never re-processed.
  *
  * Deliberately NOT one transaction: players are fetched in small batches and
@@ -283,8 +320,7 @@ export async function processSeasonPlayerLifecycle(
   for (;;) {
     const batch = await prisma.player.findMany({
       where: {
-        careerStatus: "ACTIVE",
-        lifecycleRecords: { none: { seasonId: season.id } },
+        ...seasonLifecyclePlayerFilter(season.id),
         ...(failedIds.length > 0 ? { id: { notIn: failedIds } } : {}),
       },
       select: { id: true },
