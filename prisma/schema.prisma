@@ -110,6 +110,7 @@ model Team {
   cornerTaker           Player?                @relation("TeamCornerTaker", fields: [cornerTakerId], references: [id], onDelete: SetNull)
   kits                  TeamKit[]
   transferListings      TransferListing[]
+  youthIntakes          YouthIntake[]
 }
 
 enum KitType {
@@ -248,11 +249,18 @@ model Player {
   penaltySaving         Int?
   lineupSlot            LineupSlot?
   matchStats            PlayerMatchStats[]
-  captainOfTeam         Team?              @relation("TeamCaptain")
-  penaltyTakerOfTeam    Team?              @relation("TeamPenaltyTaker")
-  freeKickTakerOfTeam   Team?              @relation("TeamFreeKickTaker")
-  cornerTakerOfTeam     Team?              @relation("TeamCornerTaker")
+  captainOfTeam         Team?                   @relation("TeamCaptain")
+  penaltyTakerOfTeam    Team?                   @relation("TeamPenaltyTaker")
+  freeKickTakerOfTeam   Team?                   @relation("TeamFreeKickTaker")
+  cornerTakerOfTeam     Team?                   @relation("TeamCornerTaker")
   transferListings      TransferListing[]
+  lifecycleRecords      PlayerSeasonLifecycle[]
+  // Virtual back-relation only - Prisma requires it for the YouthProspect
+  // side's real FK (promotedPlayerId), but it adds no column to Player.
+  // Mirrors captainOfTeam/penaltyTakerOfTeam/etc. immediately above, which
+  // are the exact same "named 1-1 relation, owning FK lives on the other
+  // model" shape already established in this schema.
+  promotedFromProspect  YouthProspect?          @relation("YouthProspectPromotedPlayer")
 
   @@index([teamId, careerStatus])
 }
@@ -330,16 +338,55 @@ model LineupSlot {
   slotIndex Int
 }
 
+enum SeasonStatus {
+  ACTIVE
+  OFFSEASON
+  COMPLETED
+}
+
+// Internal Season-End processing checkpoint - orthogonal to SeasonStatus.
+// A Season sits in OFFSEASON (status) for the entire span of these stages;
+// offseasonStage is what makes each stage's own short transaction resumable
+// after a crash, without ever holding a lock across all of a season's
+// players/teams at once. See the Season Lifecycle architecture doc.
+enum SeasonOffseasonStage {
+  NONE
+  PLAYER_LIFECYCLE
+  YOUTH_GENERATION
+  BOT_PROMOTION
+  WAITING_HUMANS
+  CREATE_NEXT
+  DONE
+}
+
 // A country's league pyramid is instantiated one Season at a time. Season 1
 // for a country is created (with bot teams filling every slot) the first
 // time someone registers a team there - see src/lib/leagues/seed.ts.
+//
+// isActive and status answer two different questions and are deliberately
+// both kept: isActive is "is this the season new signups/standings-lookups
+// should use right now" (unchanged from before this migration - still true
+// throughout OFFSEASON, since Season N+1 doesn't exist yet); status is
+// "what stage of its own lifecycle is this season at" (ACTIVE while fixtures
+// are being played, OFFSEASON while Season-End processing runs, COMPLETED
+// once Season N+1 has taken over). At most one Season per countryCode may
+// have isActive=true - Prisma's schema DSL cannot express a partial/filtered
+// unique index (same limitation already documented on TransferListing
+// above), so that invariant is enforced by a hand-written
+// `CREATE UNIQUE INDEX ... WHERE "isActive" = true` statement added directly
+// to this feature's migration.sql - it has no schema.prisma representation,
+// and a future `prisma migrate dev` diff must not be allowed to drop it.
 model Season {
-  id          String     @id @default(cuid())
-  countryCode String
-  number      Int
-  isActive    Boolean    @default(true)
-  createdAt   DateTime   @default(now())
-  divisions   Division[]
+  id               String                  @id @default(cuid())
+  countryCode      String
+  number           Int
+  isActive         Boolean                 @default(true)
+  status           SeasonStatus            @default(ACTIVE)
+  offseasonStage   SeasonOffseasonStage    @default(NONE)
+  createdAt        DateTime                @default(now())
+  divisions        Division[]
+  youthIntakes     YouthIntake[]
+  playerLifecycles PlayerSeasonLifecycle[]
 
   @@unique([countryCode, number])
 }
@@ -369,6 +416,174 @@ model DivisionTeam {
   joinedAt   DateTime @default(now())
 
   @@unique([divisionId, teamId])
+}
+
+enum YouthIntakeStatus {
+  OPEN
+  CLOSED
+}
+
+// One club's youth intake for one Season - exactly one per (team, season),
+// enforced by the unique constraint below, never reused or reopened once
+// CLOSED. Human intakes close either by their own 48h closesAt deadline or
+// by an explicit Finalize action; Bot intakes close immediately after
+// generation. Neither path is implemented yet - this migration is schema
+// only.
+model YouthIntake {
+  id            String            @id @default(cuid())
+  teamId        String
+  team          Team              @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  seasonId      String
+  season        Season            @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  status        YouthIntakeStatus @default(OPEN)
+  openedAt      DateTime          @default(now())
+  closesAt      DateTime
+  closedAt      DateTime?
+  // Bounded 0-3 by the CHECK constraint added directly in this feature's
+  // migration.sql (Prisma's schema DSL has no @check attribute as of this
+  // Prisma version) - see the migration for the exact statement.
+  promotedCount Int               @default(0)
+  prospects     YouthProspect[]
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@unique([teamId, seasonId])
+  // Composite only - a standalone @@index([status]) or @@index([closesAt])
+  // would be redundant: this index already serves a status-only filter via
+  // the leftmost-prefix rule, and nothing in this design ever queries
+  // closesAt without also filtering by status. A standalone @@index([teamId])
+  // would likewise be redundant given @@unique([teamId, seasonId]) above,
+  // which already indexes teamId as its own leftmost column.
+  @@index([status, closesAt])
+}
+
+enum YouthProspectStatus {
+  PENDING
+  PROMOTED
+  EXPIRED
+}
+
+// A candidate player generated for one YouthIntake - never a Player row
+// itself. Every field a Promotion will eventually need is snapshotted here
+// at generation time (see the attribute block below) so that promoting a
+// prospect is a pure column-to-column copy onto a new Player row, never a
+// re-roll. Attributes mirror Player's own field-for-field, including
+// nullability: a goalkeeper prospect and an outfield prospect intentionally
+// populate different, non-overlapping subsets of these 47 columns, exactly
+// as generateAttributesForTargetOverall already does for Player - see
+// src/lib/players/attribute-generation.ts.
+model YouthProspect {
+  id            String      @id @default(cuid())
+  youthIntakeId String
+  youthIntake   YouthIntake @relation(fields: [youthIntakeId], references: [id], onDelete: Cascade)
+
+  firstName          String
+  lastName           String
+  age                Int
+  nationality        String
+  primaryPosition    String
+  secondaryPositions String[] @default([])
+  preferredFoot      String
+  overall            Int
+  potential          Int
+
+  // Attacking
+  shooting             Int?
+  finishing            Int?
+  longShots            Int?
+  heading              Int?
+  attackingPositioning Int?
+
+  // Technical
+  passing     Int?
+  longPassing Int?
+  vision      Int?
+  technique   Int?
+  creativity  Int?
+  dribbling   Int?
+  ballControl Int?
+  crossing    Int?
+  freeKicks   Int?
+  penalties   Int?
+  corners     Int?
+
+  // Defensive
+  tackling             Int?
+  marking              Int?
+  defensivePositioning Int?
+  interceptions        Int?
+  aerialDuels          Int?
+
+  // Physical
+  pace         Int?
+  acceleration Int?
+  strength     Int?
+  stamina      Int?
+  agility      Int?
+  balance      Int?
+  jumping      Int?
+
+  // Mental
+  leadership          Int?
+  composure           Int?
+  decisions           Int?
+  anticipation        Int?
+  teamwork            Int?
+  workRate            Int?
+  concentration       Int?
+  aggression          Int?
+  experience          Int?
+  secondBallAwareness Int?
+
+  // Goalkeeping (goalkeepers only)
+  goalkeeping           Int?
+  reflexes              Int?
+  handling              Int?
+  diving                Int?
+  oneOnOne              Int?
+  aerialAbility         Int?
+  goalkeeperPositioning Int?
+  distribution          Int?
+  penaltySaving         Int?
+
+  status           YouthProspectStatus @default(PENDING)
+  // Real FK to Player, onDelete: SetNull - mirrors Team.captainId/captain's
+  // exact shape (owning column + relation live here, a virtual back-relation
+  // lives on Player - see Player.promotedFromProspect above). SetNull rather
+  // than Cascade/Restrict: Player rows are never deleted by any code path in
+  // this app, so this is defense-in-depth, not a path expected to fire - if
+  // it ever did, the prospect record should survive as history with its
+  // pointer cleared, not be deleted itself.
+  promotedPlayerId String?             @unique
+  promotedPlayer   Player?             @relation("YouthProspectPromotedPlayer", fields: [promotedPlayerId], references: [id], onDelete: SetNull)
+  createdAt        DateTime            @default(now())
+  promotedAt       DateTime?
+
+  @@index([youthIntakeId, status])
+}
+
+// One row per (season, player) once that player's Development/Aging/
+// Retirement pass has committed for that season - a pure existence marker,
+// never read for its own data, only for whether a row exists at all. This is
+// what makes the eventual Season-End player-lifecycle pass resumable after a
+// crash: a batch driven by "ACTIVE players with no row here yet for this
+// season" picks up exactly where a previous run stopped, without ever
+// holding a lock across more than one player at a time. Not populated by
+// this migration - schema only.
+model PlayerSeasonLifecycle {
+  id          String   @id @default(cuid())
+  seasonId    String
+  season      Season   @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  playerId    String
+  player      Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  processedAt DateTime @default(now())
+
+  // No standalone @@index([seasonId]): the composite unique below already
+  // uses seasonId as its leftmost column, so it serves a season-only filter
+  // (e.g. "how many players processed so far this season") via the same
+  // leftmost-prefix reasoning as YouthIntake's indexes above - a separate
+  // single-column index here would only duplicate it.
+  @@unique([seasonId, playerId])
 }
 
 model Fixture {
