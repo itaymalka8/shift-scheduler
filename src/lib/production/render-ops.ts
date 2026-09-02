@@ -1,81 +1,175 @@
 /**
- * PLANNED INTERFACE ONLY. No implementation, no network calls - every
- * function below throws immediately. This file exists so the shape of a
- * future prod:cron:status / prod:cron:suspend / prod:cron:resume /
- * prod:deploy:status implementation is decided and typed now, without
- * granting this session (or anyone importing this file today) any actual
- * ability to reach Render.
+ * The production-facing Render surface every scripts/production/*.ts file
+ * that talks to Render goes through. Read operations (status, deploy
+ * history) never check anything beyond RENDER_API_KEY being present.
+ * Mutating operations (suspendCron, resumeCron, triggerDeploy) additionally
+ * call assertProductionWriteConfirmed() before making any request -
+ * exactly once per call, which is also exactly once per PRODUCTION_WRITE_
+ * CONFIRM the caller set for its whole run (see write-guard.ts): a single
+ * `npm run prod:deploy:safe` invocation sets that env var once and every
+ * mutating step inside it re-checks the same value, so nothing here ever
+ * prompts a second time.
  *
- * Render's REST API (https://api.render.com/v1) is what a real
- * implementation would call - checked against Render's public API
- * documentation only, never invoked:
- *   - GET  /v1/services/:id                read a service's current state
- *   - GET  /v1/services/:id/deploys        read deploy history
- *   - POST /v1/services/:id/suspend        suspend a service (a Cron Job is
- *                                          a "service" in Render's API, so
- *                                          this applies to the cron job too)
- *   - POST /v1/services/:id/resume         resume a suspended service
+ * Service discovery is by name (see render-discovery.ts) - RENDER_WEB_
+ * SERVICE_ID / RENDER_CRON_SERVICE_ID are optional overrides, never
+ * required inputs.
  *
- * Three env vars this repo does not read anywhere today would gate it:
- *   RENDER_API_KEY           - a Render personal/team API key
- *   RENDER_CRON_SERVICE_ID   - goalx-manager-fixture-processor's service id
- *   RENDER_WEB_SERVICE_ID    - goalx-manager's (the web service) service id
- *
- * getCronStatus/getDeployStatus would stay read-only. suspendCron/
- * resumeCron mutate a live Render service and would need
- * assertProductionWriteConfirmed() (see write-guard.ts) before ever calling
- * out to Render for real - the same rule every other mutating production
- * script must follow.
+ * LIMITATION (see render-client.ts's header for the full reasoning):
+ * there is no function here for "run this Cron Job's command right now,
+ * outside its schedule". Render's v1 API has no documented, stable
+ * endpoint for that on a type=cron_job service - inventing one against an
+ * unconfirmed shape would be worse than not having the feature. The
+ * closest real lever this file exposes is triggerDeploy() on the WEB
+ * service, which is a genuinely documented action.
  */
+import {
+  createRenderClient,
+  findServiceByName as clientFindServiceByName,
+  getDeploy,
+  getRenderServices as clientGetRenderServices,
+  getServiceDetail,
+  getServiceRaw,
+  readCronDetails,
+  readServiceDetail,
+  readServiceUrl,
+  listDeploys as clientListDeploys,
+  createDeploy,
+  resumeService,
+  suspendService,
+  RENDER_DEPLOY_FAILURE_STATUSES,
+  RENDER_DEPLOY_SUCCESS_STATUSES,
+  type RenderDeploySummary,
+  type RenderServiceDetail,
+  type RenderServiceSummary,
+} from "./render-client"
+import { resolveCronServiceId, resolveWebServiceId } from "./render-discovery"
+import { assertProductionWriteConfirmed } from "./write-guard"
 
-export interface RenderCredentials {
-  apiKey: string
-  cronServiceId: string
-  webServiceId: string
+export type { RenderDeploySummary, RenderServiceDetail, RenderServiceSummary }
+
+export async function getRenderServices(env: Record<string, string | undefined> = process.env): Promise<RenderServiceSummary[]> {
+  return clientGetRenderServices(createRenderClient(env))
 }
 
-export class RenderOpsNotImplementedError extends Error {
-  constructor(operation: string) {
-    super(`${operation} is not implemented yet - planned interface only (no Render API call was made).`)
-    this.name = "RenderOpsNotImplementedError"
+export async function findServiceByName(
+  name: string,
+  env: Record<string, string | undefined> = process.env
+): Promise<RenderServiceSummary | null> {
+  return clientFindServiceByName(createRenderClient(env), name)
+}
+
+export async function getWebServiceStatus(env: Record<string, string | undefined> = process.env): Promise<RenderServiceDetail> {
+  const client = createRenderClient(env)
+  const id = await resolveWebServiceId(client, env)
+  return getServiceDetail(client, id)
+}
+
+/** Read-only. The web service's public URL, if Render's API exposes one for it - null otherwise (never guessed). */
+export async function getWebServiceUrl(env: Record<string, string | undefined> = process.env): Promise<string | null> {
+  const client = createRenderClient(env)
+  const id = await resolveWebServiceId(client, env)
+  const raw = await getServiceRaw(client, id)
+  return readServiceUrl(raw)
+}
+
+export interface CronStatus extends RenderServiceDetail {
+  schedule: string | null
+  command: string | null
+}
+
+/** Render's Cron Job schedule/command live under serviceDetails.cronJobDetails on the full service object - extracted defensively (see render-client.ts's header on API-shape honesty). */
+export async function getCronStatus(env: Record<string, string | undefined> = process.env): Promise<CronStatus> {
+  const client = createRenderClient(env)
+  const id = await resolveCronServiceId(client, env)
+  const raw = await getServiceRaw(client, id)
+  return { ...readServiceDetail(raw, id), ...readCronDetails(raw) }
+}
+
+export async function listDeploys(
+  serviceId: string,
+  limit = 5,
+  env: Record<string, string | undefined> = process.env
+): Promise<RenderDeploySummary[]> {
+  return clientListDeploys(createRenderClient(env), serviceId, limit)
+}
+
+export async function getLatestDeploy(
+  serviceId: string,
+  env: Record<string, string | undefined> = process.env
+): Promise<RenderDeploySummary | null> {
+  const deploys = await clientListDeploys(createRenderClient(env), serviceId, 1)
+  return deploys[0] ?? null
+}
+
+export interface WaitForDeployOptions {
+  timeoutMs?: number
+  pollIntervalMs?: number
+  now?: () => number
+  sleep?: (ms: number) => Promise<void>
+  env?: Record<string, string | undefined>
+}
+
+export type WaitForDeployOutcome = "success" | "failure" | "timeout"
+
+export interface WaitForDeployResult {
+  outcome: WaitForDeployOutcome
+  deploy: RenderDeploySummary
+}
+
+const DEFAULT_DEPLOY_TIMEOUT_MS = 15 * 60_000
+const DEFAULT_DEPLOY_POLL_INTERVAL_MS = 15_000
+
+export async function waitForDeploy(serviceId: string, deployId: string, options: WaitForDeployOptions = {}): Promise<WaitForDeployResult> {
+  const client = createRenderClient(options.env ?? process.env)
+  const timeoutMs = options.timeoutMs ?? DEFAULT_DEPLOY_TIMEOUT_MS
+  const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_DEPLOY_POLL_INTERVAL_MS
+  const now = options.now ?? Date.now
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
+
+  const startedAt = now()
+  let deploy = await getDeploy(client, serviceId, deployId)
+
+  for (;;) {
+    if (RENDER_DEPLOY_SUCCESS_STATUSES.has(deploy.status)) return { outcome: "success", deploy }
+    if (RENDER_DEPLOY_FAILURE_STATUSES.has(deploy.status)) return { outcome: "failure", deploy }
+    if (now() - startedAt >= timeoutMs) return { outcome: "timeout", deploy }
+    await sleep(pollIntervalMs)
+    deploy = await getDeploy(client, serviceId, deployId)
   }
 }
 
-/** Reads the three env vars a real implementation would need. Only checks presence - never validates them against Render, since that would require making the very API call this file deliberately does not make. */
-export function readRenderCredentials(env: Record<string, string | undefined> = process.env): RenderCredentials | null {
-  const { RENDER_API_KEY, RENDER_CRON_SERVICE_ID, RENDER_WEB_SERVICE_ID } = env
-  if (!RENDER_API_KEY || !RENDER_CRON_SERVICE_ID || !RENDER_WEB_SERVICE_ID) return null
-  return { apiKey: RENDER_API_KEY, cronServiceId: RENDER_CRON_SERVICE_ID, webServiceId: RENDER_WEB_SERVICE_ID }
+/** MUTATES Production (suspends the Cron service) - requires PRODUCTION_WRITE_CONFIRM. */
+export async function suspendCron(env: Record<string, string | undefined> = process.env): Promise<void> {
+  assertProductionWriteConfirmed(env)
+  const client = createRenderClient(env)
+  const id = await resolveCronServiceId(client, env)
+  await suspendService(client, id)
 }
 
-export interface CronStatus {
-  serviceId: string
-  suspended: boolean
-  lastDeployAt: string | null
+/** MUTATES Production (resumes the Cron service) - requires PRODUCTION_WRITE_CONFIRM. */
+export async function resumeCron(env: Record<string, string | undefined> = process.env): Promise<void> {
+  assertProductionWriteConfirmed(env)
+  const client = createRenderClient(env)
+  const id = await resolveCronServiceId(client, env)
+  await resumeService(client, id)
 }
 
-/** Planned: GET /v1/services/:RENDER_CRON_SERVICE_ID. Read-only once built. */
-export async function getCronStatus(): Promise<CronStatus> {
-  throw new RenderOpsNotImplementedError("getCronStatus")
+/** MUTATES Production (triggers a new deploy of the web service's current branch) - requires PRODUCTION_WRITE_CONFIRM. */
+export async function triggerDeploy(env: Record<string, string | undefined> = process.env): Promise<RenderDeploySummary> {
+  assertProductionWriteConfirmed(env)
+  const client = createRenderClient(env)
+  const id = await resolveWebServiceId(client, env)
+  return createDeploy(client, id)
 }
 
-/** Planned: POST /v1/services/:RENDER_CRON_SERVICE_ID/suspend. MUTATES Production - requires assertProductionWriteConfirmed() once built. */
-export async function suspendCron(): Promise<void> {
-  throw new RenderOpsNotImplementedError("suspendCron")
-}
-
-/** Planned: POST /v1/services/:RENDER_CRON_SERVICE_ID/resume. MUTATES Production - requires assertProductionWriteConfirmed() once built. */
-export async function resumeCron(): Promise<void> {
-  throw new RenderOpsNotImplementedError("resumeCron")
-}
-
-export interface DeployStatus {
-  serviceId: string
-  status: string
-  createdAt: string
-}
-
-/** Planned: GET /v1/services/:RENDER_WEB_SERVICE_ID/deploys?limit=1. Read-only once built. */
-export async function getDeployStatus(): Promise<DeployStatus> {
-  throw new RenderOpsNotImplementedError("getDeployStatus")
+/** Read-only. Returns a specific deploy if deployId is given, otherwise the web service's latest. */
+export async function getDeployStatus(
+  deployId?: string,
+  env: Record<string, string | undefined> = process.env
+): Promise<RenderDeploySummary | null> {
+  const client = createRenderClient(env)
+  const webServiceId = await resolveWebServiceId(client, env)
+  if (deployId) return getDeploy(client, webServiceId, deployId)
+  const deploys = await clientListDeploys(client, webServiceId, 1)
+  return deploys[0] ?? null
 }

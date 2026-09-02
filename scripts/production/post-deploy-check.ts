@@ -10,19 +10,13 @@ import { printProductionBanner } from "../../src/lib/production/report"
 import { ProductionSafetyError } from "../../src/lib/production/env-guard"
 import { findDuplicateActiveSeasons } from "../../src/lib/production/duplicate-active-seasons"
 import { QA_MATCHDAY } from "../../src/lib/production/qa-residue"
+import { V1_EXPECTED_TOTAL_FIXTURES } from "../../src/lib/production/league-structure"
 
 // The one migration this generation of the schema needs applied for
 // Season.status/offseasonStage and the three youth/lifecycle tables to
 // exist at all - see
 // prisma/migrations/20260901180307_add_season_lifecycle_youth_foundation/migration.sql.
 const TARGET_MIGRATION = "20260901180307_add_season_lifecycle_youth_foundation"
-
-// V1 is deliberately one country, three divisions of 20 clubs each, double
-// round robin: 3 * (20*19) = 1140. A different number here doesn't
-// necessarily mean something is wrong, but it means the league doesn't
-// match this generation of the app's assumption and deserves a human's
-// eyes before Trial Season starts.
-const EXPECTED_V1_FIXTURE_COUNT = 1140
 
 interface MigrationRow {
   migration_name: string
@@ -102,8 +96,8 @@ async function main() {
 
     // --- Fixture count for V1 ----------------------------------------------
     const fixtureCount = await prisma.fixture.count()
-    if (fixtureCount !== EXPECTED_V1_FIXTURE_COUNT) {
-      warnings.push(`Total fixtures = ${fixtureCount}, expected ${EXPECTED_V1_FIXTURE_COUNT} for V1's fixed league shape.`)
+    if (fixtureCount !== V1_EXPECTED_TOTAL_FIXTURES) {
+      errors.push(`Total fixtures = ${fixtureCount}, expected ${V1_EXPECTED_TOTAL_FIXTURES} for V1's fixed league shape.`)
     } else {
       console.info(`Total fixtures: ${fixtureCount} (matches V1 expectation)`)
     }

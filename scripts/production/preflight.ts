@@ -14,7 +14,12 @@ import { printProductionBanner } from "../../src/lib/production/report"
 import { ProductionSafetyError } from "../../src/lib/production/env-guard"
 import { findDuplicateActiveSeasons } from "../../src/lib/production/duplicate-active-seasons"
 import { QA_MATCHDAY } from "../../src/lib/production/qa-residue"
-import { expectedFixtureCount } from "../../src/lib/production/league-structure"
+import {
+  expectedFixtureCount,
+  V1_EXPECTED_DIVISIONS,
+  V1_EXPECTED_DIVISION_TEAM_MEMBERSHIPS,
+  V1_EXPECTED_TOTAL_FIXTURES,
+} from "../../src/lib/production/league-structure"
 
 interface MigrationRow {
   migration_name: string
@@ -126,6 +131,20 @@ async function main() {
       `Fixtures=${fixtureCount} playedFixtures=${playedFixtureCount} MatchEvents=${matchEventCount} PlayerMatchStats=${playerMatchStatsCount}`,
       `FinancialTransactions=${financialTransactionCount} YouthIntakes=${youthIntakeCount} YouthProspects=${youthProspectCount} PlayerSeasonLifecycle=${playerSeasonLifecycleCount}`
     )
+
+    // --- V1 fixed-shape hard checks -----------------------------------
+    // Not warnings: these are the exact numbers V1's one-country,
+    // three-division world is defined to have. A mismatch means something
+    // is structurally broken, not just "worth a look".
+    if (divisionCount !== V1_EXPECTED_DIVISIONS) {
+      errors.push(`Expected ${V1_EXPECTED_DIVISIONS} Divisions for V1, found ${divisionCount}.`)
+    }
+    if (divisionTeamCount !== V1_EXPECTED_DIVISION_TEAM_MEMBERSHIPS) {
+      errors.push(`Expected ${V1_EXPECTED_DIVISION_TEAM_MEMBERSHIPS} DivisionTeam memberships for V1, found ${divisionTeamCount}.`)
+    }
+    if (fixtureCount !== V1_EXPECTED_TOTAL_FIXTURES) {
+      errors.push(`Expected ${V1_EXPECTED_TOTAL_FIXTURES} total Fixtures for V1, found ${fixtureCount}.`)
+    }
 
     // --- League structure ---------------------------------------------
     const divisions = await prisma.division.findMany({

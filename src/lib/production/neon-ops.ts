@@ -1,76 +1,111 @@
 /**
- * PLANNED INTERFACE ONLY. No implementation, no network calls - every
- * function below throws immediately. This file exists so the shape of a
- * future prod:backup:create / prod:backup:list implementation is decided
- * and typed now, without granting this session (or anyone importing this
- * file today) any actual ability to reach Neon.
+ * The production-facing Neon surface every scripts/production/*.ts file
+ * that talks to Neon goes through. Read operations (list/get branches,
+ * project details) never check anything beyond NEON_API_KEY being present.
+ * createBackupBranch additionally calls assertProductionWriteConfirmed()
+ * before making any request - see render-ops.ts's header for why one
+ * PRODUCTION_WRITE_CONFIRM covers a whole workflow run, never a per-call
+ * prompt.
  *
- * Neon's REST API (https://api.neon.tech/api/v2) - checked against Neon's
- * public API documentation only, never invoked - does support all three
- * branch operations this audit was asked about:
- *   - POST   /projects/:id/branches               create a branch
- *   - GET    /projects/:id/branches                list branches
- *   - DELETE /projects/:id/branches/:branchId      delete a branch
+ * Project/branch discovery is automatic when unambiguous (see
+ * neon-discovery.ts) - NEON_PROJECT_ID / NEON_PRODUCTION_BRANCH_ID are
+ * optional overrides, never required inputs, and discovery refuses to
+ * guess rather than pick wrong when more than one candidate exists.
  *
- * Neon branches are copy-on-write, so creating one from the production
- * branch - either at the current moment or at a specific past LSN/
- * timestamp - is effectively an instant point-in-time backup without ever
- * running pg_dump against the live database.
- *
- * Three env vars this repo does not read anywhere today would gate it:
- *   NEON_API_KEY               - a Neon API key
- *   NEON_PROJECT_ID            - the Neon project id
- *   NEON_PRODUCTION_BRANCH_ID  - the branch id backups are taken FROM
- *
- * listBackupBranches would stay read-only. createBackupBranch mutates (it
- * provisions new storage) and would need assertProductionWriteConfirmed()
- * (see write-guard.ts) before it may ever call Neon for real.
- *
- * deleteBackupBranch is included below only because the audit this file
- * documents was asked whether Neon's API supports deletion - it does - not
- * because a prod:backup:delete command is planned. No CLI command exists
- * for it on purpose: destroying a backup is a decision that should never
- * be one npm script away.
+ * Deletion is deliberately NOT exposed here. Creating a backup is the only
+ * mutation this file performs - see neon-client.ts's createBranch for the
+ * one place that happens.
  */
+import {
+  createBranch,
+  createNeonClient,
+  getBranchDetails as clientGetBranchDetails,
+  getProjectDetails as clientGetProjectDetails,
+  listBranches as clientListBranches,
+  NeonApiError,
+  type NeonBranchSummary,
+} from "./neon-client"
+import { resolveProductionBranchId, resolveProjectId } from "./neon-discovery"
+import { assertProductionWriteConfirmed } from "./write-guard"
+import { formatBackupBranchName } from "./backup-naming"
 
-export interface NeonCredentials {
-  apiKey: string
-  projectId: string
-  productionBranchId: string
+export type { NeonBranchSummary }
+
+export async function listBranches(env: Record<string, string | undefined> = process.env): Promise<NeonBranchSummary[]> {
+  const client = createNeonClient(env)
+  const projectId = await resolveProjectId(client, env)
+  return clientListBranches(client, projectId)
 }
 
-export class NeonOpsNotImplementedError extends Error {
-  constructor(operation: string) {
-    super(`${operation} is not implemented yet - planned interface only (no Neon API call was made).`)
-    this.name = "NeonOpsNotImplementedError"
+export async function getProductionBranch(env: Record<string, string | undefined> = process.env): Promise<NeonBranchSummary> {
+  const client = createNeonClient(env)
+  const projectId = await resolveProjectId(client, env)
+  const branchId = await resolveProductionBranchId(client, projectId, env)
+  return clientGetBranchDetails(client, projectId, branchId)
+}
+
+export async function getBranchDetails(branchId: string, env: Record<string, string | undefined> = process.env): Promise<NeonBranchSummary> {
+  const client = createNeonClient(env)
+  const projectId = await resolveProjectId(client, env)
+  return clientGetBranchDetails(client, projectId, branchId)
+}
+
+export async function getProjectDetails(
+  env: Record<string, string | undefined> = process.env
+): Promise<{ id: string; name: string; createdAt: string | null }> {
+  const client = createNeonClient(env)
+  const projectId = await resolveProjectId(client, env)
+  return clientGetProjectDetails(client, projectId)
+}
+
+/**
+ * MUTATES (provisions a new Neon branch = an instant point-in-time backup
+ * of Production - a Neon branch always carries data AND schema, there is
+ * no schema-only option) - requires PRODUCTION_WRITE_CONFIRM.
+ */
+export async function createBackupBranch(
+  env: Record<string, string | undefined> = process.env,
+  now: Date = new Date()
+): Promise<NeonBranchSummary> {
+  assertProductionWriteConfirmed(env)
+  const client = createNeonClient(env)
+  const projectId = await resolveProjectId(client, env)
+  const productionBranchId = await resolveProductionBranchId(client, projectId, env)
+  const name = formatBackupBranchName(now)
+  return createBranch(client, projectId, { name, parentId: productionBranchId })
+}
+
+export interface VerifyBackupBranchResult {
+  exists: boolean
+  isChildOfProduction: boolean
+  branch: NeonBranchSummary | null
+}
+
+/**
+ * Read-only: confirms a backup branch created earlier is actually there
+ * and really is a child of the production branch - the sanity check
+ * prod:deploy:safe runs before trusting the backup exists (see its "D.
+ * Verify backup exists" step).
+ *
+ * Only a genuine 404 from Neon is treated as "does not exist" - any other
+ * failure (network, auth, a 5xx) is rethrown rather than silently reported
+ * as a missing backup, because those two situations call for different
+ * responses from a caller deciding whether it's safe to proceed.
+ */
+export async function verifyBackupBranch(
+  branchId: string,
+  env: Record<string, string | undefined> = process.env
+): Promise<VerifyBackupBranchResult> {
+  const client = createNeonClient(env)
+  const projectId = await resolveProjectId(client, env)
+  const productionBranchId = await resolveProductionBranchId(client, projectId, env)
+  try {
+    const branch = await clientGetBranchDetails(client, projectId, branchId)
+    return { exists: true, isChildOfProduction: branch.parentId === productionBranchId, branch }
+  } catch (error) {
+    if (error instanceof NeonApiError && error.status === 404) {
+      return { exists: false, isChildOfProduction: false, branch: null }
+    }
+    throw error
   }
-}
-
-/** Reads the three env vars a real implementation would need. Only checks presence - never validates them against Neon, since that would require making the very API call this file deliberately does not make. */
-export function readNeonCredentials(env: Record<string, string | undefined> = process.env): NeonCredentials | null {
-  const { NEON_API_KEY, NEON_PROJECT_ID, NEON_PRODUCTION_BRANCH_ID } = env
-  if (!NEON_API_KEY || !NEON_PROJECT_ID || !NEON_PRODUCTION_BRANCH_ID) return null
-  return { apiKey: NEON_API_KEY, projectId: NEON_PROJECT_ID, productionBranchId: NEON_PRODUCTION_BRANCH_ID }
-}
-
-export interface NeonBranchSummary {
-  id: string
-  name: string
-  createdAt: string
-  parentId: string | null
-}
-
-/** Planned: POST /projects/:NEON_PROJECT_ID/branches with parent_id=NEON_PRODUCTION_BRANCH_ID. MUTATES (provisions storage) - requires assertProductionWriteConfirmed() once built. */
-export async function createBackupBranch(): Promise<NeonBranchSummary> {
-  throw new NeonOpsNotImplementedError("createBackupBranch")
-}
-
-/** Planned: GET /projects/:NEON_PROJECT_ID/branches. Read-only once built. */
-export async function listBackupBranches(): Promise<NeonBranchSummary[]> {
-  throw new NeonOpsNotImplementedError("listBackupBranches")
-}
-
-/** Planned only insofar as the audit checked feasibility - no CLI command is planned for this (see file header). MUTATES (destroys storage) - would require assertProductionWriteConfirmed() and almost certainly a second explicit confirmation if ever built. */
-export async function deleteBackupBranch(branchId: string): Promise<void> {
-  throw new NeonOpsNotImplementedError(`deleteBackupBranch(${branchId})`)
 }

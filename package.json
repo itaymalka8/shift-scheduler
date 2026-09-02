@@ -17,6 +17,13 @@
     "prod:season-status": "tsx scripts/production/season-status.ts",
     "prod:scheduled-check": "tsx scripts/production/scheduled-dry-check.ts",
     "prod:post-deploy-check": "tsx scripts/production/post-deploy-check.ts",
+    "prod:render:status": "tsx scripts/production/render-status.ts",
+    "prod:cron:suspend": "tsx scripts/production/cron-suspend.ts",
+    "prod:cron:resume": "tsx scripts/production/cron-resume.ts",
+    "prod:deploy:trigger": "tsx scripts/production/deploy-trigger.ts",
+    "prod:backup:list": "tsx scripts/production/backup-list.ts",
+    "prod:backup:create": "tsx scripts/production/backup-create.ts",
+    "prod:deploy:safe": "tsx scripts/production/deploy-safe.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

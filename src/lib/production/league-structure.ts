@@ -9,6 +9,15 @@ export function expectedFixtureCount(teamCount: number): number {
   return teamCount * Math.max(teamCount - 1, 0)
 }
 
+// V1's fixed shape: one country, three divisions of 20 clubs each (60
+// DivisionTeam memberships total), double round robin per division ->
+// 3 * expectedFixtureCount(20) = 1140 fixtures. Centralized here so
+// prod:preflight and prod:post-deploy-check check the exact same numbers
+// instead of two copies that could quietly drift apart.
+export const V1_EXPECTED_DIVISIONS = 3
+export const V1_EXPECTED_DIVISION_TEAM_MEMBERSHIPS = 60
+export const V1_EXPECTED_TOTAL_FIXTURES = 1140
+
 export interface DivisionStructureCheck {
   teamCount: number
   fixtureCount: number

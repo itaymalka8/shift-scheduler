@@ -52,7 +52,7 @@ PRODUCTION_WRITE_CONFIRM=I_UNDERSTAND_THIS_CHANGES_PRODUCTION
 
 חייב להיות **בדיוק** הערך הזה, מילה במילה. אם הוא חסר, או קרוב אבל לא מדויק (למשל `true` או `1`) — הסקריפט יסרב לכתוב. זו הגנה מפני "לחיצה בטעות" — צריך להעתיק את המשפט המלא כדי לאשר במודע ששינוי ב-Production הולך לקרות.
 
-**בשלב הזה לא נבנה אף סקריפט שכותב** — רק תשתית הבטיחות (`src/lib/production/write-guard.ts`) מוכנה לעתיד.
+כיום קיימות פקודות כתיבה אמיתיות (`prod:cron:suspend`, `prod:cron:resume`, `prod:deploy:trigger`, `prod:backup:create`, וה-workflow המלא `prod:deploy:safe`) — כולן עוברות דרך אותו מנגנון בדיוק (`src/lib/production/write-guard.ts`). ראו §5, §6 ו-§8.
 
 ## 4. הפקודות הקיימות היום
 
@@ -95,54 +95,129 @@ PRODUCTION_WRITE_CONFIRM=I_UNDERSTAND_THIS_CHANGES_PRODUCTION
 - מספר המשחקים הכולל תואם ל-1140 (המספר הצפוי ל-V1: 3 דיוויזיות × 20 קבוצות, Double Round Robin).
 - אין שאריות QA (matchday=999999).
 
-## 5. מה עוד לא אוטומטי (דורש credentials בעתיד)
+## 5. Render integration (ממומש)
 
-### Render (שירות האחסון שמריץ את האתר וה-Cron)
+בניגוד לגרסה הקודמת של המסמך הזה — האינטגרציה עם Render **ממומשת בפועל**, לא רק מתוכננת. היא פשוט לא נבדקה עדיין מול חשבון אמיתי, כי `RENDER_API_KEY` לא הוגדר בסביבה הזו (ראו §7 למטה).
 
-תוכנן (Planned) אך **לא ממומש** — שום קריאת רשת לא בוצעה ולא תבוצע עד שיתווספו:
-
+משתני סביבה:
 ```
-RENDER_API_KEY
-RENDER_CRON_SERVICE_ID
-RENDER_WEB_SERVICE_ID
-```
-
-פקודות עתידיות מתוכננות (עדיין לא קיימות):
-- `prod:cron:status` — האם ה-Cron מושהה (Suspended) או פעיל, מתי ה-Deploy האחרון.
-- `prod:cron:suspend` — להשהות את ה-Cron (למשל לפני migration מסוכן). **פעולת כתיבה** — תדרוש את אישור ה-`PRODUCTION_WRITE_CONFIRM`.
-- `prod:cron:resume` — להחזיר את ה-Cron לפעולה. גם זו פעולת כתיבה.
-- `prod:deploy:status` — מצב ה-Deploy האחרון של שירות האתר.
-
-הקובץ שמתעד את התכנון: `src/lib/production/render-ops.ts`. כל פונקציה שם זורקת שגיאה מפורשת ("לא ממומש עדיין") אם מנסים לקרוא לה.
-
-### Neon (ספק מסד הנתונים)
-
-תוכנן אך **לא ממומש**. משתנים עתידיים:
-
-```
-NEON_API_KEY
-NEON_PROJECT_ID
-NEON_PRODUCTION_BRANCH_ID
+RENDER_API_KEY              (חובה לכל פקודת Render)
+RENDER_WEB_SERVICE_ID       (אופציונלי — override; ברירת המחדל היא Discovery לפי שם)
+RENDER_CRON_SERVICE_ID      (אופציונלי — override; ברירת המחדל היא Discovery לפי שם)
 ```
 
-Neon תומך ב-Branch (ענף — עותק מיידי, זול, של מסד הנתונים ברגע נתון) — זו למעשה הדרך הכי מהירה לעשות "גיבוי" (Backup) בלי להריץ `pg_dump` (כלי גיבוי מסורתי של Postgres) מול השרת החי.
+**Discovery (גילוי אוטומטי):** לא צריך להזין Service ID בעצמכם. המערכת מוצאת את השירותים לפי השם המדויק שלהם ב-`render.yaml` (`goalx-manager` ו-`goalx-manager-fixture-processor`). אם יש סיבה טובה לעקוף את זה (למשל שני שירותים עם אותו שם בחשבונות שונים), אפשר להגדיר את משתני ה-override.
 
-פקודות עתידיות מתוכננות:
-- `prod:backup:create` — ליצור Branch חדש מ-Production כגיבוי. **פעולת כתיבה** (יוצר אחסון חדש).
-- `prod:backup:list` — לראות אילו גיבויים (Branches) כבר קיימים. קריאה בלבד.
+פקודות זמינות:
+- **`npm run prod:render:status`** — Read Only. מצב שירות האתר (Web Service): Suspended או לא, ה-Deploy האחרון, ה-Commit. מצב ה-Cron: Suspended או לא, ה-Schedule (לוח הזמנים), ה-Command (הפקודה שהוא מריץ), הרצה אחרונה.
+- **`npm run prod:cron:suspend`** — **פעולת כתיבה.** משהה את ה-Cron. דורש `PRODUCTION_WRITE_CONFIRM`.
+- **`npm run prod:cron:resume`** — **פעולת כתיבה.** מחזיר את ה-Cron לפעולה. דורש `PRODUCTION_WRITE_CONFIRM`.
+- **`npm run prod:deploy:trigger`** — **פעולת כתיבה.** מפעיל Deploy חדש לשירות האתר (מה-branch המחובר כרגע). דורש `PRODUCTION_WRITE_CONFIRM`. **לא מחכה** לסיום — לזה קיים `prod:deploy:safe` (ראו §9).
 
-מחיקת Branch (Delete) **לא** מתוכננת כפקודה בכלל, במכוון — זו פעולה מסוכנת מדי בשביל להיות "פקודה אחת בטרמינל".
+**מגבלה שדווחה, לא הומצאה (Limitation):** אין כאן פקודה ל"הרץ את ה-Cron עכשיו, מחוץ ללוח הזמנים שלו". ל-Render אין נקודת קצה (endpoint) מתועדת ויציבה ל-API לפעולה כזו על שירות מסוג Cron Job. במקום להמציא כזו נקודת קצה שעלולה לא לעבוד כמצופה, זה פשוט לא נבנה — הפעולה הכי קרובה שקיימת היא `prod:deploy:trigger` על שירות האתר, שזו פעולה אחרת לגמרי.
 
-הקובץ שמתעד את התכנון: `src/lib/production/neon-ops.ts`.
+**הערת כנות טכנית:** צורת הנתונים שחוזרת מ-Render's API (למשל איך בדיוק מסומן "Suspended") נבנתה לפי התיעוד הרשמי של Render, אך **לא אומתה מול קריאה חיה** (אין עדיין `RENDER_API_KEY` בסביבה הזו). הקוד נכתב "בזהירות הגנתית" — אם צורת הנתונים לא כמצופה, הוא מחזיר "unknown" ולא מנחש. ההרצה האמיתית הראשונה של `prod:render:status` היא גם האימות הראשון.
 
-## 6. מה בהחלט אסור בשלב הזה
+## 6. Neon integration (ממומש)
 
-כל עוד לא נאמר אחרת במפורש:
+גם כאן — ממומש בפועל, לא רק מתוכנן.
 
-- DELETE / UPDATE / INSERT על Production
-- `prisma migrate deploy` מול Production
-- הרצת `process-scheduled-jobs` מול Production
-- השהיה/הפעלה של Cron ב-Render
-- יצירת Branch ב-Neon
+משתני סביבה:
+```
+NEON_API_KEY                 (חובה)
+NEON_PROJECT_ID              (אופציונלי — מתגלה אוטומטית אם יש פרויקט Neon יחיד בחשבון)
+NEON_PRODUCTION_BRANCH_ID    (אופציונלי — מתגלה אוטומטית: branch שמסומן Primary, או בשם "production"/"main")
+```
 
-כל הפקודות שקיימות היום (`prod:preflight`, `prod:season-status`, `prod:scheduled-check`, `prod:post-deploy-check`) הן **Read Only בלבד** — קוד וזמן ריצה, לא רק כוונה.
+**Discovery בטוח:** אם יש יותר מפרויקט אחד, או יותר מ-branch "ראשי" אחד — המערכת **מסרבת לנחש** ומבקשת להגדיר את המשתנה המפורש. עדיף לעצור ולשאול מאשר לגבות (Backup) את המקום הלא נכון.
+
+Branch ב-Neon הוא תמיד עותק מלא (Copy-on-Write) של **גם הנתונים וגם המבנה (Schema)** — אין אפשרות ל-"Schema בלבד", כך שהדרישה "לא schema בלבד" מתקיימת אוטומטית בכל Branch שנוצר.
+
+פקודות זמינות:
+- **`npm run prod:backup:list`** — Read Only. רשימת כל ה-Branches, מי מהם ה-Production, ומי נוצר ממנו.
+- **`npm run prod:backup:create`** — **פעולת כתיבה.** יוצר Branch חדש מה-Production branch, בשם אוטומטי בפורמט `pre-deploy-goalx-YYYY-MM-DD-HHmm` (בשעון UTC, כדי שלא יהיה תלוי באזור זמן). דורש `PRODUCTION_WRITE_CONFIRM`. מיד אחרי היצירה, מריץ אימות (Verify) שה-Branch באמת קיים והוא באמת "ילד" (Child) של ה-Production branch.
+
+**אין פקודת מחיקה (Delete) בכלל, במכוון.** גם לא לגיבויים ישנים. זו החלטה מכוונת — מחיקת Backup היא החלטה אנושית, לא פקודת npm.
+
+## 7. Credential Discovery (§1 — audit הסביבה)
+
+בדיקה אוטומטית (Read Only, לא מדפיסה ערכים) של מה קיים בסביבה הנוכחית:
+
+| משתנה | סטטוס בסביבה זו |
+|---|---|
+| `RENDER_API_KEY` | MISSING |
+| `PRODUCTION_DATABASE_URL` | MISSING |
+| `NEON_API_KEY` | MISSING |
+| `NEON_PROJECT_ID` | MISSING |
+| `NEON_PRODUCTION_BRANCH_ID` | MISSING |
+| GitHub authentication | AVAILABLE (דרך GitHub MCP — לא `gh` CLI, שלא מותקן בסביבה הזו) |
+| `curl` / `node` / `tsx` | AVAILABLE |
+
+כל עוד `RENDER_API_KEY`/`NEON_API_KEY`/`PRODUCTION_DATABASE_URL` חסרים, שום פקודת Production לא יכולה לרוץ בפועל — כולן מסרבות מיד ובבירור (ראו §2), לא נכשלות בצורה מבלבלת.
+
+**איפה להוסיף כל אחד:** Environment Variables ברמת ה-Environment ב-claude.ai/code (לא בקוד, לא ב-`.env`, לא בצ'אט) — אותו מנגנון בדיוק שכבר תועד לגבי `RENDER_API_KEY` קודם לכן בשיחה הזו.
+
+## 8. Workflow Orchestration — `prod:deploy:safe`
+
+הפקודה שמממשת את המטרה הסופית: פקודה אחת לכל תהליך ה-Deploy המלא, כולל Backup, השהיית Cron, ואימות בכל שלב.
+
+**סדר הפעולות (עוצר בכשל ראשון, לא ממשיך הלאה):**
+
+| שלב | פעולה | הערה |
+|---|---|---|
+| A | Preflight (בדיקת מוכנות) | אם FAIL → עצירה, שום דבר אחר לא נוגע |
+| B | Render status | קריאה בלבד |
+| C | Neon backup create (יצירת גיבוי) | אם נכשל → עצירה, Cron עדיין לא הושהה |
+| D | Verify backup exists (אימות גיבוי) | אם לא מאומת → עצירה |
+| E | Suspend Cron (השהיית המשימה המתוזמנת) | |
+| F | Verify Cron suspended | אם לא מאומת → עצירה |
+| G | Trigger Web Deploy (הפעלת פריסה) | |
+| H | Wait for Deploy (המתנה לסיום, עם Timeout) | אם נכשל/Timeout → עצירה, **Cron נשאר מושהה בכוונה** |
+| I | Verify Web is live | אם לא → עצירה, Cron נשאר מושהה |
+| J | `prod:post-deploy-check` | אם FAIL → עצירה, Cron נשאר מושהה |
+| K | `prod:scheduled-check` (Dry Check — **לא** מריץ fixtures בפועל) | |
+| L | Resume Cron | **הצעד היחיד שמחזיר את ה-Cron לפעולה** |
+| M | Verify Cron active | אם לא מאומת → עצירה |
+| N | Poll הרצת Cron הבאה | LIMITATION מדווחת — ל-Render אין endpoint ליומן הרצות בודדות של Cron |
+
+**חשוב:** אם ה-Deploy עצמו נכשל (שלב H ואילך) — ה-Cron **נשאר מושהה במכוון** ולא חוזר לפעולה אוטומטית. זו החלטה מכוונת: עדיף שמשחקים לא יעובדו מול Deploy שבור, עד שבן אדם בודק ומחליט.
+
+**אישור כתיבה יחיד לכל התהליך:** `PRODUCTION_WRITE_CONFIRM` נבדק פעם בכל שלב כתיבה בתוך אותה הרצה — אבל כיוון שזו הרצת פרוססס אחת עם משתנה סביבה אחד, זה בפועל אישור **יחיד** לכל ה-workflow, לא אישור נפרד לכל שלב.
+
+הרצה:
+```bash
+PRODUCTION_WRITE_CONFIRM=I_UNDERSTAND_THIS_CHANGES_PRODUCTION npm run prod:deploy:safe
+```
+
+**לעולם לא מריץ בעצמו:**
+- `npx prisma migrate deploy` — זה כבר קורה אוטומטית בתוך ה-buildCommand של Render כחלק משלב G.
+- `process-scheduled-jobs` האמיתי — שלב K הוא Dry Check בלבד.
+
+## 9. מה בהחלט אסור, תמיד (אוטומטית)
+
+בשום מצב, אף פקודה כאן לא תבצע לבד:
+
+- Database Restore (שחזור מסד נתונים)
+- DELETE / DROP / TRUNCATE על Production
+- Force push, או Merge ל-main
+- מחיקת Neon Branch, מחיקת Render Service
+- Rotate Secret (החלפת מפתח גישה)
+- Migration הרסני מכל סוג
+
+אלה תמיד דורשים החלטה אנושית מפורשת, מחוץ לכל סקריפט.
+
+## 10. סיכום פקודות
+
+| פקודה | סוג | דורש |
+|---|---|---|
+| `prod:preflight` | Read Only | `PRODUCTION_DATABASE_URL` |
+| `prod:season-status` | Read Only | `PRODUCTION_DATABASE_URL` |
+| `prod:scheduled-check` | Read Only | `PRODUCTION_DATABASE_URL` |
+| `prod:post-deploy-check` | Read Only | `PRODUCTION_DATABASE_URL` |
+| `prod:render:status` | Read Only | `RENDER_API_KEY` |
+| `prod:backup:list` | Read Only | `NEON_API_KEY` |
+| `prod:cron:suspend` | כתיבה | `RENDER_API_KEY` + `PRODUCTION_WRITE_CONFIRM` |
+| `prod:cron:resume` | כתיבה | `RENDER_API_KEY` + `PRODUCTION_WRITE_CONFIRM` |
+| `prod:deploy:trigger` | כתיבה | `RENDER_API_KEY` + `PRODUCTION_WRITE_CONFIRM` |
+| `prod:backup:create` | כתיבה | `NEON_API_KEY` + `PRODUCTION_WRITE_CONFIRM` |
+| `prod:deploy:safe` | Workflow (קריאה+כתיבה משולבות) | כל הנ"ל + `PRODUCTION_WRITE_CONFIRM` |
