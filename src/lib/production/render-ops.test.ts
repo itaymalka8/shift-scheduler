@@ -14,6 +14,8 @@ jest.mock("./render-client", () => ({
   readCronDetails: jest.fn(() => ({ schedule: null, command: null })),
   readServiceDetail: jest.fn(),
   readServiceUrl: jest.fn(() => null),
+  getEnvVar: jest.fn(),
+  setEnvVar: jest.fn(),
   RENDER_DEPLOY_SUCCESS_STATUSES: new Set(["live"]),
   RENDER_DEPLOY_FAILURE_STATUSES: new Set(["build_failed", "update_failed", "canceled", "deactivated", "pre_deploy_failed"]),
 }))
@@ -23,12 +25,14 @@ jest.mock("./render-discovery", () => ({
   resolveWebServiceId: jest.fn(async () => "web-1"),
 }))
 
-import { suspendService, resumeService, getDeploy } from "./render-client"
-import { suspendCron, resumeCron, waitForDeploy } from "./render-ops"
+import { suspendService, resumeService, getDeploy, getEnvVar, setEnvVar } from "./render-client"
+import { suspendCron, resumeCron, waitForDeploy, getWebServiceEnvVar, setWebServiceEnvVar } from "./render-ops"
 
 const mockSuspendService = suspendService as jest.Mock
 const mockResumeService = resumeService as jest.Mock
 const mockGetDeploy = getDeploy as jest.Mock
+const mockGetEnvVar = getEnvVar as jest.Mock
+const mockSetEnvVar = setEnvVar as jest.Mock
 
 beforeEach(() => {
   jest.clearAllMocks()
@@ -102,5 +106,25 @@ describe("waitForDeploy polling and timeout", () => {
     })
     const result = await waitForDeploy("web-1", "d1", { sleep, now: clock, timeoutMs: 15_000, pollIntervalMs: 10_000, env: {} })
     expect(result.outcome).toBe("timeout")
+  })
+})
+
+describe("getWebServiceEnvVar / setWebServiceEnvVar", () => {
+  it("getWebServiceEnvVar is read-only - never touches the write guard or setEnvVar", async () => {
+    mockGetEnvVar.mockResolvedValue("some-value")
+    const value = await getWebServiceEnvVar("PRODUCTION_OPS_READ_TOKEN", {})
+    expect(value).toBe("some-value")
+    expect(mockSetEnvVar).not.toHaveBeenCalled()
+  })
+
+  it("setWebServiceEnvVar refuses without PRODUCTION_WRITE_CONFIRM", async () => {
+    await expect(setWebServiceEnvVar("PRODUCTION_OPS_READ_TOKEN", "abc", {})).rejects.toBeInstanceOf(ProductionWriteNotConfirmedError)
+    expect(mockSetEnvVar).not.toHaveBeenCalled()
+  })
+
+  it("setWebServiceEnvVar proceeds with the exact confirmation string, targeting only the given key", async () => {
+    await setWebServiceEnvVar("PRODUCTION_OPS_READ_TOKEN", "abc123", { PRODUCTION_WRITE_CONFIRM: PRODUCTION_WRITE_CONFIRMATION })
+    expect(mockSetEnvVar).toHaveBeenCalledTimes(1)
+    expect(mockSetEnvVar).toHaveBeenCalledWith(expect.anything(), "web-1", "PRODUCTION_OPS_READ_TOKEN", "abc123")
   })
 })

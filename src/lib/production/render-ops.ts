@@ -38,6 +38,8 @@ import {
   suspendService,
   RENDER_DEPLOY_FAILURE_STATUSES,
   RENDER_DEPLOY_SUCCESS_STATUSES,
+  getEnvVar,
+  setEnvVar,
   type RenderDeploySummary,
   type RenderServiceDetail,
   type RenderServiceSummary,
@@ -172,4 +174,29 @@ export async function getDeployStatus(
   if (deployId) return getDeploy(client, webServiceId, deployId)
   const deploys = await clientListDeploys(client, webServiceId, 1)
   return deploys[0] ?? null
+}
+
+/**
+ * Read-only. The web service's own current value for one env var key -
+ * used to read back PRODUCTION_OPS_READ_TOKEN transiently (see ops-token.ts
+ * and scripts/production/ops-check.ts) without ever storing it in this
+ * session's own environment variables.
+ */
+export async function getWebServiceEnvVar(key: string, env: Record<string, string | undefined> = process.env): Promise<string | null> {
+  const client = createRenderClient(env)
+  const id = await resolveWebServiceId(client, env)
+  return getEnvVar(client, id, key)
+}
+
+/**
+ * MUTATES Production (sets one env var on the web service, which Render
+ * will redeploy for) - requires PRODUCTION_WRITE_CONFIRM. Never touches any
+ * other env var - see render-client.ts's setEnvVar for why a bulk-replace
+ * endpoint is never used here.
+ */
+export async function setWebServiceEnvVar(key: string, value: string, env: Record<string, string | undefined> = process.env): Promise<void> {
+  assertProductionWriteConfirmed(env)
+  const client = createRenderClient(env)
+  const id = await resolveWebServiceId(client, env)
+  await setEnvVar(client, id, key, value)
 }

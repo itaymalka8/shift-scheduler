@@ -244,3 +244,43 @@ export async function resumeService(client: RenderClient, serviceId: string): Pr
 
 export const RENDER_DEPLOY_SUCCESS_STATUSES = new Set(["live"])
 export const RENDER_DEPLOY_FAILURE_STATUSES = new Set(["build_failed", "update_failed", "canceled", "deactivated", "pre_deploy_failed"])
+
+export interface RenderEnvVar {
+  key: string
+  value: string
+}
+
+interface RenderEnvVarListEntry {
+  cursor?: string
+  envVar: RenderEnvVar
+}
+
+export async function listEnvVars(client: RenderClient, serviceId: string): Promise<RenderEnvVar[]> {
+  const entries = await renderFetch<RenderEnvVarListEntry[]>(client, `/services/${serviceId}/env-vars?limit=100`)
+  return entries.map((entry) => entry.envVar)
+}
+
+export async function getEnvVar(client: RenderClient, serviceId: string, key: string): Promise<string | null> {
+  const vars = await listEnvVars(client, serviceId)
+  return vars.find((v) => v.key === key)?.value ?? null
+}
+
+/**
+ * Upserts exactly ONE env var by key, via Render's single-key PUT endpoint -
+ * deliberately never Render's bulk "replace all env vars" endpoint. A bulk
+ * replace requires resending every existing variable, and omitting even one
+ * (DATABASE_URL, NEXTAUTH_SECRET, ...) would delete it from Production.
+ * There is no bulk-write function anywhere in this file - only this
+ * single-key form exists, so that mistake isn't possible to make by
+ * accident here.
+ *
+ * Setting an env var on a live Render service triggers Render to redeploy
+ * it so the new value takes effect - that is Render's own behavior, not
+ * something this function does separately.
+ */
+export async function setEnvVar(client: RenderClient, serviceId: string, key: string, value: string): Promise<void> {
+  await renderFetch<unknown>(client, `/services/${serviceId}/env-vars/${encodeURIComponent(key)}`, {
+    method: "PUT",
+    body: JSON.stringify({ value }),
+  })
+}

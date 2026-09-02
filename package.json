@@ -24,6 +24,10 @@
     "prod:backup:list": "tsx scripts/production/backup-list.ts",
     "prod:backup:create": "tsx scripts/production/backup-create.ts",
     "prod:deploy:safe": "tsx scripts/production/deploy-safe.ts",
+    "prod:ops:provision-token": "tsx scripts/production/provision-ops-token.ts",
+    "prod:ops:preflight": "tsx scripts/production/ops-check.ts preflight",
+    "prod:ops:season-status": "tsx scripts/production/ops-check.ts season-status",
+    "prod:ops:scheduled-check": "tsx scripts/production/ops-check.ts scheduled-check",
     "postinstall": "prisma generate"
   },
   "dependencies": {

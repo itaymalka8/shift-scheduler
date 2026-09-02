@@ -193,7 +193,20 @@ PRODUCTION_WRITE_CONFIRM=I_UNDERSTAND_THIS_CHANGES_PRODUCTION npm run prod:deplo
 - `npx prisma migrate deploy` — זה כבר קורה אוטומטית בתוך ה-buildCommand של Render כחלק משלב G.
 - `process-scheduled-jobs` האמיתי — שלב K הוא Dry Check בלבד.
 
-## 9. מה בהחלט אסור, תמיד (אוטומטית)
+## 9. Production Ops API — עוקף לגמרי את PRODUCTION_DATABASE_URL
+
+זו התשתית שמאפשרת ל-Claude להריץ preflight/season-status/scheduled-check **בלי אף פעם להחזיק את חיבור ה-Postgres של Production**. ה-DATABASE_URL האמיתי נשאר אך ורק ב-Render, אף פעם לא זז משם.
+
+**איך זה עובד:**
+1. Endpoint פנימי חדש: `GET /api/internal/production-ops?check=preflight|season-status|scheduled-check` — רץ **בתוך האפליקציה עצמה**, ב-Production, עם ה-`prisma` (מסד הנתונים) שכבר מחובר שם ממילא. מוגן ב-token (`Authorization: Bearer <token>`), fail-closed (503 אם ה-token לא מוגדר בכלל, 401 אם לא תואם, השוואה timing-safe — אותה תבנית בדיוק כמו `/api/internal/process-fixtures` הקיים).
+2. Token בשם `PRODUCTION_OPS_READ_TOKEN` — **נוצר אוטומטית** (ערך אקראי קריפטוגרפי, 256 סיביות) ונשמר **ישירות על Render** דרך Render API (`npm run prod:ops:provision-token`, פעם אחת, אידמפוטנטי). הערך אף פעם לא מודפס, לא נכתב לקובץ, לא נכנס ל-git.
+3. הסקריפט שקורא לזה (`npm run prod:ops:preflight` / `prod:ops:season-status` / `prod:ops:scheduled-check`) **שולף את הטוקן חזרה מ-Render** ברגע הריצה עצמה (דרך אותו `RENDER_API_KEY` credential), משתמש בו לקריאת ה-endpoint, ומעולם לא שומר אותו — לא ב-env var של ה-session, לא בדיסק. הוא קיים רק בזיכרון התהליך, לרגע אחד.
+
+**התוצאה:** `PRODUCTION_DATABASE_URL` הופך **מיותר לחלוטין** מבחינת ה-checks האלה — מספיק `RENDER_API_KEY` בלבד.
+
+**בטיחות בכתיבת ה-env var:** `setWebServiceEnvVar` (וממנו `prod:ops:provision-token`) משתמש **רק** בנקודת הקצה של Render לעדכון משתנה יחיד (`PUT .../env-vars/:key`) — **לעולם לא** בנקודת קצה שמחליפה את כל רשימת המשתנים בבת אחת, כדי שאין שום סיכוי (גם לא בטעות) למחוק בטעות DATABASE_URL/NEXTAUTH_SECRET קיימים.
+
+## 10. מה בהחלט אסור, תמיד (אוטומטית)
 
 בשום מצב, אף פקודה כאן לא תבצע לבד:
 
@@ -206,13 +219,17 @@ PRODUCTION_WRITE_CONFIRM=I_UNDERSTAND_THIS_CHANGES_PRODUCTION npm run prod:deplo
 
 אלה תמיד דורשים החלטה אנושית מפורשת, מחוץ לכל סקריפט.
 
-## 10. סיכום פקודות
+## 11. סיכום פקודות
 
 | פקודה | סוג | דורש |
 |---|---|---|
-| `prod:preflight` | Read Only | `PRODUCTION_DATABASE_URL` |
-| `prod:season-status` | Read Only | `PRODUCTION_DATABASE_URL` |
-| `prod:scheduled-check` | Read Only | `PRODUCTION_DATABASE_URL` |
+| `prod:ops:provision-token` | כתיבה (חד-פעמי) | `RENDER_API_KEY` + `PRODUCTION_WRITE_CONFIRM` |
+| `prod:ops:preflight` | Read Only | `RENDER_API_KEY` בלבד — **לא** `PRODUCTION_DATABASE_URL` |
+| `prod:ops:season-status` | Read Only | `RENDER_API_KEY` בלבד |
+| `prod:ops:scheduled-check` | Read Only | `RENDER_API_KEY` בלבד |
+| `prod:preflight` (הגרסה הישנה, חיבור ישיר) | Read Only | `PRODUCTION_DATABASE_URL` |
+| `prod:season-status` (הגרסה הישנה) | Read Only | `PRODUCTION_DATABASE_URL` |
+| `prod:scheduled-check` (הגרסה הישנה) | Read Only | `PRODUCTION_DATABASE_URL` |
 | `prod:post-deploy-check` | Read Only | `PRODUCTION_DATABASE_URL` |
 | `prod:render:status` | Read Only | `RENDER_API_KEY` |
 | `prod:backup:list` | Read Only | `NEON_API_KEY` |
@@ -221,3 +238,5 @@ PRODUCTION_WRITE_CONFIRM=I_UNDERSTAND_THIS_CHANGES_PRODUCTION npm run prod:deplo
 | `prod:deploy:trigger` | כתיבה | `RENDER_API_KEY` + `PRODUCTION_WRITE_CONFIRM` |
 | `prod:backup:create` | כתיבה | `NEON_API_KEY` + `PRODUCTION_WRITE_CONFIRM` |
 | `prod:deploy:safe` | Workflow (קריאה+כתיבה משולבות) | כל הנ"ל + `PRODUCTION_WRITE_CONFIRM` |
+
+הגרסאות הישנות (`prod:preflight` וכו') נשארות קיימות במכוון — לדיבוג ישיר מול מסד הנתונים כשמישהו מריץ אותן בעצמו עם `PRODUCTION_DATABASE_URL` משלו, מחוץ ל-Claude.

@@ -1,13 +1,16 @@
 import {
   createRenderClient,
   findServiceByName,
+  getEnvVar,
   getRenderServices,
   getServiceRaw,
+  listEnvVars,
   RenderApiError,
   RenderCredentialsMissingError,
   readCronDetails,
   readServiceDetail,
   readServiceUrl,
+  setEnvVar,
   suspendService,
   type RenderClient,
 } from "./render-client"
@@ -156,5 +159,58 @@ describe("getServiceRaw", () => {
     mockFetchOnce(200, { id: "s1", name: "n", custom: "field" })
     const raw = await getServiceRaw({ apiKey: "k" }, "s1")
     expect(raw).toEqual({ id: "s1", name: "n", custom: "field" })
+  })
+})
+
+describe("env var management - single-key operations only", () => {
+  const client: RenderClient = { apiKey: "k" }
+
+  it("listEnvVars maps the wrapper shape to plain key/value pairs", async () => {
+    mockFetchOnce(200, [
+      { cursor: "c1", envVar: { key: "DATABASE_URL", value: "postgres://..." } },
+      { cursor: "c2", envVar: { key: "NEXTAUTH_SECRET", value: "s3cr3t" } },
+    ])
+    const vars = await listEnvVars(client, "srv-1")
+    expect(vars).toEqual([
+      { key: "DATABASE_URL", value: "postgres://..." },
+      { key: "NEXTAUTH_SECRET", value: "s3cr3t" },
+    ])
+  })
+
+  it("getEnvVar finds one key among many, or returns null", async () => {
+    mockFetchOnce(200, [{ envVar: { key: "A", value: "1" } }, { envVar: { key: "B", value: "2" } }])
+    expect(await getEnvVar(client, "srv-1", "B")).toBe("2")
+
+    mockFetchOnce(200, [{ envVar: { key: "A", value: "1" } }])
+    expect(await getEnvVar(client, "srv-1", "MISSING")).toBeNull()
+  })
+
+  it("setEnvVar PUTs to the single-key endpoint, never a bulk-replace endpoint", async () => {
+    mockFetchOnce(200, { key: "PRODUCTION_OPS_READ_TOKEN", value: "abc123" })
+    await setEnvVar(client, "srv-1", "PRODUCTION_OPS_READ_TOKEN", "abc123")
+
+    const call = (global.fetch as jest.Mock).mock.calls[0]
+    expect(call[0]).toBe("https://api.render.com/v1/services/srv-1/env-vars/PRODUCTION_OPS_READ_TOKEN")
+    expect((call[1] as RequestInit).method).toBe("PUT")
+    expect(JSON.parse((call[1] as RequestInit).body as string)).toEqual({ value: "abc123" })
+  })
+
+  it("setEnvVar never sends any other env var's key or value in its request", async () => {
+    mockFetchOnce(200, {})
+    await setEnvVar(client, "srv-1", "PRODUCTION_OPS_READ_TOKEN", "abc123")
+    const call = (global.fetch as jest.Mock).mock.calls[0]
+    const sentBody = (call[1] as RequestInit).body as string
+    expect(sentBody).not.toContain("DATABASE_URL")
+    expect(sentBody).not.toContain("NEXTAUTH_SECRET")
+  })
+
+  it("never leaks the token value into a thrown error's message", async () => {
+    mockFetchOnce(500, { message: "internal error" })
+    try {
+      await setEnvVar(client, "srv-1", "PRODUCTION_OPS_READ_TOKEN", "super-secret-token-value")
+      throw new Error("expected setEnvVar to throw")
+    } catch (error) {
+      expect(String((error as Error).message)).not.toContain("super-secret-token-value")
+    }
   })
 })
