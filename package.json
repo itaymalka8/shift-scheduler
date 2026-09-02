@@ -13,6 +13,10 @@
     "expire-transfer-listings": "tsx scripts/expire-transfer-listings.ts",
     "process-scheduled-jobs": "tsx scripts/process-scheduled-jobs.ts",
     "process-season-lifecycle": "tsx scripts/process-season-lifecycle.ts",
+    "prod:preflight": "tsx scripts/production/preflight.ts",
+    "prod:season-status": "tsx scripts/production/season-status.ts",
+    "prod:scheduled-check": "tsx scripts/production/scheduled-dry-check.ts",
+    "prod:post-deploy-check": "tsx scripts/production/post-deploy-check.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
