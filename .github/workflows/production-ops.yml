@@ -1,0 +1,105 @@
+name: Production Operations
+
+# Manual-only, on purpose - this workflow never runs on push/PR/schedule.
+# Every invocation is a deliberate choice of exactly one command from the
+# dropdown below, triggered either from the GitHub Actions UI or via the
+# API (workflow_dispatch).
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "Production operation to run"
+        required: true
+        type: choice
+        options:
+          - prod:preflight
+          - prod:season-status
+          - prod:scheduled-check
+          - prod:post-deploy-check
+          - prod:render:status
+          - prod:backup:list
+          - prod:deploy:safe
+
+# Secrets come ONLY from this repository's GitHub Secrets
+# (Settings > Secrets and variables > Actions): RENDER_API_KEY,
+# NEON_API_KEY, PRODUCTION_DATABASE_URL. They are never read from the
+# Claude Cloud environment, never committed, and never echoed - each job
+# below passes them straight from `secrets.*` into the process env of the
+# one script that needs them, and every scripts/production/*.ts script
+# already prints only host/database name or presence booleans, never a
+# credential value (see src/lib/production/env-guard.ts and report.ts).
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Every read-only production command. prod:deploy:safe is deliberately
+  # excluded here - it is the only command that mutates Production, and it
+  # gets its own job below with its own additional guard.
+  # ---------------------------------------------------------------------
+  read-only:
+    if: github.event.inputs.command != 'prod:deploy:safe'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Belt-and-suspenders on top of GitHub's automatic secret masking
+      # (which already masks the exact value of any `secrets.*` reference
+      # used in this job): PRODUCTION_DATABASE_URL is a connection string
+      # with a password embedded inside it, and GitHub's masking only
+      # matches the *whole* secret value verbatim - a log line that only
+      # contains the password substring (e.g. from a raw driver error)
+      # would not be caught by that alone. This step registers the
+      # password portion as an additional mask, so it's covered here too.
+      - name: Register additional secret masks
+        env:
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: |
+          PASSWORD=$(node -e "try{const u=new URL(process.env.PRODUCTION_DATABASE_URL||''); if(u.password) console.log(u.password)}catch(e){}")
+          if [ -n "$PASSWORD" ]; then echo "::add-mask::$PASSWORD"; fi
+
+      - name: Run production command
+        env:
+          COMMAND: ${{ github.event.inputs.command }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: npm run "$COMMAND"
+
+  # ---------------------------------------------------------------------
+  # prod:deploy:safe only. PRODUCTION_WRITE_CONFIRM is set ONLY in this
+  # job's env - no other job in this workflow ever sees it, so no other
+  # command here can accidentally satisfy a write guard.
+  # ---------------------------------------------------------------------
+  safe-deploy:
+    if: github.event.inputs.command == 'prod:deploy:safe'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Register additional secret masks
+        env:
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: |
+          PASSWORD=$(node -e "try{const u=new URL(process.env.PRODUCTION_DATABASE_URL||''); if(u.password) console.log(u.password)}catch(e){}")
+          if [ -n "$PASSWORD" ]; then echo "::add-mask::$PASSWORD"; fi
+
+      - name: Run prod:deploy:safe
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          PRODUCTION_WRITE_CONFIRM: I_UNDERSTAND_THIS_CHANGES_PRODUCTION
+        run: npm run prod:deploy:safe
