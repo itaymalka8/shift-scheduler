@@ -7,6 +7,7 @@ import { lockYouthIntake, settleIntakeDeadline } from "@/lib/youth/deadline"
 import { SeasonLifecycleError } from "./errors"
 import { countRemainingSeasonLifecyclePlayers, processSeasonPlayerLifecycle } from "./player-lifecycle"
 import { activateNextSeason, ensureNextSeasonStructure, isNextSeasonStructureComplete, rescheduleIfStale } from "./next-season"
+import { persistSeasonChampions, resolveSeasonChampions } from "./champions"
 
 /** Bot intakes handled per orchestrator run - keeps one tick bounded without ever holding a long transaction. */
 export const DEFAULT_BOT_INTAKE_BATCH = 20
@@ -80,6 +81,10 @@ export interface OrchestratorStepSummary {
   humanIntakesOpen?: number
   nextSeasonId?: string
   fixturesCreated?: number
+  /** Champion rows written by this step. Present only on the ACTIVE -> OFFSEASON transition. */
+  championsPersisted?: number
+  /** Divisions still level after every head-to-head criterion, and therefore awaiting a decider. */
+  divisionsAwaitingDecider?: number
 }
 
 /**
@@ -112,21 +117,60 @@ async function runOneStep(seasonId: string, now: Date): Promise<OrchestratorStep
     if (!(await isSeasonReadyForOffseason(seasonId, now))) {
       return { ...base, detail: "season still running - fixtures remain unplayed or still live" }
     }
+    // WHO WON, decided before the transaction opens.
+    //
+    // The season is over by the check above, so no result can change under
+    // this read - and it must not run inside the transaction below, because
+    // it reads through the global prisma client and would therefore see
+    // outside it. The transaction re-asserts readiness under the lock
+    // before anything is written, which is what actually makes this safe.
+    const champions = await resolveSeasonChampions(seasonId, now)
+
+    // FAIL CLOSED. A division still level after points, goal difference,
+    // goals scored and all three head-to-head criteria has no champion yet -
+    // it has a fixture still to play. Phase 2B does not create or simulate
+    // that decider, so the correct behaviour is to leave the season ACTIVE
+    // and write nothing: no invented champion, no half-persisted season, no
+    // offseason starting on top of an undecided title.
+    if (!champions.fullyResolved) {
+      const tied = champions.needsDecider.length
+      return {
+        ...base,
+        detail:
+          tied > 0
+            ? `season finished but ${tied} division(s) still level after head-to-head - a title decider is required (Phase 2C)`
+            : "season finished but its champions could not be resolved from the data",
+        divisionsAwaitingDecider: tied,
+      }
+    }
+
     // Re-checked inside the transaction: between the check above and the
     // lock, nothing may have changed, but the whole point of this gate is
     // that it is never decided on a stale read.
-    const advanced = await prisma.$transaction(async (tx) => {
+    //
+    // The champion rows and the status change commit together. A season can
+    // never enter its offseason without its titles recorded, and titles can
+    // never be recorded for a season that did not transition.
+    const result = await prisma.$transaction(async (tx) => {
       const locked = await lockSeason(tx, seasonId)
-      if (locked.status !== "ACTIVE" || locked.offseasonStage !== "NONE") return false
-      if (!(await isSeasonReadyForOffseason(seasonId, now))) return false
+      if (locked.status !== "ACTIVE" || locked.offseasonStage !== "NONE") return null
+      if (!(await isSeasonReadyForOffseason(seasonId, now))) return null
+      const persisted = await persistSeasonChampions(tx, champions)
       await tx.season.update({
         where: { id: seasonId },
         data: { status: "OFFSEASON", offseasonStage: "PLAYER_LIFECYCLE" },
       })
-      return true
+      return persisted
     })
-    return advanced
-      ? { ...base, toStatus: "OFFSEASON", toStage: "PLAYER_LIFECYCLE", advanced: true, detail: "season finished - entering offseason" }
+    return result
+      ? {
+          ...base,
+          toStatus: "OFFSEASON",
+          toStage: "PLAYER_LIFECYCLE",
+          advanced: true,
+          detail: `season finished - ${result.filter((r) => r.created).length} champion(s) recorded, entering offseason`,
+          championsPersisted: result.filter((r) => r.created).length,
+        }
       : { ...base, detail: "another run already started the offseason" }
   }
 

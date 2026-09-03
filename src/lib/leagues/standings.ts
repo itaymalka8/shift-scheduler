@@ -26,7 +26,15 @@ export async function computeStandings(divisionId: string): Promise<StandingRow[
   const [memberships, allFixtures] = await Promise.all([
     prisma.divisionTeam.findMany({ where: { divisionId }, include: { team: true } }),
     prisma.fixture.findMany({
-      where: { divisionId, homeScore: { not: null }, awayScore: { not: null } },
+      // stage: "LEAGUE" is load-bearing, not defensive. A championship
+      // decider is a fixture OF this division, played by two of its clubs,
+      // and it exists precisely because the table could not separate them -
+      // so letting it into the table would change the very numbers it was
+      // played to settle. Filtering on the stage rather than excluding a
+      // list of known non-league types means a value added later (the
+      // promotion playoff in src/lib/leagues/config.ts is the next one) is
+      // excluded from the table on the day it is added, with no edit here.
+      where: { divisionId, stage: "LEAGUE", homeScore: { not: null }, awayScore: { not: null } },
     }),
   ])
   // Only count matches whose live 10-minute window has actually played out,

@@ -111,6 +111,7 @@ model Team {
   cornerTaker           Player?                @relation("TeamCornerTaker", fields: [cornerTakerId], references: [id], onDelete: SetNull)
   kits                  TeamKit[]
   transferListings      TransferListing[]
+  seasonChampionships   SeasonChampion[]
   youthIntakes          YouthIntake[]
   eras                  TeamEra[]
 }
@@ -391,6 +392,7 @@ model Season {
   playerLifecycles PlayerSeasonLifecycle[]
   teamErasStarted  TeamEra[]               @relation("TeamEraStarted")
   teamErasEnded    TeamEra[]               @relation("TeamEraEnded")
+  champions        SeasonChampion[]
 
   @@unique([countryCode, number])
 }
@@ -398,15 +400,19 @@ model Season {
 // One table/group within a tier for a given season - e.g. tier 1 has a
 // single division, tier 2 has two parallel divisions ("A"/"B").
 model Division {
-  id        String         @id @default(cuid())
+  id        String          @id @default(cuid())
   seasonId  String
-  season    Season         @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  season    Season          @relation(fields: [seasonId], references: [id], onDelete: Cascade)
   tier      Int
   group     String?
   name      String
-  createdAt DateTime       @default(now())
+  createdAt DateTime        @default(now())
   teams     DivisionTeam[]
   fixtures  Fixture[]
+  // At most one - a division has one champion, ever. Enforced by
+  // SeasonChampion.divisionId being @unique, which is also what makes the
+  // season-end write idempotent.
+  champion  SeasonChampion?
 
   @@unique([seasonId, tier, group])
 }
@@ -596,6 +602,28 @@ model PlayerSeasonLifecycle {
   @@unique([seasonId, playerId])
 }
 
+// WHICH COMPETITION A FIXTURE BELONGS TO.
+//
+// The league table is not "every fixture in the division" - it is every
+// fixture of the LEAGUE itself. Until now those were the same set, so
+// nothing had to say so. A championship decider is played by two clubs of
+// the division, in the division, and must not touch a single number in the
+// table it exists to settle.
+//
+// An enum rather than an `isDecider` boolean because the same distinction
+// is already needed for more than one thing: the promotion playoff between
+// tier 1 and tier 2 is written down in src/lib/leagues/config.ts and will
+// need its own value here. Anything that means "the league" filters on
+// `stage = LEAGUE`, so a value added later is excluded from the table on
+// the day it is added, without a single call site being edited.
+enum FixtureStage {
+  LEAGUE
+  // Played only when a division's title is still level after every
+  // head-to-head criterion. At most one per division, enforced by a partial
+  // unique index (see the migration). Simulated in Phase 2C.
+  TITLE_DECIDER
+}
+
 model Fixture {
   id               String             @id @default(cuid())
   divisionId       String
@@ -605,6 +633,9 @@ model Fixture {
   homeTeam         Team               @relation("HomeFixtures", fields: [homeTeamId], references: [id], onDelete: Cascade)
   awayTeamId       String
   awayTeam         Team               @relation("AwayFixtures", fields: [awayTeamId], references: [id], onDelete: Cascade)
+  // NOT NULL with a constant default, so every fixture that already exists
+  // is a league fixture by definition and the migration rewrites no rows.
+  stage            FixtureStage       @default(LEAGUE)
   homeScore        Int?
   awayScore        Int?
   attendance       Int?
@@ -623,6 +654,8 @@ model Fixture {
   createdAt        DateTime           @default(now())
   events           MatchEvent[]
   playerStats      PlayerMatchStats[]
+  // Set only on a TITLE_DECIDER that actually settled a title.
+  decidedChampion  SeasonChampion?
 
   // Postgres does not index a foreign key on its own, so until now this
   // table had no index at all beyond its primary key and every read below
@@ -911,6 +944,10 @@ model TeamEra {
 
   createdAt DateTime @default(now())
 
+  // Titles won while this era held the club. A HUMAN era's titles are that
+  // manager's; a BOT era's titles belong to the club and to nobody else.
+  seasonChampionships SeasonChampion[]
+
   // "Which era owned this club at time T" - the single hottest read, and
   // the one the era-boundary rule runs on. teamId leads as the equality
   // column, startedAt follows for the range half and gives the ordering
@@ -919,4 +956,110 @@ model TeamEra {
   // "Every club this person has ever managed" - the manager profile's
   // starting point. Ordered by startedAt so a career reads chronologically.
   @@index([userId, startedAt])
+}
+
+// WHO WON A DIVISION, DECIDED ONCE AND NEVER RECOMPUTED.
+//
+// A title is a permanent historical fact, and re-deriving one from the
+// standings later is not safe: computeStandings' display ordering falls
+// through to the club's CURRENT name, and a name changes - a human takeover
+// rewrites Team.name (src/app/api/register/route.ts) and the bot renamer
+// rewrites it again (src/lib/leagues/seed.ts). Recomputing a historical
+// table after a takeover can therefore return a different answer than the
+// one that was actually true. So the answer is written down at the moment
+// it is decided, and read back forever after.
+//
+// GLOBAL CLUB HISTORY AND MANAGER PERSONAL HISTORY ARE DIFFERENT THINGS,
+// and this one row carries both without letting either contaminate the
+// other:
+//
+//   teamId    - the club. Never changes when the club changes hands, so a
+//               title won under a bot stays in the club's honours list
+//               forever, exactly as it should.
+//   teamEraId - the era that HELD the club at decidedAt. A snapshot, taken
+//               once. A takeover three seasons later cannot reach back and
+//               change it, so a human never inherits a bot's trophies.
+//
+// Team.userId is never consulted for attribution - it is current ownership,
+// which is precisely the wrong question.
+model SeasonChampion {
+  id String @id @default(cuid())
+
+  // Denormalised from Division. Every consumer query starts from a season
+  // ("season N's champions", "this club's titles, by season"), and going
+  // through Division would put a join on every one of them.
+  //
+  // RESTRICT: a title is history. Note Division.seasonId is Cascade, so
+  // deleting a Season would otherwise cascade its Divisions away and take
+  // every title with them; this states the rule at the season level too,
+  // rather than relying on the divisionId RESTRICT to catch it by accident.
+  seasonId String
+  season   Season @relation(fields: [seasonId], references: [id], onDelete: Restrict)
+
+  // The scope of the title AND the idempotency authority: one champion per
+  // division, ever, enforced by the database rather than by the caller
+  // remembering. `tier` is deliberately NOT copied here - it lives on
+  // Division and would only drift once promotion/relegation exists.
+  divisionId String   @unique
+  division   Division @relation(fields: [divisionId], references: [id], onDelete: Restrict)
+
+  // RESTRICT, matching TeamEra exactly. Team.userId is onDelete: Cascade,
+  // so deleting a User deletes the Team - and TeamEra already blocks that
+  // for any club with a human era. This extends the same protection to a
+  // club whose only title was won as a bot.
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Restrict)
+
+  // The manager snapshot. Deliberately an era reference, not a userId: a
+  // userId column would be a second copy of TeamEra.userId that can drift,
+  // and it could not express "this title belongs to a BOT era, and so to no
+  // manager at all".
+  //
+  // Nullable ONLY so that a club with no era row can never BLOCK a season
+  // from completing - a null here is a data defect for the verification
+  // script to catch, whereas a blocked season transition is an outage.
+  // In practice ensureBotEra and the backfill guarantee every club has an
+  // open era, and Production reports zero clubs without one.
+  //
+  // RESTRICT, and explicitly NOT SetNull: nulling this would silently
+  // detach a manager from a title they won, which is the exact damage the
+  // TeamEra FK review already rejected for TeamEra.userId. Contrast with
+  // TeamEra.startedSeasonId/endedSeasonId, which are correctly SetNull
+  // because they are annotations - this is not an annotation, it IS the
+  // attribution.
+  teamEraId String?
+  teamEra   TeamEra? @relation(fields: [teamEraId], references: [id], onDelete: Restrict)
+
+  // The canonical attribution instant: MAX(scheduledAt) over the division's
+  // LEAGUE fixtures, or the TITLE_DECIDER's scheduledAt when one was played.
+  //
+  // Kickoff, never playedAt - the same rule src/lib/teams/era.ts already
+  // applies to every individual match, applied once more to the match that
+  // settled the title. Stored rather than re-derived because
+  // rescheduleIfStale (src/lib/seasons/next-season.ts) rewrites
+  // Fixture.scheduledAt, so a stored value is the only way the attribution
+  // actually used can never be retro-changed underneath the row.
+  decidedAt DateTime
+
+  // Null when the title was settled by the table. Set when it needed a
+  // decider, so a trophy cabinet can say "won it in a decider" without
+  // recomputing anything. Unique: one decider settles exactly one title.
+  //
+  // RESTRICT for the same reason as every other FK here - a title's
+  // evidence must not be able to disappear.
+  decidedByFixtureId String?  @unique
+  decidedByFixture   Fixture? @relation(fields: [decidedByFixtureId], references: [id], onDelete: Restrict)
+
+  // When the row was written, which differs from decidedAt by however long
+  // the hourly orchestrator took to notice the season had ended.
+  createdAt DateTime @default(now())
+
+  // "Season N's champions" - the global historical honours list, and the
+  // one query the denormalised seasonId above exists to serve.
+  @@index([seasonId])
+  // "This club's honours" - club history, independent of who managed it.
+  @@index([teamId])
+  // "This manager's honours" - joined from TeamEra by userId. The manager
+  // profile and trophy cabinet both start here.
+  @@index([teamEraId])
 }

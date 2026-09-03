@@ -25,13 +25,23 @@ const V1_DIVISIONS = 3
 const V1_DIVISION_TEAMS = 60
 const V1_FIXTURES = 1140
 
-function mockFixtureCount(overrides: { total?: number; played?: number; qa?: number; due?: number } = {}) {
+function mockFixtureCount(
+  overrides: { total?: number; nonLeague?: number; played?: number; qa?: number; due?: number } = {}
+) {
   mockPrisma.fixture.count.mockImplementation(async (args?: { where?: Record<string, unknown> }) => {
     const where = args?.where
     if (!where) return overrides.total ?? V1_FIXTURES
     if ("matchday" in where) return overrides.qa ?? 0
     if ("playedAt" in where && "scheduledAt" in where) return overrides.due ?? 0
     if ("playedAt" in where) return overrides.played ?? 0
+    // The V1 shape is counted over LEAGUE fixtures; title deciders and
+    // playoffs are counted separately so they can be surfaced without
+    // failing a check that describes the double round-robin.
+    if ("stage" in where) {
+      const stage = where.stage
+      if (stage === "LEAGUE") return overrides.total ?? V1_FIXTURES
+      return overrides.nonLeague ?? 0
+    }
     return 0
   })
 }
@@ -56,6 +66,33 @@ describe("runPreflightCheck", () => {
     expect(result.pass).toBe(true)
     expect(result.errors).toEqual([])
     expect(result.summary).toMatchObject({ divisionCount: V1_DIVISIONS, divisionTeamCount: V1_DIVISION_TEAMS, fixtureCount: V1_FIXTURES })
+  })
+
+  it("stays green with a title decider present - the V1 count describes the LEAGUE, not every row in the table", async () => {
+    mockPrisma.season.findMany.mockResolvedValue(healthySeasons())
+    mockPrisma.division.count.mockResolvedValue(V1_DIVISIONS)
+    mockPrisma.divisionTeam.count.mockResolvedValue(V1_DIVISION_TEAMS)
+    // 1140 league fixtures, plus one decider. Before the stage split this
+    // would have failed with "found 1141".
+    mockFixtureCount({ total: V1_FIXTURES, nonLeague: 1, played: 1140, qa: 0 })
+
+    const result = await runPreflightCheck()
+    expect(result.pass).toBe(true)
+    expect(result.errors).toEqual([])
+    // Surfaced, never silently ignored.
+    expect(result.warnings.join(" ")).toMatch(/1 non-LEAGUE fixture/)
+    expect(result.summary).toMatchObject({ fixtureCount: V1_FIXTURES, nonLeagueFixtureCount: 1 })
+  })
+
+  it("still fails when a LEAGUE fixture is missing - the check was made correct, not lenient", async () => {
+    mockPrisma.season.findMany.mockResolvedValue(healthySeasons())
+    mockPrisma.division.count.mockResolvedValue(V1_DIVISIONS)
+    mockPrisma.divisionTeam.count.mockResolvedValue(V1_DIVISION_TEAMS)
+    mockFixtureCount({ total: V1_FIXTURES - 1, nonLeague: 1, qa: 0 })
+
+    const result = await runPreflightCheck()
+    expect(result.pass).toBe(false)
+    expect(result.errors.join(" ")).toMatch(/Expected 1140 LEAGUE Fixtures/)
   })
 
   it("fails on duplicate active seasons for the same country", async () => {

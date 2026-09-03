@@ -95,12 +95,26 @@ async function main() {
     }
 
     // --- Fixture count for V1 ----------------------------------------------
-    const fixtureCount = await prisma.fixture.count()
-    if (fixtureCount !== V1_EXPECTED_TOTAL_FIXTURES) {
-      errors.push(`Total fixtures = ${fixtureCount}, expected ${V1_EXPECTED_TOTAL_FIXTURES} for V1's fixed league shape.`)
+    // LEAGUE only: V1_EXPECTED_TOTAL_FIXTURES is the double round-robin
+    // shape, and a title decider is an additional, legitimate fixture that
+    // is not part of it. The check is not weakened - it still demands
+    // exactly 1140 league fixtures - it is made to mean what it says.
+    const [leagueFixtureCount, nonLeagueFixtureCount] = await Promise.all([
+      prisma.fixture.count({ where: { stage: "LEAGUE" } }),
+      prisma.fixture.count({ where: { stage: { not: "LEAGUE" } } }),
+    ])
+    if (leagueFixtureCount !== V1_EXPECTED_TOTAL_FIXTURES) {
+      errors.push(`LEAGUE fixtures = ${leagueFixtureCount}, expected ${V1_EXPECTED_TOTAL_FIXTURES} for V1's fixed league shape.`)
     } else {
-      console.info(`Total fixtures: ${fixtureCount} (matches V1 expectation)`)
+      console.info(`LEAGUE fixtures: ${leagueFixtureCount} (matches V1 expectation)`)
     }
+    console.info(`Non-LEAGUE fixtures (title deciders / playoffs): ${nonLeagueFixtureCount}`)
+
+    // Phase 2B persists championships but never creates a decider, so this
+    // is reported rather than asserted - a non-zero count here after 2C is
+    // correct, not a defect.
+    const championCount = await prisma.seasonChampion.count()
+    console.info(`SeasonChampion rows: ${championCount}`)
 
     // --- QA residue ---------------------------------------------------
     const qaFixtures = await prisma.fixture.count({ where: { matchday: QA_MATCHDAY } })

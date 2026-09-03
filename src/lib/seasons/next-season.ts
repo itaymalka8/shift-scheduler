@@ -235,13 +235,20 @@ async function ensureDivisionFixtures(
       ).map((m) => m.teamId)
 
       const expected = expectedFixtureCount(teamIds.length)
-      const existing = await tx.fixture.count({ where: { divisionId } })
+      // LEAGUE only: expectedFixtureCount describes a double round-robin,
+      // so counting anything else against it would compare two different
+      // things. A prepared season has no decider yet, but the count must
+      // mean what its name says regardless of when it happens to run.
+      const existing = await tx.fixture.count({ where: { divisionId, stage: "LEAGUE" } })
       if (existing === expected) return { created: 0, repaired: 0 }
 
       let repaired = 0
       if (existing > 0) {
         // A crash mid-insert. Rebuilding is only safe because this season
         // has never kicked off - assert that rather than trust it.
+        // Deliberately NOT filtered by stage: this asks "has anything at
+        // all been played here", and the answer must be yes for a decider
+        // too. It guards a deleteMany, so it errs toward refusing.
         const played = await tx.fixture.count({ where: { divisionId, playedAt: { not: null } } })
         if (played > 0) {
           throw new SeasonLifecycleError(
@@ -364,8 +371,14 @@ export async function activateNextSeason(
 export async function isNextSeasonStructureComplete(nextSeasonId: string, expectedDivisions: number): Promise<boolean> {
   const divisions = await prisma.division.findMany({
     where: { seasonId: nextSeasonId },
-    select: { id: true, _count: { select: { teams: true, fixtures: true } } },
+    select: {
+      id: true,
+      _count: { select: { teams: true, fixtures: { where: { stage: "LEAGUE" } } } },
+    },
   })
   if (divisions.length !== expectedDivisions) return false
+  // Compared against expectedFixtureCount, which counts a double
+  // round-robin - so the count it is compared with must be league fixtures
+  // and nothing else.
   return divisions.every((d) => d._count.teams > 0 && d._count.fixtures === expectedFixtureCount(d._count.teams))
 }

@@ -25,8 +25,11 @@ export interface OpsPreflightResult {
     seasons: number
     activeSeasons: number
     divisionCount: number
-    divisionTeamCount: number
+    /** LEAGUE fixtures only - what V1_EXPECTED_TOTAL_FIXTURES describes. */
     fixtureCount: number
+    /** Title deciders and (later) playoffs. Expected to be 0 until a season ends level. */
+    nonLeagueFixtureCount: number
+    divisionTeamCount: number
     playedFixtureCount: number
   }
 }
@@ -43,13 +46,23 @@ export async function runPreflightCheck(): Promise<OpsPreflightResult> {
     errors.push(`Duplicate active Season per country: ${duplicates.join(", ")}`)
   }
 
-  const [divisionCount, divisionTeamCount, fixtureCount, playedFixtureCount, qaFixtures] = await Promise.all([
-    prisma.division.count(),
-    prisma.divisionTeam.count(),
-    prisma.fixture.count(),
-    prisma.fixture.count({ where: { playedAt: { not: null } } }),
-    prisma.fixture.count({ where: { matchday: QA_MATCHDAY } }),
-  ])
+  // V1_EXPECTED_TOTAL_FIXTURES describes the LEAGUE - three divisions of
+  // twenty clubs playing a double round-robin. It was written when every
+  // fixture was a league fixture, so a plain count() meant the same thing.
+  // It no longer does: a championship decider is a real, wanted fixture
+  // that is not part of that shape, and counting it here would turn a
+  // correct season-end into a failed preflight. The check is made
+  // semantically correct rather than relaxed - it still demands EXACTLY
+  // 1140 league fixtures, and a missing or duplicated one still fails.
+  const [divisionCount, divisionTeamCount, leagueFixtureCount, nonLeagueFixtureCount, playedFixtureCount, qaFixtures] =
+    await Promise.all([
+      prisma.division.count(),
+      prisma.divisionTeam.count(),
+      prisma.fixture.count({ where: { stage: "LEAGUE" } }),
+      prisma.fixture.count({ where: { stage: { not: "LEAGUE" } } }),
+      prisma.fixture.count({ where: { playedAt: { not: null } } }),
+      prisma.fixture.count({ where: { matchday: QA_MATCHDAY } }),
+    ])
 
   if (divisionCount !== V1_EXPECTED_DIVISIONS) {
     errors.push(`Expected ${V1_EXPECTED_DIVISIONS} Divisions for V1, found ${divisionCount}.`)
@@ -57,18 +70,25 @@ export async function runPreflightCheck(): Promise<OpsPreflightResult> {
   if (divisionTeamCount !== V1_EXPECTED_DIVISION_TEAM_MEMBERSHIPS) {
     errors.push(`Expected ${V1_EXPECTED_DIVISION_TEAM_MEMBERSHIPS} DivisionTeam memberships for V1, found ${divisionTeamCount}.`)
   }
-  if (fixtureCount !== V1_EXPECTED_TOTAL_FIXTURES) {
-    errors.push(`Expected ${V1_EXPECTED_TOTAL_FIXTURES} total Fixtures for V1, found ${fixtureCount}.`)
+  if (leagueFixtureCount !== V1_EXPECTED_TOTAL_FIXTURES) {
+    errors.push(`Expected ${V1_EXPECTED_TOTAL_FIXTURES} LEAGUE Fixtures for V1, found ${leagueFixtureCount}.`)
+  }
+  // Not an error - a decider is legitimate. Surfaced so a non-league
+  // fixture can never appear in Production unnoticed.
+  if (nonLeagueFixtureCount > 0) {
+    warnings.push(`${nonLeagueFixtureCount} non-LEAGUE fixture(s) present (title deciders / playoffs).`)
   }
   if (qaFixtures > 0) {
     errors.push(`${qaFixtures} fixture(s) with matchday=${QA_MATCHDAY} (QA residue) found.`)
   }
 
-  const divisions = await prisma.division.findMany({ select: { _count: { select: { teams: true, fixtures: true } } } })
+  const divisions = await prisma.division.findMany({
+    select: { _count: { select: { teams: true, fixtures: { where: { stage: "LEAGUE" } } } } },
+  })
   for (const d of divisions) {
     const expected = expectedFixtureCount(d._count.teams)
     if (d._count.teams > 0 && d._count.fixtures !== expected) {
-      warnings.push(`A division has ${d._count.fixtures} fixtures, expected ${expected} for ${d._count.teams} teams.`)
+      warnings.push(`A division has ${d._count.fixtures} LEAGUE fixtures, expected ${expected} for ${d._count.teams} teams.`)
     }
   }
 
@@ -81,7 +101,8 @@ export async function runPreflightCheck(): Promise<OpsPreflightResult> {
       activeSeasons: seasons.filter((s) => s.isActive).length,
       divisionCount,
       divisionTeamCount,
-      fixtureCount,
+      fixtureCount: leagueFixtureCount,
+      nonLeagueFixtureCount,
       playedFixtureCount,
     },
   }

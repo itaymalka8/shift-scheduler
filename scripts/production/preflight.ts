@@ -104,7 +104,8 @@ async function main() {
       divisionTeamCount,
       teamCount,
       playerCount,
-      fixtureCount,
+      leagueFixtureCount,
+      nonLeagueFixtureCount,
       playedFixtureCount,
       matchEventCount,
       playerMatchStatsCount,
@@ -117,7 +118,13 @@ async function main() {
       prisma.divisionTeam.count(),
       prisma.team.count(),
       prisma.player.count(),
-      prisma.fixture.count(),
+      // V1_EXPECTED_TOTAL_FIXTURES describes the league's double
+      // round-robin shape, so the count checked against it must be LEAGUE
+      // fixtures only. A title decider is a legitimate extra fixture and
+      // must not turn a correct season-end into a failed preflight; it is
+      // counted separately and surfaced, never silently ignored.
+      prisma.fixture.count({ where: { stage: "LEAGUE" } }),
+      prisma.fixture.count({ where: { stage: { not: "LEAGUE" } } }),
       prisma.fixture.count({ where: { playedAt: { not: null } } }),
       prisma.matchEvent.count(),
       prisma.playerMatchStats.count(),
@@ -128,7 +135,7 @@ async function main() {
     ])
     lines.push(
       `Divisions=${divisionCount} DivisionTeams=${divisionTeamCount} Teams=${teamCount} Players=${playerCount}`,
-      `Fixtures=${fixtureCount} playedFixtures=${playedFixtureCount} MatchEvents=${matchEventCount} PlayerMatchStats=${playerMatchStatsCount}`,
+      `LeagueFixtures=${leagueFixtureCount} nonLeagueFixtures=${nonLeagueFixtureCount} playedFixtures=${playedFixtureCount} MatchEvents=${matchEventCount} PlayerMatchStats=${playerMatchStatsCount}`,
       `FinancialTransactions=${financialTransactionCount} YouthIntakes=${youthIntakeCount} YouthProspects=${youthProspectCount} PlayerSeasonLifecycle=${playerSeasonLifecycleCount}`
     )
 
@@ -142,8 +149,11 @@ async function main() {
     if (divisionTeamCount !== V1_EXPECTED_DIVISION_TEAM_MEMBERSHIPS) {
       errors.push(`Expected ${V1_EXPECTED_DIVISION_TEAM_MEMBERSHIPS} DivisionTeam memberships for V1, found ${divisionTeamCount}.`)
     }
-    if (fixtureCount !== V1_EXPECTED_TOTAL_FIXTURES) {
-      errors.push(`Expected ${V1_EXPECTED_TOTAL_FIXTURES} total Fixtures for V1, found ${fixtureCount}.`)
+    if (leagueFixtureCount !== V1_EXPECTED_TOTAL_FIXTURES) {
+      errors.push(`Expected ${V1_EXPECTED_TOTAL_FIXTURES} LEAGUE Fixtures for V1, found ${leagueFixtureCount}.`)
+    }
+    if (nonLeagueFixtureCount > 0) {
+      warnings.push(`${nonLeagueFixtureCount} non-LEAGUE fixture(s) present (title deciders / playoffs).`)
     }
 
     // --- League structure ---------------------------------------------
@@ -151,8 +161,13 @@ async function main() {
       select: {
         tier: true,
         group: true,
-        _count: { select: { teams: true, fixtures: true } },
-        fixtures: { select: { matchday: true }, orderBy: { matchday: "desc" }, take: 1 },
+        _count: { select: { teams: true, fixtures: { where: { stage: "LEAGUE" } } } },
+        fixtures: {
+          where: { stage: "LEAGUE" },
+          select: { matchday: true },
+          orderBy: { matchday: "desc" },
+          take: 1,
+        },
       },
       orderBy: [{ tier: "asc" }, { group: "asc" }],
     })
@@ -160,9 +175,9 @@ async function main() {
       const expected = expectedFixtureCount(d._count.teams)
       const rounds = d.fixtures[0]?.matchday ?? 0
       const label = `tier ${d.tier}${d.group ? d.group : ""}`
-      lines.push(`  Division ${label}: teams=${d._count.teams} fixtures=${d._count.fixtures} (expected ${expected}) rounds=${rounds}`)
+      lines.push(`  Division ${label}: teams=${d._count.teams} leagueFixtures=${d._count.fixtures} (expected ${expected}) rounds=${rounds}`)
       if (d._count.teams > 0 && d._count.fixtures !== expected) {
-        warnings.push(`Division ${label} has ${d._count.fixtures} fixtures, expected ${expected} for ${d._count.teams} teams.`)
+        warnings.push(`Division ${label} has ${d._count.fixtures} LEAGUE fixtures, expected ${expected} for ${d._count.teams} teams.`)
       }
     }
 
