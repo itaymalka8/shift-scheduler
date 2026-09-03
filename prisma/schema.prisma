@@ -856,20 +856,50 @@ enum TeamEraType {
 model TeamEra {
   id     String      @id @default(cuid())
   teamId String
-  team   Team        @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  // Null for a BOT era. SetNull rather than Cascade so deleting a user
-  // cannot silently erase the club's ownership history - though note that
-  // Team.user is itself onDelete: Cascade today, so a deleted user still
-  // takes the whole club (and therefore its eras) with it. Making club
-  // history survive account deletion is a separate, larger change.
+  // RESTRICT, not Cascade. An era IS the historical record of who managed
+  // this club, so a Team row must not be able to take its own ownership
+  // history with it. Nothing in this codebase deletes a Team - verified
+  // across the whole tree and its history - so this blocks no existing
+  // behaviour; it makes the absence of that behaviour enforced rather than
+  // incidental.
+  team   Team        @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  // Null for a BOT era, always set for a HUMAN one.
+  //
+  // RESTRICT, and deliberately NOT SetNull. SetNull was the original choice
+  // and it was wrong twice over. First, it is incoherent with
+  // TeamEra_user_matches_type_check: nulling the userId of a HUMAN era
+  // produces a row the CHECK rejects, so the delete failed anyway - but as
+  // an opaque constraint violation rather than a decision. Second, had the
+  // CHECK not existed, SetNull would have done exactly the damage the CHECK
+  // accidentally prevented: silently detaching a person from every match
+  // they managed, leaving a stretch of history belonging to nobody.
+  //
+  // RESTRICT states the rule outright: a person who has managed a club
+  // cannot be deleted while that record stands. The CHECK is NOT weakened to
+  // permit deletion - the FK is corrected so the two agree.
+  //
+  // This does mean account deletion is currently impossible for anyone who
+  // has managed a club. That is the correct default until deletion is
+  // designed properly: anonymisation, or a soft delete that keeps the era
+  // and its attribution intact - chosen explicitly, rather than arrived at
+  // by a cascade nobody reviewed.
   userId String?
-  user   User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user   User?       @relation(fields: [userId], references: [id], onDelete: Restrict)
   type   TeamEraType
 
   startedAt DateTime
   endedAt   DateTime?
 
-  // Which season the club changed hands in. Recorded when known, purely so
+  // Which season the club changed hands in. SetNull is correct here and
+  // RESTRICT would be wrong: these are ANNOTATIONS, not the boundary. The
+  // era window is startedAt/endedAt and survives a season disappearing
+  // intact - only a convenience label is lost, so the era row and every
+  // attribution depending on it are preserved either way. Nothing in this
+  // codebase deletes a Season, and if one ever were, its Divisions and
+  // Fixtures would cascade away with it - a far larger problem than a null
+  // label here.
+  //
+  // Recorded when known, purely so
   // a later "manager profile" screen can say "took over in Season 3"
   // without re-deriving it from timestamps. Never used to decide whether a
   // match belongs to an era - that is always the startedAt/endedAt window

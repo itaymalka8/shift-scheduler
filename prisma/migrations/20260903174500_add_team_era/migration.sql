@@ -34,10 +34,21 @@ CREATE INDEX "TeamEra_teamId_startedAt_idx" ON "TeamEra"("teamId", "startedAt");
 CREATE INDEX "TeamEra_userId_startedAt_idx" ON "TeamEra"("userId", "startedAt");
 
 -- AddForeignKey
-ALTER TABLE "TeamEra" ADD CONSTRAINT "TeamEra_teamId_fkey" FOREIGN KEY ("teamId") REFERENCES "Team"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- RESTRICT, not CASCADE: an era is the historical record of who managed
+-- this club, so a Team row must not take its ownership history with it.
+-- Nothing in this codebase deletes a Team, so this blocks no behaviour that
+-- exists - it stops one that would be silently destructive if added.
+ALTER TABLE "TeamEra" ADD CONSTRAINT "TeamEra_teamId_fkey" FOREIGN KEY ("teamId") REFERENCES "Team"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "TeamEra" ADD CONSTRAINT "TeamEra_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+-- RESTRICT, not SET NULL. SET NULL is incoherent with
+-- TeamEra_user_matches_type_check below: nulling a HUMAN era's userId
+-- produces a row that CHECK rejects, so the delete failed anyway - as an
+-- opaque constraint violation rather than a decision. And without that
+-- CHECK it would have silently detached a manager from every match they
+-- managed. The CHECK is not weakened to allow deletion; the FK is corrected
+-- so the two agree.
+ALTER TABLE "TeamEra" ADD CONSTRAINT "TeamEra_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "TeamEra" ADD CONSTRAINT "TeamEra_startedSeasonId_fkey" FOREIGN KEY ("startedSeasonId") REFERENCES "Season"("id") ON DELETE SET NULL ON UPDATE CASCADE;

@@ -49,3 +49,44 @@ describe("TeamEra never leaks into the club's own history", () => {
     }
   })
 })
+
+/**
+ * The delete semantics are the whole point of an ownership record: history
+ * that a single DELETE can erase is not history. These read the migration
+ * SQL directly, because the property lives in the schema rather than in any
+ * function's behaviour, and because the original SET NULL looked harmless
+ * in review - it was only wrong in combination with a CHECK constraint
+ * written elsewhere in the same file.
+ */
+describe("history retention - TeamEra delete semantics", () => {
+  const MIGRATION = readFileSync(
+    join(__dirname, "..", "..", "..", "prisma", "migrations", "20260903174500_add_team_era", "migration.sql"),
+    "utf8"
+  )
+  const fk = (name: string) => MIGRATION.match(new RegExp(`ADD CONSTRAINT "${name}"[^;]*;`))?.[0] ?? ""
+
+  it("deleting a Team cannot take its ownership history with it", () => {
+    expect(fk("TeamEra_teamId_fkey")).toContain("ON DELETE RESTRICT")
+    expect(fk("TeamEra_teamId_fkey")).not.toContain("ON DELETE CASCADE")
+  })
+
+  it("deleting a manager cannot detach them from the matches they managed", () => {
+    expect(fk("TeamEra_userId_fkey")).toContain("ON DELETE RESTRICT")
+    // SET NULL was the original choice and is the specific mistake this
+    // guards against: it would produce a HUMAN era with no manager.
+    expect(fk("TeamEra_userId_fkey")).not.toContain("ON DELETE SET NULL")
+  })
+
+  it("the CHECK that makes SET NULL incoherent is still in force - it was not weakened to allow deletion", () => {
+    expect(MIGRATION).toContain('"TeamEra_user_matches_type_check"')
+    expect(MIGRATION).toMatch(/"type" = 'HUMAN' AND "userId" IS NOT NULL/)
+  })
+
+  it("season references stay SET NULL - they are annotations, not the era boundary", () => {
+    for (const name of ["TeamEra_startedSeasonId_fkey", "TeamEra_endedSeasonId_fkey"]) {
+      expect(fk(name)).toContain("ON DELETE SET NULL")
+    }
+    // The boundary itself is not nullable, so it cannot be lost this way.
+    expect(MIGRATION).toContain('"startedAt" TIMESTAMP(3) NOT NULL')
+  })
+})
