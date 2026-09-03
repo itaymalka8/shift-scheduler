@@ -18,6 +18,7 @@
     "prod:scheduled-check": "tsx scripts/production/scheduled-dry-check.ts",
     "prod:post-deploy-check": "tsx scripts/production/post-deploy-check.ts",
     "prod:render:status": "tsx scripts/production/render-status.ts",
+    "prod:render:autodeploy:off": "tsx scripts/production/render-autodeploy-off.ts",
     "prod:cron:suspend": "tsx scripts/production/cron-suspend.ts",
     "prod:cron:resume": "tsx scripts/production/cron-resume.ts",
     "prod:deploy:trigger": "tsx scripts/production/deploy-trigger.ts",

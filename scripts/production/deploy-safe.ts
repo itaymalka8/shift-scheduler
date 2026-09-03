@@ -19,7 +19,16 @@
  */
 import { execFileSync } from "node:child_process"
 import { runDeploySafeWorkflow, type DeployWorkflowDeps } from "../../src/lib/production/deploy-workflow"
-import { getWebServiceStatus, getCronStatus, suspendCron, resumeCron, triggerDeploy, waitForDeploy, getWebServiceUrl } from "../../src/lib/production/render-ops"
+import {
+  getWebServiceStatus,
+  getCronStatus,
+  suspendCron,
+  resumeCron,
+  triggerDeploy,
+  waitForDeploy,
+  getWebServiceUrl,
+  getAutoDeployReading,
+} from "../../src/lib/production/render-ops"
 import { createBackupBranch, verifyBackupBranch } from "../../src/lib/production/neon-ops"
 import { ProductionWriteNotConfirmedError, assertProductionWriteConfirmed } from "../../src/lib/production/write-guard"
 
@@ -54,6 +63,10 @@ async function checkWebLive(): Promise<boolean> {
 }
 
 const deps: DeployWorkflowDeps = {
+  // Deliberately NOT wrapped in a try/catch here - the workflow's step 0
+  // owns that, and turning a throw into UNKNOWN/UNKNOWN (which refuses) is
+  // its decision to make, not this adapter's.
+  getAutoDeployReading: async () => getAutoDeployReading(),
   runPreflight: async () => runProductionScript("scripts/production/preflight.ts"),
   getWebStatus: async () => getWebServiceStatus(),
   getCronStatus: async () => getCronStatus(),

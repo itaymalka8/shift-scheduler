@@ -139,11 +139,47 @@ export async function findServiceByName(client: RenderClient, name: string): Pro
   return exact ? { id: exact.service.id, name: exact.service.name, type: exact.service.type } : null
 }
 
+export type AutoDeployState = "on" | "off" | "unknown"
+
 export interface RenderServiceDetail {
   id: string
   name: string
   type: string
   suspended: boolean | "unknown"
+}
+
+/**
+ * Render represents Auto Deploy as the string "yes" / "no" on the service
+ * object. Some API iterations have used a plain boolean, so both known
+ * shapes are read - and ANYTHING else (a missing field, a new enum value,
+ * a non-object body) is "unknown", never guessed as "off". That default
+ * matters: "unknown" is what the safe-deploy guard treats as REFUSE, so a
+ * shape this function cannot read can only ever make the pipeline stricter,
+ * never accidentally permissive.
+ */
+export function readServiceAutoDeploy(raw: unknown): AutoDeployState {
+  if (!raw || typeof raw !== "object") return "unknown"
+  const value = (raw as Record<string, unknown>).autoDeploy
+  if (value === "yes") return "on"
+  if (value === "no") return "off"
+  if (value === true) return "on"
+  if (value === false) return "off"
+  return "unknown"
+}
+
+export interface RenderServiceSource {
+  repo: string | null
+  branch: string | null
+}
+
+/** The connected git source of a service - `repo` and `branch` are top-level on Render's service object. Null (never guessed) when the shape doesn't match. */
+export function readServiceSource(raw: unknown): RenderServiceSource {
+  if (!raw || typeof raw !== "object") return { repo: null, branch: null }
+  const obj = raw as Record<string, unknown>
+  return {
+    repo: typeof obj.repo === "string" ? obj.repo : null,
+    branch: typeof obj.branch === "string" ? obj.branch : null,
+  }
 }
 
 /** Render has represented "is this service suspended" a couple of different ways across API iterations - both known shapes are checked defensively rather than assumed. */
@@ -232,6 +268,29 @@ export async function getDeploy(client: RenderClient, serviceId: string, deployI
 export async function createDeploy(client: RenderClient, serviceId: string): Promise<RenderDeploySummary> {
   const raw = await renderFetch<unknown>(client, `/services/${serviceId}/deploys`, { method: "POST", body: "{}" })
   return readDeploySummary(raw)
+}
+
+/**
+ * MUTATES the service's Auto Deploy setting via Render's documented Update
+ * Service endpoint (PATCH /services/:id).
+ *
+ * The body carries EXACTLY ONE key - autoDeploy. Render's PATCH is a
+ * partial update, so every field omitted here (repo, branch, build command,
+ * start command, cron schedule, plan, region, name, env vars) is left
+ * untouched by definition. That is why this function takes a boolean and
+ * builds the body itself rather than accepting a caller-supplied patch
+ * object: there is no way to reach this endpoint from this codebase with
+ * any other field in the payload.
+ */
+export async function setServiceAutoDeploy(client: RenderClient, serviceId: string, enabled: boolean): Promise<AutoDeployState> {
+  const raw = await renderFetch<Record<string, unknown>>(client, `/services/${serviceId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ autoDeploy: enabled ? "yes" : "no" }),
+  })
+  // Render echoes the updated service back. Read the setting out of that
+  // echo rather than assuming the write took - but the caller is still
+  // expected to re-read the service independently before believing it.
+  return readServiceAutoDeploy(raw)
 }
 
 export async function suspendService(client: RenderClient, serviceId: string): Promise<void> {

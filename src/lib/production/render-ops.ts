@@ -24,6 +24,7 @@
  */
 import {
   createRenderClient,
+  type RenderClient,
   findServiceByName as clientFindServiceByName,
   getDeploy,
   getRenderServices as clientGetRenderServices,
@@ -40,14 +41,19 @@ import {
   RENDER_DEPLOY_SUCCESS_STATUSES,
   getEnvVar,
   setEnvVar,
+  readServiceAutoDeploy,
+  readServiceSource,
+  setServiceAutoDeploy,
+  type AutoDeployState,
   type RenderDeploySummary,
   type RenderServiceDetail,
+  type RenderServiceSource,
   type RenderServiceSummary,
 } from "./render-client"
 import { resolveCronServiceId, resolveWebServiceId } from "./render-discovery"
 import { assertProductionWriteConfirmed } from "./write-guard"
 
-export type { RenderDeploySummary, RenderServiceDetail, RenderServiceSummary }
+export type { AutoDeployState, RenderDeploySummary, RenderServiceDetail, RenderServiceSource, RenderServiceSummary }
 
 export async function getRenderServices(env: Record<string, string | undefined> = process.env): Promise<RenderServiceSummary[]> {
   return clientGetRenderServices(createRenderClient(env))
@@ -174,6 +180,66 @@ export async function getDeployStatus(
   if (deployId) return getDeploy(client, webServiceId, deployId)
   const deploys = await clientListDeploys(client, webServiceId, 1)
   return deploys[0] ?? null
+}
+
+export interface RenderServiceConfig extends RenderServiceDetail, RenderServiceSource {
+  autoDeploy: AutoDeployState
+}
+
+async function readServiceConfig(client: RenderClient, id: string): Promise<RenderServiceConfig> {
+  const raw = await getServiceRaw(client, id)
+  return { ...readServiceDetail(raw, id), ...readServiceSource(raw), autoDeploy: readServiceAutoDeploy(raw) }
+}
+
+/** Read-only. The web service's full config surface this project cares about: suspended state, connected repo/branch, and Auto Deploy. */
+export async function getWebServiceConfig(env: Record<string, string | undefined> = process.env): Promise<RenderServiceConfig> {
+  const client = createRenderClient(env)
+  return readServiceConfig(client, await resolveWebServiceId(client, env))
+}
+
+/** Read-only. Same as getWebServiceConfig for the Cron service. */
+export async function getCronServiceConfig(env: Record<string, string | undefined> = process.env): Promise<RenderServiceConfig> {
+  const client = createRenderClient(env)
+  return readServiceConfig(client, await resolveCronServiceId(client, env))
+}
+
+/**
+ * Read-only. Both services' Auto Deploy settings in one reading, for the
+ * safe-deploy guard. Fail-closed by construction: this NEVER catches - a
+ * thrown API error propagates to the caller, and the guard's own wrapper
+ * turns it into UNKNOWN/UNKNOWN, which refuses. Swallowing the error here
+ * and returning a default would be the one shape that could make an
+ * unreachable Render API look permissive.
+ */
+export async function getAutoDeployReading(env: Record<string, string | undefined> = process.env): Promise<{ web: AutoDeployState; cron: AutoDeployState }> {
+  const client = createRenderClient(env)
+  const webId = await resolveWebServiceId(client, env)
+  const cronId = await resolveCronServiceId(client, env)
+  const [web, cron] = await Promise.all([getServiceRaw(client, webId), getServiceRaw(client, cronId)])
+  return { web: readServiceAutoDeploy(web), cron: readServiceAutoDeploy(cron) }
+}
+
+/**
+ * MUTATES Production (turns Render's Auto Deploy off for one service) -
+ * requires PRODUCTION_WRITE_CONFIRM. Changes nothing else about the
+ * service; see render-client.ts's setServiceAutoDeploy for why no other
+ * field can travel in the request body.
+ *
+ * Turning Auto Deploy OFF does not deploy, redeploy, restart, or suspend
+ * anything - it only changes what Render does on the NEXT push. The
+ * currently running deploy is untouched.
+ */
+export async function setWebAutoDeploy(enabled: boolean, env: Record<string, string | undefined> = process.env): Promise<AutoDeployState> {
+  assertProductionWriteConfirmed(env)
+  const client = createRenderClient(env)
+  return setServiceAutoDeploy(client, await resolveWebServiceId(client, env), enabled)
+}
+
+/** MUTATES Production (Auto Deploy for the Cron service) - requires PRODUCTION_WRITE_CONFIRM. See setWebAutoDeploy. */
+export async function setCronAutoDeploy(enabled: boolean, env: Record<string, string | undefined> = process.env): Promise<AutoDeployState> {
+  assertProductionWriteConfirmed(env)
+  const client = createRenderClient(env)
+  return setServiceAutoDeploy(client, await resolveCronServiceId(client, env), enabled)
 }
 
 /**

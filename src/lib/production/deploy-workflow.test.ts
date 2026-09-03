@@ -2,6 +2,10 @@ import { runDeploySafeWorkflow, type DeployWorkflowDeps } from "./deploy-workflo
 
 function makeDeps(overrides: Partial<DeployWorkflowDeps> = {}): DeployWorkflowDeps {
   return {
+    // Default for every existing test: auto-deploy already disabled on both
+    // services, so step 0 passes and the rest of the pipeline is what is
+    // under test. Tests that care about the guard override this.
+    getAutoDeployReading: jest.fn(async () => ({ web: "off" as const, cron: "off" as const })),
     runPreflight: jest.fn(async () => ({ pass: true, summary: "PRODUCTION PREFLIGHT: PASS" })),
     getWebStatus: jest.fn(async () => ({ id: "web-1", suspended: false })),
     getCronStatus: jest.fn(async () => ({ id: "cron-1", suspended: false })),
@@ -65,6 +69,7 @@ describe("runDeploySafeWorkflow - success path", () => {
 
     const stepNames = result.steps.map((s) => s.step)
     expect(stepNames).toEqual([
+      "0. Auto-deploy guard",
       "A. Preflight",
       "B. Render status",
       "C. Create backup",
@@ -365,5 +370,100 @@ describe("runDeploySafeWorkflow - no destructive or secret-leaking behavior unde
     })
     await runDeploySafeWorkflow(deps)
     expect(deps.resumeCron).not.toHaveBeenCalled()
+  })
+})
+
+
+describe("step 0 - the auto-deploy guard, before any Production mutation", () => {
+  // Every dep that can change Production. If the guard works, NONE of these
+  // may be called - checked individually below rather than as a summary, so
+  // a failure names the exact operation that leaked through.
+  const MUTATING_DEPS = ["createBackup", "suspendCron", "triggerDeploy", "resumeCron"] as const
+
+  function expectNoProductionMutation(deps: DeployWorkflowDeps) {
+    for (const name of MUTATING_DEPS) {
+      expect(deps[name]).not.toHaveBeenCalled()
+    }
+    // Preflight is read-only, but the guard is meant to run before even
+    // that - a refusal should cost nothing at all.
+    expect(deps.runPreflight).not.toHaveBeenCalled()
+  }
+
+  it("proceeds when auto-deploy is confirmed OFF on both services", async () => {
+    const deps = makeHappyPathDeps()
+    const result = await runDeploySafeWorkflow(deps)
+
+    expect(result.outcome).toBe("PASS")
+    expect(result.steps[0]).toEqual({ step: "0. Auto-deploy guard", ok: true, detail: "web=OFF cron=OFF" })
+    expect(deps.getAutoDeployReading).toHaveBeenCalledTimes(1)
+  })
+
+  it("refuses when web auto-deploy is ON, before backup / cron suspend / deploy", async () => {
+    const deps = makeDeps({ getAutoDeployReading: jest.fn(async () => ({ web: "on" as const, cron: "off" as const })) })
+    const result = await runDeploySafeWorkflow(deps)
+
+    expect(result.outcome).toBe("FAIL")
+    expect(result.failedStep).toBe("0. Auto-deploy guard")
+    expect(result.reason).toContain("ENABLED")
+    expectNoProductionMutation(deps)
+  })
+
+  it("refuses when cron auto-deploy is ON", async () => {
+    const deps = makeDeps({ getAutoDeployReading: jest.fn(async () => ({ web: "off" as const, cron: "on" as const })) })
+    const result = await runDeploySafeWorkflow(deps)
+
+    expect(result.outcome).toBe("FAIL")
+    expect(result.failedStep).toBe("0. Auto-deploy guard")
+    expectNoProductionMutation(deps)
+  })
+
+  it("refuses when auto-deploy is UNKNOWN - it is never assumed to be off", async () => {
+    const deps = makeDeps({ getAutoDeployReading: jest.fn(async () => ({ web: "unknown" as const, cron: "off" as const })) })
+    const result = await runDeploySafeWorkflow(deps)
+
+    expect(result.outcome).toBe("FAIL")
+    expect(result.failedStep).toBe("0. Auto-deploy guard")
+    expect(result.reason).toContain("UNKNOWN")
+    expectNoProductionMutation(deps)
+  })
+
+  it("fails closed when the Render API throws: an unreadable setting refuses exactly like an enabled one", async () => {
+    const deps = makeDeps({
+      getAutoDeployReading: jest.fn(async () => {
+        throw new Error("Render API error on /services/srv-1: HTTP 503")
+      }),
+    })
+    const result = await runDeploySafeWorkflow(deps)
+
+    expect(result.outcome).toBe("FAIL")
+    expect(result.failedStep).toBe("0. Auto-deploy guard")
+    expect(result.reason).toContain("UNKNOWN")
+    expect(result.steps[0].ok).toBe(false)
+    expect(result.steps[0].detail).toContain("HTTP 503")
+    expectNoProductionMutation(deps)
+  })
+
+  it("leaves cron untouched on a refusal and says so, rather than implying something needs unwinding", async () => {
+    const deps = makeDeps({ getAutoDeployReading: jest.fn(async () => ({ web: "on" as const, cron: "on" as const })) })
+    const result = await runDeploySafeWorkflow(deps)
+
+    expect(result.backupBranchId).toBeNull()
+    expect(result.cronState).toBe("unknown")
+    expect(result.recommendedRecovery).toContain("Cron was not touched by this run")
+    expect(result.recommendedRecovery).toContain("Do not restore the database automatically")
+  })
+
+  it("never leaks a credential-shaped value into the refusal report", async () => {
+    const deps = makeDeps({
+      getAutoDeployReading: jest.fn(async () => {
+        throw new Error("Render API request failed: network error")
+      }),
+    })
+    const result = await runDeploySafeWorkflow(deps)
+
+    const serialized = JSON.stringify(result)
+    expect(serialized).not.toMatch(/rnd_[A-Za-z0-9]/)
+    expect(serialized).not.toMatch(/Bearer\s+\S/)
+    expect(serialized).not.toMatch(/postgres(ql)?:\/\//)
   })
 })

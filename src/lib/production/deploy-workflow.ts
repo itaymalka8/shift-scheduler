@@ -23,7 +23,14 @@
  * immediately after a status read that said so, and "unknown" the moment
  * that read is missing or fails - never assumed from an earlier reading,
  * because Cron's real state may have changed since.
+ *
+ * Step 0 runs before everything else, preflight included: if Render's Auto
+ * Deploy is on (or cannot be read), this whole pipeline is theatre - a
+ * push already reached Production without it - so it refuses before the
+ * first Production mutation rather than performing a backup and a Cron
+ * suspend that no longer guard anything. See auto-deploy-guard.ts.
  */
+import { evaluateAutoDeployGuard, type AutoDeployReading } from "./auto-deploy-guard"
 
 export interface DeploySafeStepLog {
   step: string
@@ -77,6 +84,8 @@ export interface WaitForDeployResult {
 }
 
 export interface DeployWorkflowDeps {
+  /** Reads Render's Auto Deploy setting for both services. May throw - step 0 turns a throw into UNKNOWN/UNKNOWN, which refuses. */
+  getAutoDeployReading: () => Promise<AutoDeployReading>
   runPreflight: () => Promise<CheckResult>
   getWebStatus: () => Promise<ServiceStatus>
   getCronStatus: () => Promise<ServiceStatus>
@@ -178,6 +187,30 @@ export async function runDeploySafeWorkflow(deps: DeployWorkflowDeps): Promise<D
     await refreshCronStatusForReport()
     steps.push({ step: stepName, ok: false, detail: reason })
     return fail(stepName, reason, recoveryForSuspendedOrUnknownCron(cronState))
+  }
+
+  // 0. Auto-deploy guard. Deliberately the FIRST thing that happens -
+  //    before preflight, before the backup, before Cron is touched - so a
+  //    refusal here costs nothing and mutates nothing.
+  let autoDeploy: AutoDeployReading
+  try {
+    autoDeploy = await deps.getAutoDeployReading()
+  } catch (error) {
+    // A failed read is not a reason to continue: it is exactly the case
+    // this guard exists for. Both services collapse to UNKNOWN, which the
+    // evaluator refuses.
+    autoDeploy = { web: "unknown", cron: "unknown" }
+    steps.push({ step: "0. Auto-deploy guard", ok: false, detail: `auto-deploy state could not be read: ${errorMessage(error)}` })
+    const refusal = evaluateAutoDeployGuard(autoDeploy)
+    return fail("0. Auto-deploy guard", refusal.reason ?? "Auto Deploy state could not be confirmed.", recoveryForUntouchedCron("unknown"))
+  }
+  const autoDeployGuard = evaluateAutoDeployGuard(autoDeploy)
+  steps.push({ step: "0. Auto-deploy guard", ok: autoDeployGuard.allowed, detail: autoDeployGuard.detail })
+  if (!autoDeployGuard.allowed) {
+    // No Production mutation has happened and none will: nothing after
+    // this line runs. Cron was never touched, so the recovery text says so
+    // rather than implying something needs unwinding.
+    return fail("0. Auto-deploy guard", autoDeployGuard.reason ?? "Auto Deploy guard refused.", recoveryForUntouchedCron("unknown"))
   }
 
   // A. Production Preflight

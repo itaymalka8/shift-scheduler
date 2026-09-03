@@ -18,6 +18,7 @@ on:
           - prod:post-deploy-check
           - prod:render:status
           - prod:backup:list
+          - prod:render:autodeploy:off
           - prod:deploy:safe
 
 # Secrets come ONLY from this repository's GitHub Secrets
@@ -31,12 +32,13 @@ on:
 
 jobs:
   # ---------------------------------------------------------------------
-  # Every read-only production command. prod:deploy:safe is deliberately
-  # excluded here - it is the only command that mutates Production, and it
-  # gets its own job below with its own additional guard.
+  # Every read-only production command. The two commands that mutate
+  # Production - prod:deploy:safe and prod:render:autodeploy:off - are
+  # deliberately excluded here; each gets its own job below, because
+  # PRODUCTION_WRITE_CONFIRM must never be in scope for a read-only run.
   # ---------------------------------------------------------------------
   read-only:
-    if: github.event.inputs.command != 'prod:deploy:safe'
+    if: github.event.inputs.command != 'prod:deploy:safe' && github.event.inputs.command != 'prod:render:autodeploy:off'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -70,6 +72,32 @@ jobs:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
           PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
         run: npm run "$COMMAND"
+
+  # ---------------------------------------------------------------------
+  # prod:render:autodeploy:off only. Mutates Render service CONFIGURATION
+  # (the Auto Deploy flag) and nothing else - no deploy, no database, no
+  # suspend/resume. It needs PRODUCTION_WRITE_CONFIRM, so like the deploy
+  # job it lives on its own and NEON_API_KEY / PRODUCTION_DATABASE_URL are
+  # not passed to it at all: this command has no business touching either.
+  # ---------------------------------------------------------------------
+  autodeploy-off:
+    if: github.event.inputs.command == 'prod:render:autodeploy:off'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run prod:render:autodeploy:off
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          PRODUCTION_WRITE_CONFIRM: I_UNDERSTAND_THIS_CHANGES_PRODUCTION
+        run: npm run prod:render:autodeploy:off
 
   # ---------------------------------------------------------------------
   # prod:deploy:safe only. PRODUCTION_WRITE_CONFIRM is set ONLY in this
