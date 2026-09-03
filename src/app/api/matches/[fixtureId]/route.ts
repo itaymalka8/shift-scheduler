@@ -4,6 +4,7 @@ import { getSimulatedMinute, hasKickedOff, isMatchFinished } from "@/lib/match/t
 import { computeLiveScore, computeLiveStats } from "@/lib/match/live-view"
 import { toSeatCounts } from "@/lib/stadium/config"
 import { calculateStadiumCapacity } from "@/lib/stadium/metrics"
+import type { PlayerMatchStatView } from "@/lib/match/player-stats-view"
 
 const CREST_SELECT = {
   id: true,
@@ -94,7 +95,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ fix
   }
 
   if (!kickedOff) {
-    return NextResponse.json({ ...base, liveScore: null, events: [], liveStats: null, finalStats: null })
+    return NextResponse.json({ ...base, liveScore: null, events: [], liveStats: null, finalStats: null, playerStats: null })
   }
 
   // Every event the engine ever produced for this fixture is already in the
@@ -134,6 +135,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ fix
   const liveStats = computeLiveStats(revealed, fixture.homeTeamId, fixture.awayTeamId)
 
   let finalStats: { homeScore: number; awayScore: number; home: unknown; away: unknown } | null = null
+  let playerStats: PlayerMatchStatView[] | null = null
   if (finished) {
     // Isolated, finished-only read of the authoritative result. This code
     // path is structurally unreachable while `finished` is false, so the
@@ -145,7 +147,75 @@ export async function GET(_request: Request, { params }: { params: Promise<{ fix
     if (result?.homeScore != null && result.awayScore != null) {
       finalStats = { homeScore: result.homeScore, awayScore: result.awayScore, home: result.homeStats, away: result.awayStats }
     }
+
+    // PER-PLAYER STATISTICS - deliberately INSIDE this same finished-only
+    // branch, not beside it.
+    //
+    // PlayerMatchStats rows carry no minute dimension: the engine writes
+    // each player's complete 90-minute totals in one shot at kickoff, the
+    // same instant the final score lands. There is no "as of minute 36"
+    // form of this data anywhere in the schema, so there is nothing here
+    // that could be safely revealed part-way through. A striker showing
+    // `goals: 2` at simulated minute 10 would announce the result of a
+    // match the viewer is still watching.
+    //
+    // Placing the query inside the branch rather than guarding it with its
+    // own `if` is the point: this line is unreachable while `finished` is
+    // false, so a live request never issues the query at all - the rows
+    // never enter the process, rather than entering it and being filtered
+    // out afterwards. The route's tests assert exactly that, by checking
+    // findMany was never called.
+    //
+    // `finished` is isMatchFinished(scheduledAt, now) - the canonical clock
+    // rule. Never playedAt, which only says the engine has run and is true
+    // from kickoff onward (see this file's header).
+    //
+    // One query, explicit select (never `include: { player: true }` - the
+    // Player row carries ~70 attribute columns this screen has no use for),
+    // one nested select for the four fields the UI needs. No N+1: the
+    // @@unique([fixtureId, playerId]) index leads with fixtureId, so this
+    // is a single index seek returning ~28 rows.
+    const rows = await prisma.playerMatchStats.findMany({
+      where: { fixtureId },
+      select: {
+        playerId: true,
+        // The HISTORICAL club - a snapshot of who this player turned out
+        // for on the day. Never player.teamId, which is current ownership.
+        teamId: true,
+        minutesPlayed: true,
+        goals: true,
+        assists: true,
+        shots: true,
+        shotsOnTarget: true,
+        passesAttempted: true,
+        passesCompleted: true,
+        keyPasses: true,
+        dribblesAttempted: true,
+        dribblesCompleted: true,
+        tackles: true,
+        interceptions: true,
+        aerialDuelsWon: true,
+        fouls: true,
+        yellowCards: true,
+        redCards: true,
+        saves: true,
+        rating: true,
+        player: { select: { firstName: true, lastName: true, primaryPosition: true, shirtNumber: true } },
+      },
+    })
+
+    // Flattened, and nothing invented: only rows that exist are returned.
+    // The engine writes a row solely for a player who took the pitch
+    // (minutesPlayed > 0 || onPitch), so an unused substitute simply has no
+    // line here - never a fabricated row of zeroes.
+    playerStats = rows.map(({ player, ...stat }) => ({
+      ...stat,
+      firstName: player.firstName,
+      lastName: player.lastName,
+      primaryPosition: player.primaryPosition,
+      shirtNumber: player.shirtNumber,
+    }))
   }
 
-  return NextResponse.json({ ...base, liveScore, events, liveStats, finalStats })
+  return NextResponse.json({ ...base, liveScore, events, liveStats, finalStats, playerStats })
 }

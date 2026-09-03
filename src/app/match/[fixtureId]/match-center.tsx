@@ -6,6 +6,7 @@ import { StadiumBackdrop } from "./stadium-backdrop"
 import { PitchView } from "./pitch-view"
 import { EventFeed } from "./event-feed"
 import { LiveStats } from "./live-stats"
+import { PlayerStats } from "./player-stats"
 import { GoalCelebration } from "./goal-celebration"
 import { Countdown } from "./countdown"
 import { useMatchClock } from "./use-match-clock"
@@ -181,6 +182,13 @@ export function MatchCenter({ fixtureId }: { fixtureId: string }) {
               awayTeamName={data.awayTeam.name}
             />
             <LiveStats liveStats={data.liveStats} finalStats={data.status === "finished" ? data.finalStats : null} />
+            {/* Per-player statistics: the archive layer over data written at
+                simulation time. Finished only - and the server never even
+                reads the rows in any other state, so this is a second lock
+                on a door that is already shut, not the only one. */}
+            {data.status === "finished" && (
+              <PlayerStats playerStats={data.playerStats} homeTeam={data.homeTeam} awayTeam={data.awayTeam} />
+            )}
           </div>
           <EventFeed
             events={data.events}

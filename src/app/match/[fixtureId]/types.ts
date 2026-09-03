@@ -1,4 +1,7 @@
 import type { MatchEventView } from "./event-meta"
+import type { PlayerMatchStatView } from "@/lib/match/player-stats-view"
+
+export type { PlayerMatchStatView }
 
 export interface MatchTeamView {
   id: string
@@ -64,4 +67,18 @@ export interface MatchApiResponse {
   events: MatchEventView[]
   liveStats: { home: LiveTeamStatsView; away: LiveTeamStatsView } | null
   finalStats: FinalStatsView | null
+  // Per-player statistics for a FINISHED match, and null in every other
+  // state. The contract is deliberately three-valued in only two ways:
+  //
+  //   scheduled -> null      (query never issued)
+  //   live      -> null      (query never issued)
+  //   finished  -> array     (possibly empty, if the fixture was never
+  //                           simulated - an honest "no data", never
+  //                           fabricated rows)
+  //
+  // A live response cannot carry these because the server never reads them
+  // while live: the query sits inside the route's finished-only branch, so
+  // the rows never enter the process at all. See the route for why partial
+  // reveal is impossible - PlayerMatchStats has no minute dimension.
+  playerStats: PlayerMatchStatView[] | null
 }

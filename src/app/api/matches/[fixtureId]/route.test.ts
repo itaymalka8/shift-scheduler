@@ -9,6 +9,7 @@ jest.mock("@/lib/prisma", () => ({
     fixture: { findUnique: jest.fn() },
     matchEvent: { findMany: jest.fn() },
     player: { findMany: jest.fn() },
+    playerMatchStats: { findMany: jest.fn() },
   },
 }))
 
@@ -19,6 +20,7 @@ const mockPrisma = prisma as unknown as {
   fixture: { findUnique: jest.Mock }
   matchEvent: { findMany: jest.Mock }
   player: { findMany: jest.Mock }
+  playerMatchStats: { findMany: jest.Mock }
 }
 
 const FIXTURE_ID = "fixture-1"
@@ -49,6 +51,81 @@ const ALL_EVENTS = [10, 30, 55, 80, 90].map((minute) => ({
   context: null,
 }))
 
+// What the engine wrote for this fixture: complete 90-minute totals,
+// stored in one shot at kickoff - which is exactly why they must never
+// reach a live response.
+const PLAYER_STATS_ROWS = [
+  {
+    playerId: "home-keeper",
+    teamId: "home-1",
+    minutesPlayed: 90,
+    goals: 0,
+    assists: 0,
+    shots: 0,
+    shotsOnTarget: 0,
+    passesAttempted: 20,
+    passesCompleted: 15,
+    keyPasses: 0,
+    dribblesAttempted: 0,
+    dribblesCompleted: 0,
+    tackles: 0,
+    interceptions: 0,
+    aerialDuelsWon: 1,
+    fouls: 0,
+    yellowCards: 0,
+    redCards: 0,
+    saves: 4,
+    rating: 7.2,
+    player: { firstName: "Gk", lastName: "One", primaryPosition: "GK", shirtNumber: 1 },
+  },
+  {
+    playerId: "home-striker",
+    teamId: "home-1",
+    minutesPlayed: 90,
+    goals: 4,
+    assists: 0,
+    shots: 7,
+    shotsOnTarget: 5,
+    passesAttempted: 30,
+    passesCompleted: 24,
+    keyPasses: 2,
+    dribblesAttempted: 6,
+    dribblesCompleted: 4,
+    tackles: 0,
+    interceptions: 0,
+    aerialDuelsWon: 3,
+    fouls: 1,
+    yellowCards: 1,
+    redCards: 0,
+    saves: 0,
+    rating: 9.1,
+    player: { firstName: "St", lastName: "Two", primaryPosition: "ST", shirtNumber: 9 },
+  },
+  {
+    playerId: "away-mid",
+    teamId: "away-1",
+    minutesPlayed: 62,
+    goals: 2,
+    assists: 1,
+    shots: 3,
+    shotsOnTarget: 2,
+    passesAttempted: 0,
+    passesCompleted: 0,
+    keyPasses: 0,
+    dribblesAttempted: 1,
+    dribblesCompleted: 0,
+    tackles: 2,
+    interceptions: 1,
+    aerialDuelsWon: 0,
+    fouls: 2,
+    yellowCards: 0,
+    redCards: 0,
+    saves: 0,
+    rating: 7.8,
+    player: { firstName: "Mid", lastName: "Three", primaryPosition: "CM", shirtNumber: 8 },
+  },
+]
+
 function stubFixture({ playedAt }: { playedAt: Date | null }) {
   // First call: the always-run query (no score columns selected).
   // Second call: the finished-only authoritative result read.
@@ -77,6 +154,7 @@ async function callGet(now: Date) {
       events: { minute: number }[]
       liveScore: { home: number; away: number } | null
       finalStats: { homeScore: number; awayScore: number } | null
+      playerStats: { playerId: string; teamId: string; firstName: string; primaryPosition: string; rating: number }[] | null
     }
   } finally {
     jest.useRealTimers()
@@ -92,6 +170,7 @@ beforeEach(() => {
     ALL_EVENTS.filter((event) => event.minute <= args.where.minute.lte)
   )
   mockPrisma.player.findMany.mockResolvedValue([])
+  mockPrisma.playerMatchStats.findMany.mockResolvedValue(PLAYER_STATS_ROWS)
 })
 
 describe("GET /api/matches/[fixtureId]", () => {
@@ -138,8 +217,9 @@ describe("GET /api/matches/[fixtureId]", () => {
     await callGet(minutesAfterKickoff(60 * 24 * 365))
 
     // The handler's whole surface: two reads of Fixture, one of MatchEvent,
-    // one of Player. No write, no engine, nothing else.
-    expect(Object.keys(mockPrisma)).toEqual(["fixture", "matchEvent", "player"])
+    // one of Player, one of PlayerMatchStats. All reads - no write, no
+    // engine, nothing else.
+    expect(Object.keys(mockPrisma)).toEqual(["fixture", "matchEvent", "player", "playerMatchStats"])
     expect(mockPrisma.matchEvent.findMany).toHaveBeenCalledTimes(1)
   })
 
@@ -164,5 +244,168 @@ describe("GET /api/matches/[fixtureId]", () => {
     expect(body.events).toEqual([])
     expect(body.finalStats).toBeNull()
     expect(body.liveScore).toEqual({ home: 0, away: 0 })
+  })
+})
+
+/**
+ * PHASE 2: per-player statistics in an archived match.
+ *
+ * The anti-spoiler tests below assert the STRONG form of the guarantee: not
+ * that the rows were filtered out of a live response, but that
+ * playerMatchStats.findMany was never called at all - the data never enters
+ * the process. That is what "structurally unreachable" has to mean to be
+ * worth anything, and it is only checkable from here.
+ */
+describe("GET /api/matches/[fixtureId] - player stats anti-spoiler", () => {
+  it("a FINISHED match exposes player stats", async () => {
+    stubFixture({ playedAt: minutesAfterKickoff(0) })
+    const body = await callGet(minutesAfterKickoff(11))
+
+    expect(body.status).toBe("finished")
+    expect(body.playerStats).toHaveLength(3)
+    expect(mockPrisma.playerMatchStats.findMany).toHaveBeenCalledTimes(1)
+  })
+
+  it("a LIVE match never even QUERIES player stats", async () => {
+    stubFixture({ playedAt: minutesAfterKickoff(0) })
+    const body = await callGet(minutesAfterKickoff(4))
+
+    expect(body.status).toBe("live")
+    expect(body.playerStats).toBeNull()
+    // The load-bearing assertion: not filtered out - never fetched.
+    expect(mockPrisma.playerMatchStats.findMany).not.toHaveBeenCalled()
+  })
+
+  it("a FUTURE match never even QUERIES player stats", async () => {
+    stubFixture({ playedAt: null })
+    const body = await callGet(minutesAfterKickoff(-30))
+
+    expect(body.status).toBe("scheduled")
+    expect(body.playerStats).toBeNull()
+    expect(mockPrisma.playerMatchStats.findMany).not.toHaveBeenCalled()
+  })
+
+  it("playedAt alone is NOT sufficient - a simulated but still-live match exposes nothing", async () => {
+    // The exact shape that would leak: the engine has already run and every
+    // final total is sitting in the database, while the viewer is two real
+    // minutes into a ten-minute live window.
+    stubFixture({ playedAt: minutesAfterKickoff(0) })
+    const body = await callGet(minutesAfterKickoff(2))
+
+    expect(body.status).toBe("live")
+    expect(body.playerStats).toBeNull()
+    expect(mockPrisma.playerMatchStats.findMany).not.toHaveBeenCalled()
+  })
+
+  it("stays hidden for the whole live window and appears the moment it closes", async () => {
+    for (const realMinute of [1, 5, 9]) {
+      jest.resetAllMocks()
+      mockPrisma.matchEvent.findMany.mockResolvedValue([])
+      mockPrisma.player.findMany.mockResolvedValue([])
+      mockPrisma.playerMatchStats.findMany.mockResolvedValue(PLAYER_STATS_ROWS)
+      stubFixture({ playedAt: minutesAfterKickoff(0) })
+
+      const body = await callGet(minutesAfterKickoff(realMinute))
+      expect(body.playerStats).toBeNull()
+      expect(mockPrisma.playerMatchStats.findMany).not.toHaveBeenCalled()
+    }
+  })
+})
+
+describe("GET /api/matches/[fixtureId] - player stats content", () => {
+  it("queries exactly this fixture, once, with no N+1", async () => {
+    stubFixture({ playedAt: minutesAfterKickoff(0) })
+    await callGet(minutesAfterKickoff(11))
+
+    expect(mockPrisma.playerMatchStats.findMany).toHaveBeenCalledTimes(1)
+    const args = mockPrisma.playerMatchStats.findMany.mock.calls[0][0]
+    expect(args.where).toEqual({ fixtureId: FIXTURE_ID })
+    // Explicit select, never `include: { player: true }` - the Player row
+    // carries ~70 attribute columns this screen has no use for.
+    expect(args.include).toBeUndefined()
+    expect(args.select.player.select).toEqual({
+      firstName: true,
+      lastName: true,
+      primaryPosition: true,
+      shirtNumber: true,
+    })
+  })
+
+  it("carries the HISTORICAL teamId from the stats row, not the player's current club", async () => {
+    stubFixture({ playedAt: minutesAfterKickoff(0) })
+    const body = await callGet(minutesAfterKickoff(11))
+
+    const striker = body.playerStats!.find((s) => s.playerId === "home-striker")!
+    expect(striker.teamId).toBe("home-1")
+    // The route selects teamId from PlayerMatchStats and never reads
+    // player.teamId - it is not even in the nested select above.
+    const args = mockPrisma.playerMatchStats.findMany.mock.calls[0][0]
+    expect(args.select.teamId).toBe(true)
+    expect(args.select.player.select).not.toHaveProperty("teamId")
+  })
+
+  it("flattens the player's identity fields onto each row", async () => {
+    stubFixture({ playedAt: minutesAfterKickoff(0) })
+    const body = await callGet(minutesAfterKickoff(11))
+
+    expect(body.playerStats![0]).toMatchObject({
+      playerId: "home-keeper",
+      firstName: "Gk",
+      primaryPosition: "GK",
+    })
+    // The nested `player` object is not passed through - the contract is flat.
+    expect(body.playerStats![0]).not.toHaveProperty("player")
+  })
+
+  it("returns one row per player, with no duplicates", async () => {
+    stubFixture({ playedAt: minutesAfterKickoff(0) })
+    const body = await callGet(minutesAfterKickoff(11))
+
+    const ids = body.playerStats!.map((s) => s.playerId)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  it("fabricates nothing - an unused substitute with no row simply is not there", async () => {
+    stubFixture({ playedAt: minutesAfterKickoff(0) })
+    const body = await callGet(minutesAfterKickoff(11))
+
+    // The engine writes a row only for a player who took the pitch, so the
+    // response length is exactly what the database held - never padded to a
+    // full squad, never a line of zeroes for a bench player.
+    expect(body.playerStats).toHaveLength(PLAYER_STATS_ROWS.length)
+    expect(body.playerStats!.map((s) => s.playerId)).toEqual(["home-keeper", "home-striker", "away-mid"])
+  })
+
+  it("a finished fixture the scheduler never simulated returns an empty array, not invented players", async () => {
+    mockPrisma.fixture.findUnique
+      .mockResolvedValueOnce({
+        id: FIXTURE_ID,
+        scheduledAt: KICKOFF,
+        playedAt: null,
+        homeTeamId: "home-1",
+        awayTeamId: "away-1",
+        homeTeam: { ...TEAM("home-1"), stadiumStyle: null, crowdStyle: null, stadium: null },
+        awayTeam: TEAM("away-1"),
+      })
+      .mockResolvedValueOnce({ homeScore: null, awayScore: null, homeStats: null, awayStats: null })
+    mockPrisma.matchEvent.findMany.mockResolvedValueOnce([])
+    mockPrisma.playerMatchStats.findMany.mockResolvedValueOnce([])
+
+    const body = await callGet(minutesAfterKickoff(30))
+
+    expect(body.status).toBe("finished")
+    expect(body.playerStats).toEqual([])
+    expect(body.finalStats).toBeNull()
+  })
+
+  it("reads only - the archive never writes and never re-simulates", async () => {
+    stubFixture({ playedAt: minutesAfterKickoff(0) })
+    await callGet(minutesAfterKickoff(11))
+
+    // The handler's entire Prisma surface. No create/update/delete method
+    // exists on it at all, so a historical row cannot be rewritten by
+    // someone looking at it.
+    expect(Object.keys(mockPrisma)).toEqual(["fixture", "matchEvent", "player", "playerMatchStats"])
+    expect(Object.keys(mockPrisma.playerMatchStats)).toEqual(["findMany"])
   })
 })
