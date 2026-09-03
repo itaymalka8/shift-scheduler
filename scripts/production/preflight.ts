@@ -72,14 +72,22 @@ interface FixturesByStage {
  * create one. So a plain count is the correct league count, and the
  * non-league count is genuinely zero.
  */
-async function countFixturesByStage(prisma: ReturnType<typeof createProductionClient>["prisma"]): Promise<FixturesByStage> {
+async function hasFixtureStageColumn(
+  prisma: ReturnType<typeof createProductionClient>["prisma"]
+): Promise<boolean> {
   const [{ exists }] = await prisma.$queryRaw<{ exists: boolean }[]>`
     SELECT EXISTS (
       SELECT 1 FROM information_schema.columns
       WHERE table_name = 'Fixture' AND column_name = 'stage'
     ) AS "exists"`
+  return exists
+}
 
-  if (!exists) return { league: await prisma.fixture.count(), nonLeague: 0 }
+async function countFixturesByStage(
+  prisma: ReturnType<typeof createProductionClient>["prisma"],
+  hasStage: boolean
+): Promise<FixturesByStage> {
+  if (!hasStage) return { league: await prisma.fixture.count(), nonLeague: 0 }
 
   // Raw rather than the typed client for the same reason: this file must
   // keep working against a database one migration behind its own branch,
@@ -141,6 +149,11 @@ async function main() {
       errors.push(`Duplicate active Season per country: ${duplicates.join(", ")} - a future migration adding the partial unique index would fail on this.`)
     }
 
+    // Probed ONCE, and shared by every query below that mentions
+    // Fixture.stage. This script is a pre-deploy gate, so it must keep
+    // working against a Production that is one migration behind it.
+    const hasStage = await hasFixtureStageColumn(prisma)
+
     // --- Core counts ------------------------------------------------------
     const [
       divisionCount,
@@ -160,7 +173,7 @@ async function main() {
       prisma.divisionTeam.count(),
       prisma.team.count(),
       prisma.player.count(),
-      countFixturesByStage(prisma),
+      countFixturesByStage(prisma, hasStage),
       prisma.fixture.count({ where: { playedAt: { not: null } } }),
       prisma.matchEvent.count(),
       prisma.playerMatchStats.count(),
@@ -193,13 +206,18 @@ async function main() {
     }
 
     // --- League structure ---------------------------------------------
+    // Same pre-migration constraint as the counts above: on a Production
+    // that has not taken this branch's migration yet, `stage` cannot appear
+    // in the query at all. Before that migration every fixture is a league
+    // fixture, so the unfiltered shape is the correct one there.
+    const leagueOnly = hasStage ? ({ stage: "LEAGUE" } as const) : undefined
     const divisions = await prisma.division.findMany({
       select: {
         tier: true,
         group: true,
-        _count: { select: { teams: true, fixtures: { where: { stage: "LEAGUE" } } } },
+        _count: { select: { teams: true, fixtures: { where: leagueOnly } } },
         fixtures: {
-          where: { stage: "LEAGUE" },
+          where: leagueOnly,
           select: { matchday: true },
           orderBy: { matchday: "desc" },
           take: 1,
