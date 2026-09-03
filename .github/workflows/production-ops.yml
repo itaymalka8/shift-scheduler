@@ -20,6 +20,7 @@ on:
           - prod:backup:list
           - prod:eras:classify
           - prod:eras:verify
+          - prod:verify:player-stats
           - prod:render:autodeploy:off
           - prod:deploy:safe
 

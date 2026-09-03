@@ -24,6 +24,7 @@
     "prod:deploy:trigger": "tsx scripts/production/deploy-trigger.ts",
     "prod:backup:list": "tsx scripts/production/backup-list.ts",
     "prod:eras:verify": "tsx scripts/production/verify-team-eras.ts",
+    "prod:verify:player-stats": "tsx scripts/production/verify-player-stats.ts",
     "prod:eras:classify": "tsx scripts/production/classify-team-eras.ts",
     "prod:eras:backfill": "tsx scripts/production/backfill-team-eras.ts",
     "prod:backup:create": "tsx scripts/production/backup-create.ts",
