@@ -36,6 +36,14 @@ export function createProductionClient(env: NodeJS.ProcessEnv = process.env): Pr
   // mirroring PRODUCTION_DATABASE_URL into DATABASE_URL here is safe: it
   // never outlives this one process, and nothing else in it reads DATABASE_URL.
   process.env.DATABASE_URL = url
+  // TEMPORARY diagnostic - lengths/booleans only, never the value itself.
+  // Removed once the live "Error validating datasource db" failure is root-caused.
+  console.error(
+    `[diag] PRODUCTION_DATABASE_URL: len=${url.length} startsPg=${/^postgres(ql)?:\/\//.test(url)} hasLeadingWs=${/^\s/.test(url)} hasTrailingWs=${/\s$/.test(url)}`
+  )
+  console.error(
+    `[diag] process.env.DATABASE_URL after mirror: len=${(process.env.DATABASE_URL ?? "").length} startsPg=${/^postgres(ql)?:\/\//.test(process.env.DATABASE_URL ?? "")}`
+  )
   const prisma = new PrismaClient({ datasourceUrl: url })
   return { prisma, target }
 }
