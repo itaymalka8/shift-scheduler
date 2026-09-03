@@ -47,4 +47,19 @@ describe("assertProductionDatabaseUrl", () => {
       assertProductionDatabaseUrl({ DATABASE_URL: "postgresql://user:pass@real-prod-host.example.com:5432/goalx" })
     ).toThrow(ProductionSafetyError)
   })
+
+  it("trims a stray leading/trailing newline from copy-pasting the secret value", () => {
+    const url = "postgresql://user:pass@ep-xyz.us-east-2.aws.neon.tech:5432/goalx?sslmode=require"
+    expect(assertProductionDatabaseUrl({ PRODUCTION_DATABASE_URL: `\n${url}\n` })).toBe(url)
+  })
+
+  it("throws when PRODUCTION_DATABASE_URL is only whitespace", () => {
+    expect(() => assertProductionDatabaseUrl({ PRODUCTION_DATABASE_URL: "   " })).toThrow(ProductionSafetyError)
+  })
+
+  it("rejects a value that doesn't start with postgresql:// or postgres:// even if it parses as some other URL", () => {
+    expect(() => assertProductionDatabaseUrl({ PRODUCTION_DATABASE_URL: "mysql://user:pass@db.example.com:3306/goalx" })).toThrow(
+      ProductionSafetyError
+    )
+  })
 })

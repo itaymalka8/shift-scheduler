@@ -59,8 +59,8 @@ function isLoopbackHost(host: string): boolean {
  * can hand it straight to Prisma.
  */
 export function assertProductionDatabaseUrl(env: Record<string, string | undefined> = process.env): string {
-  const rawUrl = env.PRODUCTION_DATABASE_URL
-  if (!rawUrl || rawUrl.trim() === "") {
+  const rawUrl = env.PRODUCTION_DATABASE_URL?.trim()
+  if (!rawUrl) {
     throw new ProductionSafetyError(
       "PRODUCTION_DATABASE_URL is not set. Production scripts never fall back to DATABASE_URL - set PRODUCTION_DATABASE_URL explicitly to run this."
     )
@@ -71,6 +71,15 @@ export function assertProductionDatabaseUrl(env: Record<string, string | undefin
     throw new ProductionSafetyError(
       `PRODUCTION_DATABASE_URL points at "${target.host}", which looks like a local database, not Production. Refusing to proceed.`
     )
+  }
+
+  // JS's URL parser silently trims and tolerates things Prisma's own
+  // datasource validator (a strict literal-prefix check) does not - e.g. a
+  // secret value with a stray leading/trailing newline from copy-paste
+  // parses fine above but fails Prisma with "the URL must start with the
+  // protocol postgresql://". Guard for that class of mismatch explicitly.
+  if (!/^postgres(ql)?:\/\//.test(rawUrl)) {
+    throw new ProductionSafetyError('PRODUCTION_DATABASE_URL must start with "postgresql://" or "postgres://".')
   }
 
   return rawUrl
