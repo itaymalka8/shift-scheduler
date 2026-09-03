@@ -46,4 +46,10 @@ export async function ensureTeamForUser(
   await client.stadium.create({
     data: { teamId: team.id, name: DEFAULT_STADIUM_NAME_SUFFIX, ...toSeatColumns(DEFAULT_STARTING_SEATS) },
   })
+  // Born human (an OAuth signup creates its own club rather than taking one
+  // over), so this club has no bot era to close - one open HUMAN era from
+  // its creation is its whole ownership history.
+  await client.teamEra.create({
+    data: { teamId: team.id, userId, type: "HUMAN", startedAt: team.createdAt },
+  })
 }

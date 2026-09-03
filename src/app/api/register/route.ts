@@ -20,6 +20,7 @@ import {
 import { DEFAULT_STADIUM_STYLE, isStadiumStyle } from "@/components/stadium-illustration"
 import { ensureIsraelSeasonSeeded } from "@/lib/leagues/seed"
 import { pickBotTeamForNewSignup } from "@/lib/leagues/assign"
+import { ensureBotEra, lockTeamRow, recordHumanTakeover } from "@/lib/teams/eras"
 import { generateSquad } from "@/lib/players/generate"
 import { DEFAULT_STARTING_SEATS, toSeatColumns } from "@/lib/stadium/config"
 
@@ -35,6 +36,17 @@ class LeagueSetupError extends Error {
 class SquadGenerationError extends Error {
   constructor(public readonly cause: unknown) {
     super("Squad generation failed")
+  }
+}
+/**
+ * Raised when the bot club this signup picked was claimed by another
+ * registration first. Not a server fault - the whole transaction rolls back
+ * (the user row included) and the caller is told to try again, which will
+ * pick a different free slot.
+ */
+class TeamTakenOverError extends Error {
+  constructor() {
+    super("Bot team was claimed by another registration")
   }
 }
 
@@ -196,10 +208,51 @@ export async function POST(request: Request) {
         const botTeamId = countryCode === "IL" ? await pickBotTeamForNewSignup(tx) : null
 
         if (botTeamId) {
+          // THE TAKEOVER. Everything from here to the end of this branch is
+          // one atomic step: the club is never HUMAN without a HUMAN era to
+          // attribute its matches to, and never has an era for a user whose
+          // Team.userId was rolled back.
+          //
+          // The row lock comes FIRST and is the real concurrency guard.
+          // pickBotTeamForNewSignup reads under READ COMMITTED, so two
+          // concurrent signups can both see the same club as a free bot;
+          // without this lock both would write and the second would silently
+          // overwrite the first's userId, leaving one manager with no club.
+          // The loser of the race blocks here, then finds isBot already
+          // false below and picks a different slot on retry.
+          if (!(await lockTeamRow(tx, botTeamId))) {
+            throw new TeamTakenOverError()
+          }
+
+          // Re-read AFTER the lock, never before: only a read that happens
+          // while holding the lock can be trusted to still be true when we
+          // write.
+          const locked = await tx.team.findUniqueOrThrow({
+            where: { id: botTeamId },
+            select: { isBot: true, userId: true, createdAt: true },
+          })
+          if (!locked.isBot || locked.userId !== null) {
+            throw new TeamTakenOverError()
+          }
+
+          // One instant for the whole handover, so the outgoing era's
+          // endedAt and the incoming era's startedAt are byte-identical and
+          // the [startedAt, endedAt) window has neither a gap nor an
+          // overlap. A match kicking off exactly now belongs to the new
+          // manager.
+          const takeoverAt = new Date()
+
+          // Backfill has not necessarily run for this club, and a takeover
+          // must not depend on it having: if the bot era is missing, open it
+          // from the club's own createdAt (the same deterministic source the
+          // backfill uses) so the handover always has something to close.
+          await ensureBotEra(tx, botTeamId, locked.createdAt)
+
           // Inherits the bot's already-generated squad, fixtures, and stadium
           // seats as-is - only the stadium's name changes to the one picked at signup.
           await tx.team.update({ where: { id: botTeamId }, data: { ...teamData, userId: user.id, isBot: false } })
           await tx.stadium.update({ where: { teamId: botTeamId }, data: { name: stadiumName } })
+          await recordHumanTakeover(tx, { teamId: botTeamId, userId: user.id, at: takeoverAt })
         } else {
           const team = await tx.team.create({ data: { ...teamData, userId: user.id } })
           try {
@@ -208,6 +261,9 @@ export async function POST(request: Request) {
             throw new SquadGenerationError(cause)
           }
           await tx.stadium.create({ data: { teamId: team.id, name: stadiumName, ...toSeatColumns(DEFAULT_STARTING_SEATS) } })
+          // Born human: one open HUMAN era from the club's creation. There
+          // is no bot era to close, because this club was never a bot.
+          await tx.teamEra.create({ data: { teamId: team.id, userId: user.id, type: "HUMAN", startedAt: team.createdAt } })
         }
       },
       // The default 5s transaction timeout is tight for a multi-step write
@@ -234,6 +290,12 @@ export async function POST(request: Request) {
     if (error instanceof LeagueSetupError) {
       console.error("Registration failed: league setup error", error.cause)
       return NextResponse.json({ error: "LEAGUE_SETUP_FAILED" }, { status: 500 })
+    }
+    if (error instanceof TeamTakenOverError) {
+      // Also the shape a lost race takes if two transactions somehow reach
+      // the era insert together: the partial unique index
+      // (UNIQUE("teamId") WHERE "endedAt" IS NULL) rejects the second.
+      return NextResponse.json({ error: "TEAM_TAKEN_TRY_AGAIN" }, { status: 409 })
     }
     if (error instanceof SquadGenerationError) {
       console.error("Registration failed: squad generation error", error.cause)

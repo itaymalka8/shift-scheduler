@@ -96,11 +96,19 @@ async function seedDivisionTeams(
     async (tx) => {
       const teams = await tx.team.createManyAndReturn({
         data: seedData.map((d) => d.team),
-        select: { id: true },
+        select: { id: true, createdAt: true },
       })
 
       await tx.divisionTeam.createMany({
         data: teams.map((t) => ({ divisionId, teamId: t.id })),
+      })
+
+      // Every club is born owned by someone, and a seeded club is born a
+      // bot. Opening the era here means a takeover always has an era to
+      // close, and the backfill (scripts/production/backfill-team-eras.ts)
+      // only ever has to deal with clubs that predate this code.
+      await tx.teamEra.createMany({
+        data: teams.map((t) => ({ teamId: t.id, userId: null, type: "BOT" as const, startedAt: t.createdAt })),
       })
 
       await tx.stadium.createMany({

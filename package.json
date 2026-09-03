@@ -23,6 +23,7 @@
     "prod:cron:resume": "tsx scripts/production/cron-resume.ts",
     "prod:deploy:trigger": "tsx scripts/production/deploy-trigger.ts",
     "prod:backup:list": "tsx scripts/production/backup-list.ts",
+    "prod:eras:backfill": "tsx scripts/production/backfill-team-eras.ts",
     "prod:backup:create": "tsx scripts/production/backup-create.ts",
     "prod:deploy:safe": "tsx scripts/production/deploy-safe.ts",
     "prod:ops:provision-token": "tsx scripts/production/provision-ops-token.ts",

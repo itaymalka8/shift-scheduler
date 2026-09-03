@@ -22,6 +22,7 @@ model User {
   accounts      Account[]
   sessions      Session[]
   team          Team?
+  teamEras      TeamEra[]
 }
 
 model Account {
@@ -111,6 +112,7 @@ model Team {
   kits                  TeamKit[]
   transferListings      TransferListing[]
   youthIntakes          YouthIntake[]
+  eras                  TeamEra[]
 }
 
 enum KitType {
@@ -387,6 +389,8 @@ model Season {
   divisions        Division[]
   youthIntakes     YouthIntake[]
   playerLifecycles PlayerSeasonLifecycle[]
+  teamErasStarted  TeamEra[]               @relation("TeamEraStarted")
+  teamErasEnded    TeamEra[]               @relation("TeamEraEnded")
 
   @@unique([countryCode, number])
 }
@@ -766,4 +770,88 @@ model TransferListing {
 
   @@index([status, expiresAt])
   @@index([sellingTeamId, status])
+}
+
+enum TeamEraType {
+  BOT
+  HUMAN
+}
+
+// WHO WAS MANAGING THIS CLUB, AND WHEN.
+//
+// A club outlives its managers. When a human takes over a bot club, the club
+// keeps everything it has earned - fixtures, league points, squad, stadium,
+// finances, and its place in the record books - but the person now holding
+// it did not earn any of that, and their managerial record must start at
+// zero. TeamEra is the seam between those two facts: it is ATTRIBUTION
+// METADATA laid over history that is never rewritten. No fixture, event,
+// player stat, standing or season result is modified, moved or deleted when
+// an era changes; the club's own history is continuous, and only the
+// question "which manager does this match count for" has a new answer.
+//
+// Each row is one continuous stretch of ownership: [startedAt, endedAt),
+// half-open so that a match kicking off at the exact instant of a takeover
+// belongs to the NEW manager and never to both. The open era (endedAt =
+// null) is the current one.
+//
+// A BOT era has userId = null; a HUMAN era always names its user. That is
+// enforced in the database by a CHECK constraint, not by hope - see the
+// migration.
+//
+// IMPORTANT: at most one OPEN era may exist per team. Prisma's schema DSL
+// cannot express a partial/filtered unique index (the same limitation
+// already documented on TransferListing and Season above), so it is
+// enforced by a hand-written
+// `CREATE UNIQUE INDEX "TeamEra_teamId_open_key" ON "TeamEra"("teamId") WHERE "endedAt" IS NULL`
+// added directly to this feature's migration.sql. That index exists in the
+// database but has no schema.prisma representation - a future
+// `prisma migrate dev` must not be allowed to "fix" this apparent drift by
+// dropping it; always review a generated migration diff before applying it.
+//
+// Full non-overlap (not just "one open era") would be an EXCLUDE USING gist
+// constraint over tstzrange, which needs the btree_gist extension to also
+// match teamId with =. That extension's availability on this Neon project
+// has NOT been verified, and putting an unverifiable CREATE EXTENSION into
+// a production migration is a worse risk than the gap it closes: overlap is
+// already impossible by construction, because the only writer
+// (closeEraAndOpenNext) closes the open era at exactly the instant the next
+// one starts, inside one transaction, holding the Team row lock. If eras
+// ever gain a second writer, verify btree_gist and add the exclusion
+// constraint then.
+model TeamEra {
+  id     String      @id @default(cuid())
+  teamId String
+  team   Team        @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  // Null for a BOT era. SetNull rather than Cascade so deleting a user
+  // cannot silently erase the club's ownership history - though note that
+  // Team.user is itself onDelete: Cascade today, so a deleted user still
+  // takes the whole club (and therefore its eras) with it. Making club
+  // history survive account deletion is a separate, larger change.
+  userId String?
+  user   User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  type   TeamEraType
+
+  startedAt DateTime
+  endedAt   DateTime?
+
+  // Which season the club changed hands in. Recorded when known, purely so
+  // a later "manager profile" screen can say "took over in Season 3"
+  // without re-deriving it from timestamps. Never used to decide whether a
+  // match belongs to an era - that is always the startedAt/endedAt window
+  // (see src/lib/teams/era.ts), because a season is not a point in time.
+  startedSeasonId String?
+  startedSeason   Season? @relation("TeamEraStarted", fields: [startedSeasonId], references: [id], onDelete: SetNull)
+  endedSeasonId   String?
+  endedSeason     Season? @relation("TeamEraEnded", fields: [endedSeasonId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  // "Which era owned this club at time T" - the single hottest read, and
+  // the one the era-boundary rule runs on. teamId leads as the equality
+  // column, startedAt follows for the range half and gives the ordering
+  // free.
+  @@index([teamId, startedAt])
+  // "Every club this person has ever managed" - the manager profile's
+  // starting point. Ordered by startedAt so a career reads chronologically.
+  @@index([userId, startedAt])
 }
