@@ -27,6 +27,6 @@ export interface ProductionClient {
 export function createProductionClient(env: NodeJS.ProcessEnv = process.env): ProductionClient {
   const url = assertProductionDatabaseUrl(env)
   const target = parseDatabaseTarget(url)
-  const prisma = new PrismaClient({ datasources: { db: { url } } })
+  const prisma = new PrismaClient({ datasourceUrl: url })
   return { prisma, target }
 }
