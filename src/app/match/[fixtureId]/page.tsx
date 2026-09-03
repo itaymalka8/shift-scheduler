@@ -7,8 +7,15 @@ import { prisma } from "@/lib/prisma"
 import { DEFAULT_LOCALE, getTranslator, isLocale } from "@/lib/i18n/translations"
 import { MatchCenter } from "./match-center"
 
-export default async function MatchPage({ params }: { params: Promise<{ fixtureId: string }> }) {
+export default async function MatchPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ fixtureId: string }>
+  searchParams: Promise<{ from?: string }>
+}) {
   const { fixtureId } = await params
+  const { from } = await searchParams
   const session = await getServerSession(authOptions)
   const cookieStore = await cookies()
   const cookieLocale = cookieStore.get("goalx-locale")?.value
@@ -27,9 +34,16 @@ export default async function MatchPage({ params }: { params: Promise<{ fixtureI
     // way a broadcast fills the screen it is watched on.
     <div className="goalx-match-environment min-h-screen">
       <main className="mx-auto max-w-6xl px-3 py-4 sm:px-6 sm:py-8">
+        {/* Back where the viewer actually came from: the calendar links here
+            with ?from=matches, everything else keeps the original target. A
+            plain query hint rather than a referrer check, so it survives a
+            shared link and never guesses. */}
         <div className="mb-3">
-          <Link href="/league" className="text-sm font-medium text-white/70 transition-colors hover:text-white">
-            {t("league.backToDashboard")}
+          <Link
+            href={from === "matches" ? "/matches" : "/league"}
+            className="text-sm font-medium text-white/70 transition-colors hover:text-white"
+          >
+            {from === "matches" ? t("matches.backToMatches") : t("league.backToDashboard")}
           </Link>
         </div>
         <MatchCenter fixtureId={fixtureId} />

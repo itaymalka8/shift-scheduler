@@ -1,4 +1,4 @@
-import { Home, Users, LayoutGrid, Trophy, Landmark, Wallet, Shirt, ArrowLeftRight, type LucideIcon } from "lucide-react"
+import { Home, Users, LayoutGrid, CalendarDays, Trophy, Landmark, Wallet, Shirt, ArrowLeftRight, type LucideIcon } from "lucide-react"
 import type { TranslationKey } from "@/lib/i18n/translations"
 
 export interface NavItem {
@@ -35,6 +35,13 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/squad?tab=tactics",
     icon: LayoutGrid,
     isActive: (pathname, tab) => pathname === "/squad" && tab === "tactics",
+  },
+  {
+    key: "matches",
+    labelKey: "nav.matches",
+    href: "/matches",
+    icon: CalendarDays,
+    isActive: (pathname) => pathname.startsWith("/matches"),
   },
   {
     key: "league",
@@ -75,7 +82,13 @@ export const NAV_ITEMS: NavItem[] = [
 
 // On mobile these four get a direct bottom-bar slot; everything else sits
 // behind "More" so the bar never has to cram in every screen at once.
-const MOBILE_PRIMARY_KEYS = new Set(["home", "squad", "tactics", "league"])
+//
+// "matches" takes the slot "tactics" used to hold: Tactics is already one
+// tap away as a tab inside /squad (see squad-tactics-app.tsx's own
+// Squad/Tactics/Youth switcher) and remains in the More menu, so nothing
+// lost access - while the match calendar is a top-level destination with no
+// other route into it.
+const MOBILE_PRIMARY_KEYS = new Set(["home", "squad", "matches", "league"])
 export const MOBILE_PRIMARY_ITEMS = NAV_ITEMS.filter((item) => MOBILE_PRIMARY_KEYS.has(item.key))
 export const MOBILE_OVERFLOW_ITEMS = NAV_ITEMS.filter((item) => !MOBILE_PRIMARY_KEYS.has(item.key))
 
