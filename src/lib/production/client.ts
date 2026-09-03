@@ -27,6 +27,15 @@ export interface ProductionClient {
 export function createProductionClient(env: NodeJS.ProcessEnv = process.env): ProductionClient {
   const url = assertProductionDatabaseUrl(env)
   const target = parseDatabaseTarget(url)
+  // The generated client still validates schema.prisma's env("DATABASE_URL")
+  // placeholder against real process.env at engine startup, even though a
+  // datasourceUrl override is passed below - the override only takes effect
+  // once that validation already passed. Every caller of this function is a
+  // short-lived, single-purpose production script process (never the long-
+  // running app, which never imports this module - see the note above), so
+  // mirroring PRODUCTION_DATABASE_URL into DATABASE_URL here is safe: it
+  // never outlives this one process, and nothing else in it reads DATABASE_URL.
+  process.env.DATABASE_URL = url
   const prisma = new PrismaClient({ datasourceUrl: url })
   return { prisma, target }
 }
