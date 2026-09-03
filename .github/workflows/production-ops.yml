@@ -18,6 +18,7 @@ on:
           - prod:post-deploy-check
           - prod:render:status
           - prod:backup:list
+          - prod:eras:classify
           - prod:render:autodeploy:off
           - prod:deploy:safe
 
