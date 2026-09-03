@@ -416,6 +416,12 @@ model DivisionTeam {
   joinedAt   DateTime @default(now())
 
   @@unique([divisionId, teamId])
+  // The reverse direction of the unique above, which only indexes
+  // divisionId as its leftmost column. "Which division is this club in"
+  // runs on every dashboard load today, and "which divisions has this club
+  // ever been in" is what a season filter over a club's history will need -
+  // both start from teamId, which that unique cannot serve.
+  @@index([teamId])
 }
 
 enum YouthIntakeStatus {
@@ -613,6 +619,36 @@ model Fixture {
   createdAt        DateTime           @default(now())
   events           MatchEvent[]
   playerStats      PlayerMatchStats[]
+
+  // Postgres does not index a foreign key on its own, so until now this
+  // table had no index at all beyond its primary key and every read below
+  // was a sequential scan of every fixture of every season ever played.
+  //
+  // One club's calendar - "my upcoming matches" and "my results" - filters
+  // on one side's team id and orders/ranges on kickoff time. Two separate
+  // indexes rather than one, because the query is an OR across the two
+  // columns (a club plays home OR away): Postgres can satisfy that with a
+  // bitmap OR of these two, which a single composite could not serve.
+  @@index([homeTeamId, scheduledAt])
+  @@index([awayTeamId, scheduledAt])
+  // Everything that reads a whole division: computeStandings (filters
+  // divisionId), the dashboard's next-five (divisionId + orderBy matchday),
+  // and isSeasonReadyForOffseason (a season's divisions). divisionId leads
+  // as the equality column; matchday follows so the ordering comes free.
+  @@index([divisionId, matchday])
+  // processDueFixtures' exact predicate: `playedAt IS NULL AND scheduledAt
+  // <= now` (src/lib/match/simulate.ts). playedAt leads deliberately - IS
+  // NULL is an equality-shaped predicate a btree can seek straight to,
+  // which then leaves scheduledAt ordered inside that group for the range
+  // half. The reverse order ([scheduledAt, playedAt]) would make the range
+  // the leading column and force a scan of every past fixture - and that
+  // set only grows, since almost every fixture is eventually in the past
+  // and played. A partial index (WHERE "playedAt" IS NULL) would be
+  // smaller still, but it buys nothing this seek does not already give and
+  // it would have to be hand-written outside schema.prisma, adding another
+  // piece of invisible drift like the two partial UNIQUE indexes already
+  // documented above - not worth it for a table this size.
+  @@index([playedAt, scheduledAt])
 }
 
 // One row per player per match they appeared in - the raw record every
@@ -665,6 +701,17 @@ model MatchEvent {
   outcome           String?
   context           Json?
   createdAt         DateTime @default(now())
+
+  // The single hottest read in the game: every live-match poll runs
+  // `WHERE fixtureId = ? AND minute <= ?` (see the spoiler gate in
+  // src/app/api/matches/[fixtureId]/route.ts), and an archived match runs the
+  // identical query with minute <= 90. fixtureId is the equality column and
+  // therefore leads; minute follows as the range, so one index serves both
+  // the filter and the `ORDER BY minute` that follows it. Postgres does not
+  // index foreign keys on its own, so before this there was no index on this
+  // table at all and both paths were sequential scans of every event ever
+  // simulated.
+  @@index([fixtureId, minute])
 }
 
 // One recurring weekly transfer window. weekKey is the same stable,
