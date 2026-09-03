@@ -29,12 +29,28 @@ describe("resolveProjectId", () => {
     await expect(resolveProjectId(client, {})).rejects.toThrow(/No Neon projects found/)
   })
 
-  it("refuses to guess when more than one project exists", async () => {
+  it("refuses to guess when more than one project exists and none match by name", async () => {
     mockListProjects.mockResolvedValue([
       { id: "proj-1", name: "goalx-prod" },
       { id: "proj-2", name: "goalx-staging" },
     ])
     await expect(resolveProjectId(client, {})).rejects.toThrow(/2 Neon projects found/)
+  })
+
+  it("picks the project named exactly \"Goalx\" even when other projects exist", async () => {
+    mockListProjects.mockResolvedValue([
+      { id: "proj-1", name: "young-term-77515862" },
+      { id: "proj-2", name: "Goalx" },
+    ])
+    expect(await resolveProjectId(client, {})).toBe("proj-2")
+  })
+
+  it("refuses to guess when more than one project is named exactly \"Goalx\"", async () => {
+    mockListProjects.mockResolvedValue([
+      { id: "proj-1", name: "Goalx" },
+      { id: "proj-2", name: "Goalx" },
+    ])
+    await expect(resolveProjectId(client, {})).rejects.toThrow(/2 Neon projects are named "Goalx"/)
   })
 })
 
