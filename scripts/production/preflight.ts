@@ -52,6 +52,49 @@ async function loadMigrationStatus(prisma: ReturnType<typeof createProductionCli
   return { migrationsTableExists, localCount: localNames.length, appliedCount: appliedNames.size, pendingLocal, lastApplied }
 }
 
+interface FixturesByStage {
+  league: number
+  nonLeague: number
+}
+
+/**
+ * League and non-league fixture counts, from a Production database that may
+ * not have Fixture.stage yet.
+ *
+ * THIS SCRIPT IS A PRE-DEPLOY GATE: it runs against Production BEFORE the
+ * migration it ships alongside has been applied, so it cannot assume its own
+ * branch's schema. Querying `stage` unconditionally makes preflight fail on
+ * the very deploy that introduces the column - which is exactly what
+ * happened, and is why this probes first.
+ *
+ * The fallback is not a fudge, it is exact: before that migration every
+ * fixture in the table IS a league fixture, because nothing else could
+ * create one. So a plain count is the correct league count, and the
+ * non-league count is genuinely zero.
+ */
+async function countFixturesByStage(prisma: ReturnType<typeof createProductionClient>["prisma"]): Promise<FixturesByStage> {
+  const [{ exists }] = await prisma.$queryRaw<{ exists: boolean }[]>`
+    SELECT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'Fixture' AND column_name = 'stage'
+    ) AS "exists"`
+
+  if (!exists) return { league: await prisma.fixture.count(), nonLeague: 0 }
+
+  // Raw rather than the typed client for the same reason: this file must
+  // keep working against a database one migration behind its own branch,
+  // and the generated client's `stage` filter cannot express that.
+  const rows = await prisma.$queryRaw<{ stage: string; count: bigint }[]>`
+    SELECT "stage"::text AS stage, count(*) AS count FROM "Fixture" GROUP BY "stage"`
+  let league = 0
+  let nonLeague = 0
+  for (const row of rows) {
+    if (row.stage === "LEAGUE") league += Number(row.count)
+    else nonLeague += Number(row.count)
+  }
+  return { league, nonLeague }
+}
+
 async function main() {
   let handle: ReturnType<typeof createProductionClient>
   try {
@@ -104,8 +147,7 @@ async function main() {
       divisionTeamCount,
       teamCount,
       playerCount,
-      leagueFixtureCount,
-      nonLeagueFixtureCount,
+      fixturesByStage,
       playedFixtureCount,
       matchEventCount,
       playerMatchStatsCount,
@@ -118,13 +160,7 @@ async function main() {
       prisma.divisionTeam.count(),
       prisma.team.count(),
       prisma.player.count(),
-      // V1_EXPECTED_TOTAL_FIXTURES describes the league's double
-      // round-robin shape, so the count checked against it must be LEAGUE
-      // fixtures only. A title decider is a legitimate extra fixture and
-      // must not turn a correct season-end into a failed preflight; it is
-      // counted separately and surfaced, never silently ignored.
-      prisma.fixture.count({ where: { stage: "LEAGUE" } }),
-      prisma.fixture.count({ where: { stage: { not: "LEAGUE" } } }),
+      countFixturesByStage(prisma),
       prisma.fixture.count({ where: { playedAt: { not: null } } }),
       prisma.matchEvent.count(),
       prisma.playerMatchStats.count(),
@@ -135,7 +171,7 @@ async function main() {
     ])
     lines.push(
       `Divisions=${divisionCount} DivisionTeams=${divisionTeamCount} Teams=${teamCount} Players=${playerCount}`,
-      `LeagueFixtures=${leagueFixtureCount} nonLeagueFixtures=${nonLeagueFixtureCount} playedFixtures=${playedFixtureCount} MatchEvents=${matchEventCount} PlayerMatchStats=${playerMatchStatsCount}`,
+      `LeagueFixtures=${fixturesByStage.league} nonLeagueFixtures=${fixturesByStage.nonLeague} playedFixtures=${playedFixtureCount} MatchEvents=${matchEventCount} PlayerMatchStats=${playerMatchStatsCount}`,
       `FinancialTransactions=${financialTransactionCount} YouthIntakes=${youthIntakeCount} YouthProspects=${youthProspectCount} PlayerSeasonLifecycle=${playerSeasonLifecycleCount}`
     )
 
@@ -149,11 +185,11 @@ async function main() {
     if (divisionTeamCount !== V1_EXPECTED_DIVISION_TEAM_MEMBERSHIPS) {
       errors.push(`Expected ${V1_EXPECTED_DIVISION_TEAM_MEMBERSHIPS} DivisionTeam memberships for V1, found ${divisionTeamCount}.`)
     }
-    if (leagueFixtureCount !== V1_EXPECTED_TOTAL_FIXTURES) {
-      errors.push(`Expected ${V1_EXPECTED_TOTAL_FIXTURES} LEAGUE Fixtures for V1, found ${leagueFixtureCount}.`)
+    if (fixturesByStage.league !== V1_EXPECTED_TOTAL_FIXTURES) {
+      errors.push(`Expected ${V1_EXPECTED_TOTAL_FIXTURES} LEAGUE Fixtures for V1, found ${fixturesByStage.league}.`)
     }
-    if (nonLeagueFixtureCount > 0) {
-      warnings.push(`${nonLeagueFixtureCount} non-LEAGUE fixture(s) present (title deciders / playoffs).`)
+    if (fixturesByStage.nonLeague > 0) {
+      warnings.push(`${fixturesByStage.nonLeague} non-LEAGUE fixture(s) present (title deciders / playoffs).`)
     }
 
     // --- League structure ---------------------------------------------

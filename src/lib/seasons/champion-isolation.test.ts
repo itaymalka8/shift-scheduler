@@ -106,3 +106,24 @@ describe("Phase 2B creates no decider", () => {
     expect(transition).toBeGreaterThan(failClosed)
   })
 })
+
+describe("a pre-deploy gate must not assume its own branch's schema", () => {
+  it("preflight probes for Fixture.stage instead of querying it blindly", () => {
+    // prod:preflight runs against Production BEFORE the migration it ships
+    // alongside is applied, so a bare `where: { stage: ... }` makes it fail
+    // on the very deploy that introduces the column. It did exactly that
+    // once; this guard is why it will not again.
+    const source = readFileSync(join(SRC, "..", "scripts", "production", "preflight.ts"), "utf8")
+    expect(source).toContain("information_schema.columns")
+    expect(source).toContain("column_name = 'stage'")
+    expect(source).not.toMatch(/prisma\.fixture\.count\(\{\s*where:\s*\{\s*stage:/)
+  })
+
+  it("post-deploy-check may assume it, because the migration has already run by then", () => {
+    // render.yaml's buildCommand is `prisma migrate deploy && npm run build`,
+    // so the schema is current before the new server starts and before this
+    // check runs.
+    const render = readFileSync(join(SRC, "..", "render.yaml"), "utf8")
+    expect(render).toMatch(/prisma migrate deploy\s*&&\s*npm run build/)
+  })
+})
