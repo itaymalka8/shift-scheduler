@@ -19,6 +19,7 @@ on:
           - prod:render:status
           - prod:backup:list
           - prod:eras:classify
+          - prod:eras:verify
           - prod:render:autodeploy:off
           - prod:deploy:safe
 
