@@ -101,13 +101,9 @@ async function main() {
     console.error(`FAILED STEP: ${result.failedStep}`)
     console.error(`Reason: ${result.reason}`)
     console.error(`Current Web status: ${result.webStatus ?? "unknown"}`)
-    console.error(`Current Cron status: ${result.cronStatus ?? "unknown"}`)
+    console.error(`Current Cron status: ${result.cronStatus ?? "unknown"} (${result.cronState.toUpperCase()})`)
     console.error(`Backup branch created: ${result.backupBranchId ?? "(none)"}`)
-    console.error(
-      result.cronLeftSuspended
-        ? "Recommended recovery: Cron is left SUSPENDED on purpose. Investigate the web service and deploy before resuming with `PRODUCTION_WRITE_CONFIRM=I_UNDERSTAND_THIS_CHANGES_PRODUCTION npm run prod:cron:resume`. Do not restore the database automatically - that is a human decision."
-        : "Recommended recovery: Cron was not touched by this run. Re-run prod:preflight / prod:backup:list to see current state before retrying."
-    )
+    console.error(`Recommended recovery: ${result.recommendedRecovery}`)
   }
 
   console.info(`\nPRODUCTION DEPLOY: ${result.outcome}`)
