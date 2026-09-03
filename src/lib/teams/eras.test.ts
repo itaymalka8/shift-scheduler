@@ -3,7 +3,7 @@
  * ORDER and ATOMICITY of the writes - the properties that make the
  * invariant hold - rather than re-testing Prisma.
  */
-import { closeEraAndOpenNext, ensureBotEra, lockTeamRow, recordHumanTakeover, TeamEraError } from "./eras"
+import { claimFreeBotTeam, closeEraAndOpenNext, ensureBotEra, lockTeamRow, recordHumanTakeover, TeamEraError } from "./eras"
 
 const TEAM = "team-1"
 const USER = "user-1"
@@ -164,5 +164,94 @@ describe("human takeover", () => {
     const era = await closeEraAndOpenNext(tx, { teamId: TEAM, userId: USER, type: "HUMAN", at: CLUB_CREATED })
     expect(era).toMatchObject({ type: "HUMAN", endedAt: null })
     expect(tx.teamEra.update).not.toHaveBeenCalled()
+  })
+})
+
+describe("claimFreeBotTeam - concurrent signups take different slots, not the same one", () => {
+  function claimTx(freeIds: string[]) {
+    return {
+      $queryRaw: jest.fn(async (strings: string[], ids: string[]) => {
+        const sql = strings.join("?")
+        // The claim must be ONE statement that locks and filters together.
+        expect(sql).toContain("FOR UPDATE SKIP LOCKED")
+        expect(sql).toContain('"isBot" = true')
+        expect(sql).toContain('"userId" IS NULL')
+        expect(sql).toContain('ORDER BY "id"')
+        const first = ids.filter((id) => freeIds.includes(id)).sort()[0]
+        return first ? [{ id: first }] : []
+      }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any
+  }
+
+  it("claims the first free candidate in id order", async () => {
+    const tx = claimTx(["team-b", "team-c"])
+    expect(await claimFreeBotTeam(tx, ["team-a", "team-b", "team-c"])).toBe("team-b")
+  })
+
+  it("skips a club another signup is mid-takeover on and takes the next one", async () => {
+    // team-a is locked by a concurrent transaction, so SKIP LOCKED passes
+    // it over: this signup succeeds on a different slot rather than failing.
+    const tx = claimTx(["team-c"])
+    expect(await claimFreeBotTeam(tx, ["team-a", "team-b", "team-c"])).toBe("team-c")
+  })
+
+  it("returns null only when every candidate is genuinely gone", async () => {
+    const tx = claimTx([])
+    expect(await claimFreeBotTeam(tx, ["team-a", "team-b"])).toBeNull()
+  })
+
+  it("issues no query at all when there are no candidates", async () => {
+    const tx = claimTx([])
+    expect(await claimFreeBotTeam(tx, [])).toBeNull()
+    expect(tx.$queryRaw).not.toHaveBeenCalled()
+  })
+
+  it("is bounded: one statement, never a loop", async () => {
+    const tx = claimTx(["team-z"])
+    await claimFreeBotTeam(tx, ["team-a", "team-b", "team-c", "team-z"])
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("every creation path leaves exactly one open era", () => {
+  // The AT LEAST ONE guarantee is the application's, not the database's -
+  // the partial unique index only enforces AT MOST ONE. These cover each
+  // path named in the schema comment that this project controls in code.
+  it("bot seeding: a newly seeded club has one open BOT era", async () => {
+    const tx = makeTx()
+    await ensureBotEra(tx, TEAM, CLUB_CREATED)
+    expect(tx.eras.filter((e: FakeEra) => e.endedAt === null)).toHaveLength(1)
+  })
+
+  it("credential takeover: one open era, and it is the HUMAN one", async () => {
+    const tx = makeTx()
+    await ensureBotEra(tx, TEAM, CLUB_CREATED)
+    await recordHumanTakeover(tx, { teamId: TEAM, userId: USER, at: TAKEOVER })
+    const open = (tx.eras as FakeEra[]).filter((e) => e.endedAt === null)
+    expect(open).toHaveLength(1)
+    expect(open[0]).toMatchObject({ type: "HUMAN", userId: USER })
+  })
+
+  it("born-human club (OAuth, or a signup with no free slot): one open HUMAN era", async () => {
+    const tx = makeTx()
+    await tx.teamEra.create({ data: { teamId: TEAM, userId: USER, type: "HUMAN", startedAt: CLUB_CREATED } })
+    expect(tx.eras.filter((e: FakeEra) => e.endedAt === null)).toHaveLength(1)
+  })
+
+  it("a future handover cannot leave a club era-less - the next era opens as the previous closes", async () => {
+    const tx = makeTx()
+    await ensureBotEra(tx, TEAM, CLUB_CREATED)
+    await recordHumanTakeover(tx, { teamId: TEAM, userId: USER, at: TAKEOVER })
+    // A second handover, to another manager.
+    const later = new Date(TAKEOVER.getTime() + 86_400_000)
+    await closeEraAndOpenNext(tx, { teamId: TEAM, userId: "user-2", type: "HUMAN", at: later })
+
+    expect(tx.eras).toHaveLength(3)
+    expect(tx.eras.filter((e: FakeEra) => e.endedAt === null)).toHaveLength(1)
+    // Still gapless across both boundaries.
+    const sorted = (tx.eras as FakeEra[]).sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime())
+    expect(sorted[0].endedAt).toEqual(sorted[1].startedAt)
+    expect(sorted[1].endedAt).toEqual(sorted[2].startedAt)
   })
 })

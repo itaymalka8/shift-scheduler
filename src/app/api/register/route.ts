@@ -19,8 +19,8 @@ import {
 } from "@/components/team-crest"
 import { DEFAULT_STADIUM_STYLE, isStadiumStyle } from "@/components/stadium-illustration"
 import { ensureIsraelSeasonSeeded } from "@/lib/leagues/seed"
-import { pickBotTeamForNewSignup } from "@/lib/leagues/assign"
-import { ensureBotEra, lockTeamRow, recordHumanTakeover } from "@/lib/teams/eras"
+import { pickBotTeamCandidates } from "@/lib/leagues/assign"
+import { claimFreeBotTeam, ensureBotEra, recordHumanTakeover } from "@/lib/teams/eras"
 import { generateSquad } from "@/lib/players/generate"
 import { DEFAULT_STARTING_SEATS, toSeatColumns } from "@/lib/stadium/config"
 
@@ -39,10 +39,11 @@ class SquadGenerationError extends Error {
   }
 }
 /**
- * Raised when the bot club this signup picked was claimed by another
- * registration first. Not a server fault - the whole transaction rolls back
- * (the user row included) and the caller is told to try again, which will
- * pick a different free slot.
+ * Raised only if a club that claimFreeBotTeam locked and proved free turns
+ * out not to be - which would mean that guarantee is broken. Under normal
+ * concurrency this is unreachable: a signup racing another simply claims a
+ * different slot rather than failing. Kept as a hard stop rather than a
+ * silent continue, because proceeding would overwrite another manager's club.
  */
 class TeamTakenOverError extends Error {
   constructor() {
@@ -204,8 +205,12 @@ export async function POST(request: Request) {
         const user = await tx.user.create({ data: { name, email, passwordHash } })
 
         // Real signups take over an existing bot team's slot (and fixtures)
-        // instead of joining without a division - see pickBotTeamForNewSignup.
-        const botTeamId = countryCode === "IL" ? await pickBotTeamForNewSignup(tx) : null
+        // instead of joining without a division. Every eligible slot is
+        // fetched, then exactly one is CLAIMED under a row lock that skips
+        // clubs another signup is already taking (claimFreeBotTeam) - so a
+        // concurrent signup costs this one a different slot, not its
+        // registration.
+        const botTeamId = countryCode === "IL" ? await claimFreeBotTeam(tx, await pickBotTeamCandidates(tx)) : null
 
         if (botTeamId) {
           // THE TAKEOVER. Everything from here to the end of this branch is
@@ -213,24 +218,16 @@ export async function POST(request: Request) {
           // attribute its matches to, and never has an era for a user whose
           // Team.userId was rolled back.
           //
-          // The row lock comes FIRST and is the real concurrency guard.
-          // pickBotTeamForNewSignup reads under READ COMMITTED, so two
-          // concurrent signups can both see the same club as a free bot;
-          // without this lock both would write and the second would silently
-          // overwrite the first's userId, leaving one manager with no club.
-          // The loser of the race blocks here, then finds isBot already
-          // false below and picks a different slot on retry.
-          if (!(await lockTeamRow(tx, botTeamId))) {
-            throw new TeamTakenOverError()
-          }
-
-          // Re-read AFTER the lock, never before: only a read that happens
-          // while holding the lock can be trusted to still be true when we
-          // write.
+          // claimFreeBotTeam already locked this row and already proved, in
+          // the same statement, that it was still a free bot - so there is
+          // no window here between checking and writing. This read only
+          // fetches createdAt, which the bot era needs.
           const locked = await tx.team.findUniqueOrThrow({
             where: { id: botTeamId },
             select: { isBot: true, userId: true, createdAt: true },
           })
+          // Belt and braces: if this ever fails, the claim's guarantee has
+          // been broken and the transaction must not proceed.
           if (!locked.isBot || locked.userId !== null) {
             throw new TeamTakenOverError()
           }

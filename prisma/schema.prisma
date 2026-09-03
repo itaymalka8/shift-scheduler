@@ -798,6 +798,41 @@ enum TeamEraType {
 // enforced in the database by a CHECK constraint, not by hope - see the
 // migration.
 //
+// WHAT THE DATABASE GUARANTEES, AND WHAT IT DOES NOT.
+//
+// The partial unique index below enforces AT MOST ONE open era per team. It
+// does NOT enforce AT LEAST ONE: a club with zero eras violates nothing, and
+// SQL has no way to require a row in another table to exist. Saying "the
+// database guarantees exactly one open era" would be wrong, and the
+// difference matters - a club with no era is a club whose matches belong to
+// nobody.
+//
+// AT LEAST ONE is an application guarantee, established at every point a
+// club can come into existence or change hands:
+//
+//   1. Initial migration     - 20260903174500_add_team_era backfills every
+//                              pre-existing club in the same transaction
+//                              that creates this table, so the new code
+//                              never sees a club without a history.
+//   2. Bot seeding           - seedDivision opens a BOT era for every club
+//                              it creates (src/lib/leagues/seed.ts).
+//   3. Credential signup     - the takeover branch closes the bot era and
+//                              opens a HUMAN one; the no-bot-slot branch
+//                              opens a HUMAN era for the new club
+//                              (src/app/api/register/route.ts).
+//   4. OAuth signup          - ensureTeamForUser opens a HUMAN era
+//                              (src/lib/team-setup.ts).
+//   5. Future transitions    - closeEraAndOpenNext always opens the next era
+//                              in the same transaction as it closes the
+//                              previous one (src/lib/teams/eras.ts), so a
+//                              club cannot be left era-less by a handover.
+//
+// The one deliberate exception is a club whose ownership CANNOT be derived
+// (a bot that is somehow owned, an unowned non-bot). Those are left with no
+// era rather than a guessed one - reported by prod:eras:classify and
+// prod:eras:backfill. Readers must therefore tolerate a club with no open
+// era instead of assuming one exists.
+//
 // IMPORTANT: at most one OPEN era may exist per team. Prisma's schema DSL
 // cannot express a partial/filtered unique index (the same limitation
 // already documented on TransferListing and Season above), so it is

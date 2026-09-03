@@ -1,8 +1,26 @@
 /**
- * Gives every pre-existing club an ownership history (TeamEra), from
- * timestamps already in the database. See src/lib/teams/backfill-eras.ts for
- * the classification rules and why each is deterministic rather than a
- * guess.
+ * RECOVERY AND VERIFICATION ONLY - NOT part of the normal deploy.
+ *
+ * The initial ownership history is created by the migration itself
+ * (20260903174500_add_team_era), in the same transaction that creates the
+ * table, so that the new application code never observes a club without an
+ * era. After a normal deploy this script has nothing to do and reports a
+ * no-op; it is NOT a required step.
+ *
+ * It is kept for the three jobs the migration cannot do:
+ *
+ *   1. VERIFY. A dry run (the default) reports what the current data would
+ *      produce without writing anything - the cheapest way to confirm, after
+ *      a deploy, that every club really does have the history it should.
+ *   2. REPAIR. If a club ever ends up with no era - the migration
+ *      deliberately skips clubs whose ownership cannot be derived, and a
+ *      future bug could leave one behind - this fills only those in, and
+ *      only if they have since become classifiable.
+ *   3. RESTORE. After a database restore to a point before the migration's
+ *      inserts, this reconstructs them from the same deterministic sources.
+ *
+ * See src/lib/teams/backfill-eras.ts for the classification rules and why
+ * each is deterministic rather than a guess.
  *
  * MUTATES Production (INSERTs into TeamEra only) - requires
  * PRODUCTION_WRITE_CONFIRM. It never updates or deletes any row, in any

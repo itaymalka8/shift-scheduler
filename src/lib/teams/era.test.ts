@@ -184,3 +184,41 @@ describe("computeManagerRecord - a human manager starts from zero", () => {
     })
   })
 })
+
+describe("PART G - the exact interval, to the millisecond", () => {
+  const CLOSED: EraWindow = { teamId: TEAM, startedAt: BOT_ERA.startedAt, endedAt: TAKEOVER }
+
+  it("startedAt is INCLUSIVE: a match at exactly startedAt is inside", () => {
+    expect(instantBelongsToEra(CLOSED.startedAt, CLOSED)).toBe(true)
+    expect(instantBelongsToEra(new Date(CLOSED.startedAt.getTime() - 1), CLOSED)).toBe(false)
+  })
+
+  it("endedAt is EXCLUSIVE: one millisecond before is inside, exactly on it is not", () => {
+    expect(instantBelongsToEra(new Date(TAKEOVER.getTime() - 1), CLOSED)).toBe(true)
+    expect(instantBelongsToEra(TAKEOVER, CLOSED)).toBe(false)
+    expect(instantBelongsToEra(new Date(TAKEOVER.getTime() + 1), CLOSED)).toBe(false)
+  })
+
+  it("an open era has no upper bound - any instant from startedAt onwards is inside", () => {
+    expect(instantBelongsToEra(TAKEOVER, HUMAN_ERA)).toBe(true)
+    expect(instantBelongsToEra(days(TAKEOVER, 10_000), HUMAN_ERA)).toBe(true)
+    expect(instantBelongsToEra(new Date(TAKEOVER.getTime() - 1), HUMAN_ERA)).toBe(false)
+  })
+
+  it("the manager record honours both boundaries to the millisecond", () => {
+    const oneMsBefore = playedFixture(new Date(TAKEOVER.getTime() - 1), 5, 0)
+    const exactlyAt = playedFixture(TAKEOVER, 1, 0)
+    const now = days(TAKEOVER, 1)
+
+    // The match one millisecond before the handover is the bot's, not the
+    // manager's - a five-goal win the human did not earn.
+    expect(computeManagerRecord(HUMAN_ERA, [oneMsBefore, exactlyAt], now)).toMatchObject({
+      matches: 1,
+      goalsFor: 1,
+    })
+    expect(computeManagerRecord(CLOSED, [oneMsBefore, exactlyAt], now)).toMatchObject({
+      matches: 1,
+      goalsFor: 5,
+    })
+  })
+})

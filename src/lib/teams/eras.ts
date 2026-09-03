@@ -135,3 +135,42 @@ export async function recordHumanTakeover(tx: Prisma.TransactionClient, input: T
 export function toEraWindow(era: { teamId: string; startedAt: Date; endedAt: Date | null }): EraWindow {
   return { teamId: era.teamId, startedAt: era.startedAt, endedAt: era.endedAt }
 }
+
+/**
+ * Claims one genuinely free bot club out of a candidate list, atomically.
+ *
+ * `FOR UPDATE SKIP LOCKED` is the whole trick, and it is why this is both
+ * safer and friendlier than the alternative:
+ *
+ *  - SKIP LOCKED never waits. A club another signup is mid-takeover on is
+ *    passed over rather than blocked on, so this caller keeps walking and
+ *    claims a different free slot instead of failing the registration. That
+ *    is the bounded retry - bounded by the candidate list itself, in a
+ *    single statement, so it cannot spin or run long.
+ *
+ *  - Because it never waits, it cannot take part in a deadlock cycle at
+ *    all. Combined with the ascending-id ORDER BY (candidates arrive sorted
+ *    from pickBotTeamCandidates), two concurrent signups can neither block
+ *    each other nor form the ABBA pattern the project's lock-ordering
+ *    contract exists to prevent.
+ *
+ *  - The predicate and the lock are ONE statement. There is no window
+ *    between "this club looked free" and "I locked it": a row returned here
+ *    was free and is now locked by this transaction until it commits.
+ *
+ * Returns the claimed club's id, or null when every candidate is already
+ * taken or being taken right now.
+ */
+export async function claimFreeBotTeam(tx: Prisma.TransactionClient, candidateIds: string[]): Promise<string | null> {
+  if (candidateIds.length === 0) return null
+  const rows = await tx.$queryRaw<{ id: string }[]>`
+    SELECT "id" FROM "Team"
+    WHERE "id" = ANY(${candidateIds})
+      AND "isBot" = true
+      AND "userId" IS NULL
+    ORDER BY "id"
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+  `
+  return rows[0]?.id ?? null
+}

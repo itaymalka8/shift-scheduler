@@ -113,3 +113,47 @@ describe("planTeamEraBackfill", () => {
     expect(planHasExactlyOneOpenEraPerTeam(plan)).toBe(true)
   })
 })
+
+describe("the shapes the initial migration must produce", () => {
+  // The migration's four INSERT statements encode exactly these rules. This
+  // asserts the rules themselves; the SQL was separately replayed against a
+  // real Postgres over the same shapes and produced the identical rows.
+  const CASES: { name: string; team: BackfillTeamInput; expected: { type: string; open: boolean }[] }[] = [
+    { name: "still a bot", team: team(), expected: [{ type: "BOT", open: true }] },
+    {
+      name: "taken over",
+      team: team({ isBot: false, userId: "user-1", userCreatedAt: USER_CREATED }),
+      expected: [
+        { type: "BOT", open: false },
+        { type: "HUMAN", open: true },
+      ],
+    },
+    {
+      name: "born human",
+      team: team({ isBot: false, createdAt: USER_CREATED, userId: "user-1", userCreatedAt: CLUB_CREATED }),
+      expected: [{ type: "HUMAN", open: true }],
+    },
+    { name: "anomaly: bot but owned", team: team({ userId: "user-1", userCreatedAt: USER_CREATED }), expected: [] },
+    { name: "anomaly: not a bot, unowned", team: team({ isBot: false }), expected: [] },
+  ]
+
+  it.each(CASES)("$name", ({ team: input, expected }) => {
+    const plan = planTeamEraBackfill([input])
+    expect(plan.eras.map((e) => ({ type: e.type, open: e.endedAt === null }))).toEqual(expected)
+  })
+
+  it("no club ever receives two open eras from the plan", () => {
+    const plan = planTeamEraBackfill(CASES.map((c, i) => ({ ...c.team, id: `team-${i}` })))
+    const openPerTeam = new Map<string, number>()
+    for (const era of plan.eras) {
+      if (era.endedAt === null) openPerTeam.set(era.teamId, (openPerTeam.get(era.teamId) ?? 0) + 1)
+    }
+    expect([...openPerTeam.values()].every((n) => n === 1)).toBe(true)
+    expect(planHasExactlyOneOpenEraPerTeam(plan)).toBe(true)
+  })
+
+  it("the two anomaly shapes are the only ones that produce no era", () => {
+    const plan = planTeamEraBackfill(CASES.map((c, i) => ({ ...c.team, id: `team-${i}` })))
+    expect(plan.unresolved).toHaveLength(2)
+  })
+})
