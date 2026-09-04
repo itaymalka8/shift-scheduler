@@ -63,6 +63,7 @@ async function main() {
 
     const targets = [
       { label: "Landing page (control)", path: "/" },
+      { label: "Hall of Fame", path: "/hall-of-fame" },
       { label: "Manager Profile", path: `/managers/${humanEra.userId}` },
       { label: "Club Trophy Cabinet", path: `/clubs/${anyTeam.id}` },
       { label: "Manager Profile (unknown id -> 404, not 500)", path: "/managers/not-a-real-user-id", expect: 404 },
