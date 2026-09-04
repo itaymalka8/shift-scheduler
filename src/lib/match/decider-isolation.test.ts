@@ -22,8 +22,8 @@ describe("financial isolation", () => {
 
   it("every money-writing call sits behind the neutral-venue guard", () => {
     // The four league-economics effects: gate revenue, hosting expense,
-    // away travel, fan fine. None may fire for a decider.
-    expect(simulate).toContain("const neutralMoney = isDecider")
+    // away travel, fan fine. None may fire for a neutral championship match.
+    expect(simulate).toContain("const neutralMoney = hasNeutralFinances(fixture.stage)")
     expect(simulate).toMatch(/if \(!neutralMoney\) \{[\s\S]*?matchRevenue[\s\S]*?matchExpense[\s\S]*?\}/)
   })
 
@@ -57,12 +57,30 @@ describe("financial isolation", () => {
 describe("neutral venue is decided by stage, not by anything mutable", () => {
   const simulate = readCode("lib", "match", "simulate.ts")
 
-  it("comes from Fixture.stage", () => {
-    expect(simulate).toContain('const isDecider = fixture.stage === "TITLE_DECIDER"')
+  it("comes from Fixture.stage, asked through the one named helper", () => {
+    // Phase 2C keyed all three behaviours off a bare equality with
+    // TITLE_DECIDER, which the Phase 2D audit called the single riskiest line
+    // in the feature: add a stage and forget to widen it, and a championship
+    // playoff match silently gets home advantage and league gate money. The
+    // question is now asked once, by name, in src/lib/match/competition.ts.
+    expect(simulate).toContain("isNeutralVenue(fixture.stage)")
+    expect(simulate).toContain("canGoToShootout(fixture.stage)")
+    expect(simulate).toContain("hasNeutralFinances(fixture.stage)")
+    // And the old brittle form is gone.
+    expect(simulate).not.toMatch(/fixture\.stage === "TITLE_DECIDER"/)
   })
 
   it("is handed to the snapshot rather than re-derived inside the engine", () => {
-    expect(simulate).toContain("neutralVenue: isDecider")
+    expect(simulate).toContain("buildMatchSnapshot(fixtureId, seed, { neutralVenue })")
+  })
+
+  it("the helper is CLOSED BY CONSTRUCTION - a future stage is neutral by default", () => {
+    const competition = readCode("lib", "match", "competition.ts")
+    // "anything that is not the league", never a list of the stages that
+    // happen to exist today.
+    expect(competition).toContain('stage !== "LEAGUE"')
+    expect(competition).not.toMatch(/stage === "TITLE_DECIDER"/)
+    expect(competition).not.toMatch(/stage === "TITLE_PLAYOFF"/)
   })
 
   it("the engine gates BOTH halves of home advantage on it", () => {

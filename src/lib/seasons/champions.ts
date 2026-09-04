@@ -22,6 +22,8 @@ import { instantBelongsToEra } from "@/lib/teams/era"
 import { resolveDivisionTitle, type TitleFixture, type TitleOutcome } from "./champion"
 import { deciderWinnerTeamId } from "./decider"
 import { loadDecidersForSeason } from "./deciders"
+import { decidePlayoff } from "./playoff-resolution"
+import { loadPlayoffsForSeason, type PlayoffState } from "./playoffs"
 
 /** One division's answer, plus everything needed to write it down or explain why it cannot be. */
 export interface DivisionTitleResolution {
@@ -46,6 +48,8 @@ export interface DivisionTitleResolution {
   decidedByFixtureId: string | null
   /** Set when the division is tied and a decider exists but has not finished. */
   awaitingDeciderFixtureId?: string | null
+  /** The multi-club playoff for this division, when one exists. */
+  playoff?: PlayoffState
 }
 
 export interface SeasonTitleResolution {
@@ -93,6 +97,9 @@ export async function resolveSeasonChampions(
   // one is resolved from its result rather than from the table that could
   // not separate them.
   const deciders = await loadDecidersForSeason(seasonId)
+  // Multi-club playoffs. A division that went to one is resolved from its
+  // rounds rather than from the table that could not separate them.
+  const playoffs = await loadPlayoffsForSeason(seasonId)
 
   const resolutions: DivisionTitleResolution[] = divisions.map((division) => {
     // The same two-part gate computeStandings and countsTowardRecord use:
@@ -125,7 +132,29 @@ export async function resolveSeasonChampions(
       return { divisionId: division.id, seasonId, outcome, decidedAt, decidedByFixtureId: null }
     }
 
-    // --- Still level. Only a decider can settle it ----------------------
+    // --- Still level ----------------------------------------------------
+    // Three or more clubs is a whole competition, not one match. If a playoff
+    // exists it is the authority; if it does not, the caller creates one.
+    if (outcome.tiedTeamIds.length > 2) {
+      const playoff = playoffs.get(division.id)
+      if (!playoff) {
+        return { divisionId: division.id, seasonId, outcome, decidedAt, decidedByFixtureId: null }
+      }
+      const decision = decidePlayoff(playoff, now)
+      if (decision.kind === "champion") {
+        return {
+          divisionId: division.id,
+          seasonId,
+          outcome: { kind: "resolved", teamId: decision.teamId, via: "decider" },
+          decidedAt: decision.decidedAt,
+          decidedByFixtureId: decision.decidedByFixtureId,
+          playoff,
+        }
+      }
+      return { divisionId: division.id, seasonId, outcome, decidedAt, decidedByFixtureId: null, playoff }
+    }
+
+    // --- Exactly two clubs. One match settles it -------------------------
     const decider = deciders.get(division.id)
     if (!decider) {
       // None created yet - the caller creates one and does not transition.

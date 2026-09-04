@@ -86,9 +86,19 @@ export interface MatchApiResponse {
    * "Championship Decider" in their fixture list days ahead - so unlike
    * anything about the result it is safe before kickoff.
    */
-  stage: "LEAGUE" | "TITLE_DECIDER"
-  /** A decider is played on neutral turf: neither club is hosting. */
+  stage: "LEAGUE" | "TITLE_DECIDER" | "TITLE_PLAYOFF"
+  /** A decider and a playoff tie are played on neutral turf: neither club is hosting. */
   neutralVenue: boolean
+  /**
+   * Which tie of a multi-club championship playoff this is, or null for every
+   * other match.
+   *
+   * Fixture metadata, not a result: the phase and round exist from the moment
+   * the round is created, and `isFinal` is "this knockout round has one tie",
+   * which is a property of the bracket rather than of anything that happened
+   * in it. Nothing here narrows who won.
+   */
+  playoff: { phase: "ROUND_ROBIN" | "KNOCKOUT"; round: number; isFinal: boolean } | null
   /**
    * The penalty shootout, when a decider needed one. Null for every league
    * match, for a decider settled inside 90 minutes, and - critically - for

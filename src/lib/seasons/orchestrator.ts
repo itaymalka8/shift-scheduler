@@ -9,6 +9,14 @@ import { countRemainingSeasonLifecyclePlayers, processSeasonPlayerLifecycle } fr
 import { activateNextSeason, ensureNextSeasonStructure, isNextSeasonStructureComplete, rescheduleIfStale } from "./next-season"
 import { persistSeasonChampions, resolveSeasonChampions } from "./champions"
 import { ensureTitleDecider } from "./deciders"
+import { decidePlayoff } from "./playoff-resolution"
+import {
+  createNextKnockoutRound,
+  createRoundRobinRound,
+  ensureChampionshipPlayoff,
+  ensureKnockoutEntered,
+  loadPlayoff,
+} from "./playoffs"
 
 /** Bot intakes handled per orchestrator run - keeps one tick bounded without ever holding a long transaction. */
 export const DEFAULT_BOT_INTAKE_BATCH = 20
@@ -29,6 +37,33 @@ export async function isSeasonReadyForOffseason(seasonId: string, now: Date = ne
   })
   if (fixtures.length === 0) return false
   return fixtures.every((f) => f.playedAt !== null && isMatchFinished(f.scheduledAt, now))
+}
+
+/**
+ * The competition label each division's draw seed is derived from.
+ *
+ * Country, season number, tier and group are fixed for a season's lifetime,
+ * so this is read once outside the transaction: it cannot change underneath
+ * the write, and keeping it out keeps the locked transaction short.
+ */
+async function loadDivisionContext(
+  seasonId: string
+): Promise<Map<string, { countryCode: string; seasonNumber: number; tier: number; group: string }>> {
+  const divisions = await prisma.division.findMany({
+    where: { seasonId },
+    select: { id: true, tier: true, group: true, season: { select: { countryCode: true, number: true } } },
+  })
+  return new Map(
+    divisions.map((d) => [
+      d.id,
+      {
+        countryCode: d.season.countryCode,
+        seasonNumber: d.season.number,
+        tier: d.tier,
+        group: d.group ?? "",
+      },
+    ])
+  )
 }
 
 /** Locks one Season row - the ordering root for every stage transition below. */
@@ -88,6 +123,10 @@ export interface OrchestratorStepSummary {
   divisionsAwaitingDecider?: number
   /** Title deciders this step created. Zero when they already existed. */
   decidersCreated?: number
+  /** Championship playoff fixtures this step created, across all divisions. */
+  playoffFixturesCreated?: number
+  /** True when this step ran the Official Sporting Draw and persisted its result. */
+  knockoutDrawPersisted?: boolean
 }
 
 /**
@@ -147,36 +186,108 @@ async function runOneStep(seasonId: string, now: Date): Promise<OrchestratorStep
       // unplayed, isSeasonReadyForOffseason is false again by itself, which
       // is what holds the season ACTIVE until it has been played out. No new
       // status, no stored "waiting" flag, nothing to get out of step.
-      const created = await prisma.$transaction(async (tx) => {
-        const locked = await lockSeason(tx, seasonId)
-        if (locked.status !== "ACTIVE" || locked.offseasonStage !== "NONE") return 0
-        if (!(await isSeasonReadyForOffseason(seasonId, now))) return 0
+      // The competition label a playoff's draw seed is derived from. Read
+      // before the transaction because it cannot change: a division's country,
+      // season number, tier and group are fixed for the season's lifetime.
+      const divisionContext = await loadDivisionContext(seasonId)
 
-        let madeCount = 0
+      const created = await prisma.$transaction(async (tx) => {
+        const empty = { deciders: 0, playoffFixtures: 0, drawPersisted: false }
+        const locked = await lockSeason(tx, seasonId)
+        if (locked.status !== "ACTIVE" || locked.offseasonStage !== "NONE") return empty
+        if (!(await isSeasonReadyForOffseason(seasonId, now))) return empty
+
+        let deciders = 0
+        let playoffFixtures = 0
+        let drawPersisted = false
+
         for (const division of champions.needsDecider) {
           const tiedTeamIds = champions.tiedTeamIdsByDivision.get(division.divisionId)
-          // Only a two-club tie can be settled by a single match. A three-way
-          // tie surviving every head-to-head criterion is not something one
-          // fixture resolves, so it is reported rather than guessed at.
-          if (!tiedTeamIds || tiedTeamIds.length !== 2) continue
-          const decider = await ensureTitleDecider(tx, {
+          if (!tiedTeamIds || tiedTeamIds.length < 2) continue
+
+          // TWO CLUBS: one neutral match settles it. Phase 2C, untouched.
+          if (tiedTeamIds.length === 2) {
+            const decider = await ensureTitleDecider(tx, { divisionId: division.divisionId, tiedTeamIds, now })
+            if (decider.created) deciders++
+            continue
+          }
+
+          // THREE OR MORE: a whole competition. Up to three neutral round
+          // robins, then a knockout - which is what makes termination
+          // guaranteed rather than hoped for.
+          const context = divisionContext.get(division.divisionId)
+          if (!context) continue
+
+          const playoff = await ensureChampionshipPlayoff(tx, {
+            seasonId,
             divisionId: division.divisionId,
-            tiedTeamIds,
-            now,
+            ...context,
           })
-          if (decider.created) madeCount++
+
+          const state = await loadPlayoff(division.divisionId)
+          if (!state || state.fixtures.length === 0) {
+            // Brand new: round 1 is the full tied field.
+            playoffFixtures += await createRoundRobinRound(tx, {
+              playoffId: playoff.id,
+              divisionId: division.divisionId,
+              round: 1,
+              teamIds: tiedTeamIds,
+              now,
+            })
+            continue
+          }
+
+          const decision = decidePlayoff(state, now)
+          if (decision.kind === "needRoundRobin") {
+            playoffFixtures += await createRoundRobinRound(tx, {
+              playoffId: playoff.id,
+              divisionId: division.divisionId,
+              round: decision.round,
+              teamIds: decision.teamIds,
+              now,
+            })
+          } else if (decision.kind === "needKnockout") {
+            const entered = await ensureKnockoutEntered(tx, {
+              playoffId: playoff.id,
+              divisionId: division.divisionId,
+              drawSeed: playoff.drawSeed,
+              entrants: decision.entrants,
+              now,
+            })
+            playoffFixtures += entered.fixturesCreated
+            drawPersisted = drawPersisted || entered.drawPersisted
+          } else if (decision.kind === "needKnockoutRound" && state.knockoutDraw) {
+            playoffFixtures += await createNextKnockoutRound(tx, {
+              playoffId: playoff.id,
+              divisionId: division.divisionId,
+              draw: state.knockoutDraw,
+              round: decision.round,
+              survivorsInBracketOrder: decision.survivorsInBracketOrder,
+              now,
+            })
+          }
+          // "waiting" and "blocked" create nothing. A blocked playoff holds
+          // the season ACTIVE and is reported rather than guessed at - an
+          // infrastructure failure, never a sporting one.
         }
-        return madeCount
+        return { deciders, playoffFixtures, drawPersisted }
       })
+
+      const parts: string[] = []
+      if (created.deciders > 0) parts.push(`${created.deciders} title decider(s) scheduled`)
+      if (created.playoffFixtures > 0) parts.push(`${created.playoffFixtures} playoff fixture(s) scheduled`)
+      if (created.drawPersisted) parts.push("championship draw made")
 
       return {
         ...base,
         detail:
-          created > 0
-            ? `season finished but ${tied} division(s) still level - ${created} title decider(s) scheduled; season stays ACTIVE until they are played`
-            : `season finished but ${tied} division(s) still level - waiting on their title decider(s)`,
+          parts.length > 0
+            ? `season finished but ${tied} division(s) still level - ${parts.join(", ")}; season stays ACTIVE until they are played`
+            : `season finished but ${tied} division(s) still level - waiting on their championship fixtures`,
         divisionsAwaitingDecider: tied,
-        decidersCreated: created,
+        decidersCreated: created.deciders,
+        playoffFixturesCreated: created.playoffFixtures,
+        knockoutDrawPersisted: created.drawPersisted,
       }
     }
 

@@ -393,6 +393,7 @@ model Season {
   teamErasStarted  TeamEra[]               @relation("TeamEraStarted")
   teamErasEnded    TeamEra[]               @relation("TeamEraEnded")
   champions        SeasonChampion[]
+  playoffs         ChampionshipPlayoff[]
 
   @@unique([countryCode, number])
 }
@@ -400,19 +401,22 @@ model Season {
 // One table/group within a tier for a given season - e.g. tier 1 has a
 // single division, tier 2 has two parallel divisions ("A"/"B").
 model Division {
-  id        String          @id @default(cuid())
+  id        String               @id @default(cuid())
   seasonId  String
-  season    Season          @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  season    Season               @relation(fields: [seasonId], references: [id], onDelete: Cascade)
   tier      Int
   group     String?
   name      String
-  createdAt DateTime        @default(now())
+  createdAt DateTime             @default(now())
   teams     DivisionTeam[]
   fixtures  Fixture[]
   // At most one - a division has one champion, ever. Enforced by
   // SeasonChampion.divisionId being @unique, which is also what makes the
   // season-end write idempotent.
   champion  SeasonChampion?
+  // At most one - a division runs one championship playoff, ever. Same
+  // reasoning, same enforcement (ChampionshipPlayoff.divisionId @unique).
+  playoff   ChampionshipPlayoff?
 
   @@unique([seasonId, tier, group])
 }
@@ -619,23 +623,54 @@ model PlayerSeasonLifecycle {
 enum FixtureStage {
   LEAGUE
   // Played only when a division's title is still level after every
-  // head-to-head criterion. At most one per division, enforced by a partial
-  // unique index (see the migration). Simulated in Phase 2C.
+  // head-to-head criterion, and only when EXACTLY TWO clubs are level. At
+  // most one per division, enforced by a partial unique index. Unchanged
+  // from Phase 2C: it never carries a playoffId.
   TITLE_DECIDER
+  // Three or more clubs level. A whole competition rather than one match -
+  // up to three neutral round-robin rounds, then a knockout - so unlike
+  // TITLE_DECIDER there are MANY of these per division, and each belongs to
+  // a ChampionshipPlayoff that says which round of which phase it is.
+  TITLE_PLAYOFF
+}
+
+// WHICH PART OF A CHAMPIONSHIP PLAYOFF A FIXTURE BELONGS TO.
+//
+// Explicit rather than inferred from the round number. Numbering the
+// knockout 4, 5, 6... after round-robin 1, 2, 3 would make "round > 3 means
+// knockout" a magic number, and the two phases have genuinely different
+// rules: the round robin is capped at three rounds and ranks a table, the
+// knockout eliminates and cannot be capped.
+enum PlayoffPhase {
+  ROUND_ROBIN
+  KNOCKOUT
 }
 
 model Fixture {
-  id                String             @id @default(cuid())
+  id                String               @id @default(cuid())
   divisionId        String
-  division          Division           @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+  division          Division             @relation(fields: [divisionId], references: [id], onDelete: Cascade)
   matchday          Int
   homeTeamId        String
-  homeTeam          Team               @relation("HomeFixtures", fields: [homeTeamId], references: [id], onDelete: Cascade)
+  homeTeam          Team                 @relation("HomeFixtures", fields: [homeTeamId], references: [id], onDelete: Cascade)
   awayTeamId        String
-  awayTeam          Team               @relation("AwayFixtures", fields: [awayTeamId], references: [id], onDelete: Cascade)
+  awayTeam          Team                 @relation("AwayFixtures", fields: [awayTeamId], references: [id], onDelete: Cascade)
   // NOT NULL with a constant default, so every fixture that already exists
   // is a league fixture by definition and the migration rewrites no rows.
-  stage             FixtureStage       @default(LEAGUE)
+  stage             FixtureStage         @default(LEAGUE)
+  // Set on TITLE_PLAYOFF fixtures and on nothing else - CHECK constraints
+  // enforce both directions. A two-club TITLE_DECIDER deliberately has no
+  // playoff: it is one match, not a competition.
+  playoffId         String?
+  playoff           ChampionshipPlayoff? @relation(fields: [playoffId], references: [id], onDelete: Restrict)
+  playoffPhase      PlayoffPhase?
+  // The round WITHIN its phase: 1..3 for ROUND_ROBIN (capped by a CHECK, so
+  // a fourth round-robin round is unstorable), 1..ceil(log2(n)) for KNOCKOUT.
+  //
+  // Deliberately NOT matchday. matchday keeps its own meaning - the index of
+  // a slot in the Mon/Wed/Sat calendar, which computeMatchdayDate is defined
+  // on - and one playoff round can span several matchdays.
+  playoffRound      Int?
   homeScore         Int?
   // PENALTY SHOOTOUT, and only that.
   //
@@ -665,7 +700,7 @@ model Fixture {
   awayStats         Json?
   scheduledAt       DateTime?
   playedAt          DateTime?
-  createdAt         DateTime           @default(now())
+  createdAt         DateTime             @default(now())
   events            MatchEvent[]
   playerStats       PlayerMatchStats[]
   // Set only on a TITLE_DECIDER that actually settled a title.
@@ -1076,4 +1111,73 @@ model SeasonChampion {
   // "This manager's honours" - joined from TeamEra by userId. The manager
   // profile and trophy cabinet both start here.
   @@index([teamEraId])
+}
+
+// THE COMPETITION THAT SETTLES A TITLE THREE OR MORE CLUBS ARE LEVEL ON.
+//
+// Deliberately NOT a copy of the matches. Fixture rows remain the canonical
+// match records and everything derivable from them is derived: which clubs
+// are involved, which round we are in, whether the playoff is finished, and
+// who is winning. This model exists for the two facts that CANNOT be derived
+// from match rows, because they are inputs to the competition rather than
+// outputs of it:
+//
+//   drawSeed      the seed of the Official Sporting Draw
+//   knockoutDraw  the realised bracket that draw produced
+//
+// Everything else was considered and rejected: `phase` is "does a KNOCKOUT
+// fixture exist", `status` is "does a SeasonChampion exist", `completedAt`
+// duplicates SeasonChampion's own timestamps, and an entrant list or a
+// standings cache would duplicate match data. A second source of truth for a
+// derivable fact can only ever disagree with the fact.
+model ChampionshipPlayoff {
+  id String @id @default(cuid())
+
+  // Denormalised from Division, for the same reason SeasonChampion.seasonId
+  // is: every consumer query starts from a season. RESTRICT because a
+  // playoff is the evidence behind a title.
+  seasonId String
+  season   Season @relation(fields: [seasonId], references: [id], onDelete: Restrict)
+
+  // THE identity and THE idempotency authority: one championship playoff per
+  // division, ever, enforced by the database rather than by a caller
+  // remembering to check.
+  divisionId String   @unique
+  division   Division @relation(fields: [divisionId], references: [id], onDelete: Restrict)
+
+  // THE OFFICIAL SPORTING DRAW'S SEED.
+  //
+  // Derived once, at creation, from the division's completed LEAGUE record -
+  // the record that produced the tie in the first place - by a COMMUTATIVE
+  // fold, so that no ordering decision of any kind enters it. See
+  // src/lib/seasons/draw.ts for the derivation and why each prohibited input
+  // (teamId order, club name, localeCompare, insertion order, current owner,
+  // runtime randomness) is absent.
+  //
+  // NOT NULL from birth rather than nullable-until-knockout: "immutable from
+  // creation" is a far stronger invariant than "immutable after a later
+  // write", and it removes a whole class of partial-write state. A playoff
+  // that never reaches the knockout simply never reads it.
+  drawSeed String
+
+  // THE REALISED BRACKET, persisted the moment the knockout is entered.
+  //
+  // The seed alone is NOT sufficient historical persistence. A future change
+  // to the RNG, the shuffle, the bye rule or the canonicalisation would
+  // silently reinterpret a bracket that was already played - so the OUTCOME
+  // of the draw is stored as the sporting fact, and the seed is kept only so
+  // that outcome can be re-verified.
+  //
+  // Null until the knockout is actually entered, written exactly once in the
+  // same transaction that creates the first knockout fixtures, and never
+  // updated. Later rounds follow this stored bracket; they never re-draw.
+  //
+  // Shape (see draw.ts): { version, entrants[], byes[], order[], rounds }
+  knockoutDraw Json?
+
+  createdAt DateTime @default(now())
+
+  fixtures Fixture[]
+
+  @@index([seasonId])
 }

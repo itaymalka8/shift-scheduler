@@ -11,6 +11,7 @@ import { buildMatchSnapshot } from "./engine/build-snapshot"
 import { generateMatchSeed, SeededRandom } from "./engine/rng"
 import { DEFAULT_GAME_BALANCE_CONFIG } from "./engine/config"
 import { rollFanIncident, fanIncidentFine } from "./engine/crowd"
+import { canGoToShootout, hasNeutralFinances, isNeutralVenue } from "./competition"
 import { runShootout } from "./shootout"
 import { buildShootoutSide, type TakerCandidate } from "./shootout-takers"
 
@@ -56,11 +57,17 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
   if (!fixture.scheduledAt || fixture.scheduledAt.getTime() > Date.now()) return
 
   const seed = fixture.matchSeed ?? generateMatchSeed()
-  // A championship decider is played on neutral turf: neither club gets the
-  // home multiplier or the home crowd. Everything else about the match -
-  // the engine, its probabilities, the events, the ratings - is identical.
-  const isDecider = fixture.stage === "TITLE_DECIDER"
-  const snapshot = await buildMatchSnapshot(fixtureId, seed, { neutralVenue: isDecider })
+  // A championship match - a two-club decider or any playoff fixture - is
+  // played on neutral turf: neither club gets the home multiplier or the home
+  // crowd. Everything else about the match (the engine, its probabilities,
+  // the events, the ratings) is identical.
+  //
+  // Asked through ./competition.ts rather than by comparing to a stage value
+  // here, so that a new championship stage cannot accidentally inherit league
+  // behaviour. See that module's header for why this used to be the riskiest
+  // line in the feature.
+  const neutralVenue = isNeutralVenue(fixture.stage)
+  const snapshot = await buildMatchSnapshot(fixtureId, seed, { neutralVenue })
   const result = simulateMatch(snapshot)
 
   // A decider cannot end level. If the 90 minutes did, the same seed that
@@ -68,7 +75,7 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
   // fan-incident roll is, so the shootout draws its own stream rather than
   // continuing the match's.
   let shootout: { home: number; away: number } | null = null
-  if (isDecider && result.homeGoals === result.awayGoals) {
+  if (canGoToShootout(fixture.stage) && result.homeGoals === result.awayGoals) {
     const candidates = await loadTakerCandidates([
       ...result.finalOnPitch.home,
       ...result.finalOnPitch.away,
@@ -109,7 +116,7 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
   // this game has yet - inventing an economy to avoid an asymmetry is a
   // bigger risk than not paying anyone. The match is still played in full
   // and still draws a crowd; the money is simply not modelled.
-  const neutralMoney = isDecider
+  const neutralMoney = hasNeutralFinances(fixture.stage)
   const revenue = neutralMoney ? { total: 0 } : calculateMatchStadiumRevenue(attendanceDetail.bySeatType)
   const expenses = neutralMoney
     ? { total: 0 }

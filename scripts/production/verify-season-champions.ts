@@ -12,6 +12,9 @@ import { createProductionClient } from "../../src/lib/production/client"
 import { printProductionBanner } from "../../src/lib/production/report"
 import { ProductionSafetyError } from "../../src/lib/production/env-guard"
 import { isMatchFinished } from "../../src/lib/match/timing"
+import { drawKnockout, drawMatchesSeed, parseKnockoutDraw } from "../../src/lib/seasons/draw"
+import { MAX_ROUND_ROBIN_ROUNDS, playoffMatchOutcome } from "../../src/lib/seasons/playoff"
+import { decidingFixtureOfRound } from "../../src/lib/seasons/playoff-resolution"
 
 interface Check {
   ok: boolean
@@ -160,11 +163,45 @@ async function main() {
     })
     record(checks, leagueShootout === 0, `LEAGUE fixtures carrying a shootout score: ${leagueShootout}`)
 
+    const playoffs = await prisma.championshipPlayoff.findMany({
+      select: {
+        id: true,
+        seasonId: true,
+        divisionId: true,
+        drawSeed: true,
+        knockoutDraw: true,
+        fixtures: {
+          select: {
+            id: true,
+            divisionId: true,
+            playoffPhase: true,
+            playoffRound: true,
+            homeTeamId: true,
+            awayTeamId: true,
+            scheduledAt: true,
+            playedAt: true,
+            homeScore: true,
+            awayScore: true,
+            homeShootoutScore: true,
+            awayShootoutScore: true,
+          },
+        },
+      },
+      orderBy: { id: "asc" },
+    })
+    const playoffFixtureById = new Map(
+      playoffs.flatMap((playoff) => playoff.fixtures.map((f) => [f.id, { playoff, fixture: f }] as const))
+    )
+
     console.info("\n--- 7. DECIDER WINNER MATCHES THE STORED CHAMPION ---")
     let mismatched = 0
     let prematureChampion = 0
     for (const c of champions) {
       if (!c.decidedByFixtureId) continue
+      // A multi-club title is decided by a playoff fixture, not a decider -
+      // section 8d verifies those. Only a champion pointing at neither is
+      // genuinely broken.
+      if (playoffFixtureById.has(c.decidedByFixtureId)) continue
       const decider = deciders.find((d) => d.id === c.decidedByFixtureId)
       if (!decider) {
         mismatched++
@@ -193,7 +230,157 @@ async function main() {
     record(checks, mismatched === 0, `champions disagreeing with their own decider: ${mismatched}`)
     record(checks, prematureChampion === 0, `champions crowned before their decider finished: ${prematureChampion}`)
 
-    console.info("\n--- 8. HISTORICAL PRESERVATION ---")
+    console.info("\n--- 8. CHAMPIONSHIP PLAYOFFS ---")
+    console.info(`  INFO  ChampionshipPlayoff rows: ${playoffs.length}`)
+
+    // Every playoff fixture must be reachable through its playoff, and every
+    // playoff-linked fixture must be a TITLE_PLAYOFF. The CHECK constraints
+    // enforce both; this proves the constraints are actually in place.
+    const [playoffStageCount, orphanStage, orphanLink, badRound] = await Promise.all([
+      prisma.fixture.count({ where: { stage: "TITLE_PLAYOFF" } }),
+      prisma.fixture.count({ where: { stage: "TITLE_PLAYOFF", playoffId: null } }),
+      prisma.fixture.count({ where: { stage: { not: "TITLE_PLAYOFF" }, playoffId: { not: null } } }),
+      prisma.fixture.count({
+        where: { stage: "TITLE_PLAYOFF", OR: [{ playoffPhase: null }, { playoffRound: null }] },
+      }),
+    ])
+    console.info(`  INFO  TITLE_PLAYOFF fixtures: ${playoffStageCount}`)
+    record(checks, orphanStage === 0, `TITLE_PLAYOFF fixtures with no playoff: ${orphanStage}`)
+    record(checks, orphanLink === 0, `non-playoff fixtures linked to a playoff: ${orphanLink}`)
+    record(checks, badRound === 0, `TITLE_PLAYOFF fixtures missing phase or round: ${badRound}`)
+
+    const overCap = await prisma.fixture.count({
+      where: { stage: "TITLE_PLAYOFF", playoffPhase: "ROUND_ROBIN", playoffRound: { gt: MAX_ROUND_ROBIN_ROUNDS } },
+    })
+    record(checks, overCap === 0, `round robin fixtures beyond round ${MAX_ROUND_ROBIN_ROUNDS}: ${overCap}`)
+
+    let selfPairing = 0
+    let duplicatePairing = 0
+    let wrongDivision = 0
+    let missingSeed = 0
+    for (const playoff of playoffs) {
+      if (!playoff.drawSeed) missingSeed++
+      const seen = new Set<string>()
+      for (const f of playoff.fixtures) {
+        if (f.divisionId !== playoff.divisionId) wrongDivision++
+        if (f.homeTeamId === f.awayTeamId) selfPairing++
+        const pair = [f.homeTeamId, f.awayTeamId].sort().join("|")
+        const key = `${f.playoffPhase}|${f.playoffRound}|${pair}`
+        if (seen.has(key)) duplicatePairing++
+        seen.add(key)
+      }
+    }
+    record(checks, missingSeed === 0, `playoffs with no draw seed: ${missingSeed}`)
+    record(checks, wrongDivision === 0, `playoff fixtures belonging to another division: ${wrongDivision}`)
+    record(checks, selfPairing === 0, `playoff fixtures pairing a club with itself: ${selfPairing}`)
+    record(checks, duplicatePairing === 0, `duplicate pairings within one playoff round: ${duplicatePairing}`)
+
+    // --- THE PERSISTED DRAW IS THE SOURCE OF TRUTH -----------------------
+    //
+    // The stored bracket is recomputed from its own seed and compared. A
+    // disagreement means either the stored draw was edited or the draw
+    // algorithm changed under a season already using it - both of which
+    // silently rewrite sporting history, so both FAIL CLOSED here rather
+    // than being repaired.
+    console.info("\n--- 8b. PERSISTED KNOCKOUT DRAW ---")
+    let unparsableDraw = 0
+    let drawSeedMismatch = 0
+    let bracketMismatch = 0
+    let knockoutWithoutDraw = 0
+    let strangerInBracket = 0
+    for (const playoff of playoffs) {
+      const knockoutFixtures = playoff.fixtures.filter((f) => f.playoffPhase === "KNOCKOUT")
+      const stored = parseKnockoutDraw(playoff.knockoutDraw)
+      if (playoff.knockoutDraw !== null && stored === null) {
+        unparsableDraw++
+        continue
+      }
+      if (!stored) {
+        if (knockoutFixtures.length > 0) knockoutWithoutDraw++
+        continue
+      }
+      if (!drawMatchesSeed(stored, playoff.drawSeed)) {
+        drawSeedMismatch++
+        continue
+      }
+      // Round 1 is the round the draw itself fixed: it must match exactly.
+      const recomputed = drawKnockout(stored.entrants, playoff.drawSeed)
+      const expectedFirst = recomputed.firstRound.pairings
+        .map((p) => [p.homeTeamId, p.awayTeamId].join(">"))
+        .sort()
+      const actualFirst = knockoutFixtures
+        .filter((f) => f.playoffRound === 1)
+        .map((f) => [f.homeTeamId, f.awayTeamId].join(">"))
+        .sort()
+      if (actualFirst.length > 0 && expectedFirst.join(",") !== actualFirst.join(",")) bracketMismatch++
+
+      const inDraw = new Set(stored.order)
+      for (const f of knockoutFixtures) {
+        if (!inDraw.has(f.homeTeamId) || !inDraw.has(f.awayTeamId)) strangerInBracket++
+      }
+    }
+    record(checks, unparsableDraw === 0, `playoffs whose stored draw could not be parsed: ${unparsableDraw}`)
+    record(checks, drawSeedMismatch === 0, `stored draws that do not match their own seed: ${drawSeedMismatch}`)
+    record(checks, bracketMismatch === 0, `knockout round 1 brackets disagreeing with the stored draw: ${bracketMismatch}`)
+    record(checks, knockoutWithoutDraw === 0, `knockout fixtures with no persisted draw: ${knockoutWithoutDraw}`)
+    record(checks, strangerInBracket === 0, `knockout fixtures involving a club outside the stored draw: ${strangerInBracket}`)
+
+    // --- Playoff results -------------------------------------------------
+    console.info("\n--- 8c. PLAYOFF RESULTS ---")
+    let unresolvedFinished = 0
+    let badPlayoffShootout = 0
+    let playoffShootoutOnNonDraw = 0
+    for (const playoff of playoffs) {
+      for (const f of playoff.fixtures) {
+        if ((f.homeShootoutScore === null) !== (f.awayShootoutScore === null)) badPlayoffShootout++
+        else if (f.homeShootoutScore !== null && f.homeShootoutScore === f.awayShootoutScore) badPlayoffShootout++
+        if (f.homeShootoutScore !== null && f.homeScore !== null && f.homeScore !== f.awayScore) {
+          playoffShootoutOnNonDraw++
+        }
+        // A finished playoff tie must have produced a winner: the whole
+        // point of the shootout is that a playoff match cannot end level.
+        if (isMatchFinished(f.scheduledAt, now) && f.playedAt && playoffMatchOutcome(f).kind !== "decided") {
+          unresolvedFinished++
+        }
+      }
+    }
+    record(checks, badPlayoffShootout === 0, `playoff ties with a half-written or level shootout: ${badPlayoffShootout}`)
+    record(checks, playoffShootoutOnNonDraw === 0, `playoff ties carrying a shootout despite a decided 90 minutes: ${playoffShootoutOnNonDraw}`)
+    record(checks, unresolvedFinished === 0, `finished playoff ties that produced no winner: ${unresolvedFinished}`)
+
+    console.info("\n--- 8d. CHAMPIONS DECIDED BY A PLAYOFF ---")
+    let playoffChampionMismatch = 0
+    let playoffChampionPremature = 0
+    let notTheDecidingRow = 0
+    for (const c of champions) {
+      if (!c.decidedByFixtureId) continue
+      const entry = playoffFixtureById.get(c.decidedByFixtureId)
+      if (!entry) continue
+      const { playoff, fixture } = entry
+      if (fixture.divisionId !== c.divisionId) playoffChampionMismatch++
+      if (fixture.scheduledAt && c.decidedAt.getTime() !== fixture.scheduledAt.getTime()) playoffChampionMismatch++
+      if (!isMatchFinished(fixture.scheduledAt, now) || !fixture.playedAt) playoffChampionPremature++
+
+      // The provenance row must be the deciding row of its own round: the
+      // last kickoff, with the fixture id used only to separate simultaneous
+      // ones. Recomputed here rather than trusted.
+      const round = playoff.fixtures.filter(
+        (f) => f.playoffPhase === fixture.playoffPhase && f.playoffRound === fixture.playoffRound
+      )
+      const deciding = decidingFixtureOfRound(round)
+      if (deciding?.id !== fixture.id) notTheDecidingRow++
+
+      // A champion crowned by a knockout must have WON that final.
+      if (fixture.playoffPhase === "KNOCKOUT") {
+        const outcome = playoffMatchOutcome(fixture)
+        if (outcome.kind !== "decided" || outcome.winnerTeamId !== c.teamId) playoffChampionMismatch++
+      }
+    }
+    record(checks, playoffChampionMismatch === 0, `champions disagreeing with their own playoff fixture: ${playoffChampionMismatch}`)
+    record(checks, playoffChampionPremature === 0, `champions crowned before their playoff round finished: ${playoffChampionPremature}`)
+    record(checks, notTheDecidingRow === 0, `champions dated from a row that is not their round's deciding fixture: ${notTheDecidingRow}`)
+
+    console.info("\n--- 9. HISTORICAL PRESERVATION ---")
     const [leagueFixtures, nonLeagueFixtures, teams, eras] = await Promise.all([
       prisma.fixture.count({ where: { stage: "LEAGUE" } }),
       prisma.fixture.count({ where: { stage: { not: "LEAGUE" } } }),

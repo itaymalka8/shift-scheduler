@@ -14,11 +14,13 @@ const mockEraFindMany = jest.fn()
 const mockChampionFindUnique = jest.fn()
 const mockChampionCreate = jest.fn()
 const mockFixtureFindMany = jest.fn()
+const mockPlayoffFindMany = jest.fn()
 
 jest.mock("@/lib/prisma", () => ({
   prisma: {
     division: { findMany: (...args: unknown[]) => mockDivisionFindMany(...args) },
     fixture: { findMany: (...args: unknown[]) => mockFixtureFindMany(...args) },
+    championshipPlayoff: { findMany: (...args: unknown[]) => mockPlayoffFindMany(...args) },
   },
 }))
 
@@ -37,6 +39,7 @@ const tx = {
 beforeEach(() => {
   jest.resetAllMocks()
   mockFixtureFindMany.mockResolvedValue([])
+  mockPlayoffFindMany.mockResolvedValue([])
   mockChampionFindUnique.mockResolvedValue(null)
   mockChampionCreate.mockResolvedValue({})
 })

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
 import { getSimulatedMinute, hasKickedOff, isMatchFinished } from "@/lib/match/timing"
+import { isNeutralVenue } from "@/lib/match/competition"
 import { computeLiveScore, computeLiveStats } from "@/lib/match/live-view"
 import { toSeatCounts } from "@/lib/stadium/config"
 import { calculateStadiumCapacity } from "@/lib/stadium/metrics"
@@ -53,6 +54,12 @@ export async function GET(_request: Request, { params }: { params: Promise<{ fix
       // in their fixture list days beforehand - so it is not a spoiler and
       // belongs in the base query, unlike anything about the result.
       stage: true,
+      // Which tie of a championship playoff this is. Same reasoning as
+      // `stage`: created with the fixture, visible in the fixture list days
+      // beforehand, and says nothing about any result.
+      playoffId: true,
+      playoffPhase: true,
+      playoffRound: true,
       homeTeamId: true,
       awayTeamId: true,
       homeTeam: {
@@ -82,6 +89,29 @@ export async function GET(_request: Request, { params }: { params: Promise<{ fix
   const finished = isMatchFinished(fixture.scheduledAt, serverNow)
   const status: "scheduled" | "live" | "finished" = !kickedOff ? "scheduled" : finished ? "finished" : "live"
 
+  // A knockout round with exactly one tie IS the final. Counting fixtures is
+  // a question about the bracket, not about results, so it is safe to answer
+  // before kickoff - and it means "Final" needs no separate stored flag that
+  // could drift out of step with the rounds actually created.
+  let playoff: { phase: "ROUND_ROBIN" | "KNOCKOUT"; round: number; isFinal: boolean } | null = null
+  if (fixture.playoffId && fixture.playoffPhase && fixture.playoffRound != null) {
+    const tiesInRound =
+      fixture.playoffPhase === "KNOCKOUT"
+        ? await prisma.fixture.count({
+            where: {
+              playoffId: fixture.playoffId,
+              playoffPhase: "KNOCKOUT",
+              playoffRound: fixture.playoffRound,
+            },
+          })
+        : 0
+    playoff = {
+      phase: fixture.playoffPhase,
+      round: fixture.playoffRound,
+      isFinal: fixture.playoffPhase === "KNOCKOUT" && tiesInRound === 1,
+    }
+  }
+
   const { stadium, ...homeTeam } = fixture.homeTeam
   const stadiumCapacity = stadium ? calculateStadiumCapacity(toSeatCounts(stadium)) : null
 
@@ -96,10 +126,13 @@ export async function GET(_request: Request, { params }: { params: Promise<{ fix
     // from "kicked off, already simulated" without exposing the result.
     simulationReady: !!fixture.playedAt,
     stage: fixture.stage,
-    // A decider is played on neutral turf, so the Match Center must not
-    // present either club as hosting. Derived from stage rather than stored,
-    // because it is the same fact said twice.
-    neutralVenue: fixture.stage === "TITLE_DECIDER",
+    // A championship match is played on neutral turf, so the Match Center
+    // must not present either club as hosting. Derived from stage rather
+    // than stored, because it is the same fact said twice - and asked
+    // through the shared helper the engine itself uses, so the Match Center
+    // can never disagree with the simulation about where a match was played.
+    neutralVenue: isNeutralVenue(fixture.stage),
+    playoff,
     homeTeam: { ...homeTeam, stadiumCapacity },
     awayTeam: fixture.awayTeam,
   }

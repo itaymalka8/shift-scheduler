@@ -7,7 +7,7 @@ import { PitchView } from "./pitch-view"
 import { EventFeed } from "./event-feed"
 import { LiveStats } from "./live-stats"
 import { PlayerStats } from "./player-stats"
-import { DeciderBanner } from "./decider-banner"
+import { CompetitionBanner } from "./competition-banner"
 import { GoalCelebration } from "./goal-celebration"
 import { Countdown } from "./countdown"
 import { useMatchClock } from "./use-match-clock"
@@ -151,7 +151,7 @@ export function MatchCenter({ fixtureId }: { fixtureId: string }) {
 
       {/* Only rendered for a TITLE_DECIDER - a no-op strip for every other
           match, so the Match Center is unchanged for the other 1,140. */}
-      <DeciderBanner data={data} />
+      <CompetitionBanner data={data} />
 
       <div className="goalx-broadcast-panel">
         {/* The hero IS the scene: the stadium fills a broadcast-shaped frame

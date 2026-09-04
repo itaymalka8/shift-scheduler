@@ -6,7 +6,7 @@
  */
 jest.mock("@/lib/prisma", () => ({
   prisma: {
-    fixture: { findUnique: jest.fn() },
+    fixture: { findUnique: jest.fn(), count: jest.fn() },
     matchEvent: { findMany: jest.fn() },
     player: { findMany: jest.fn() },
     playerMatchStats: { findMany: jest.fn() },
@@ -17,7 +17,7 @@ import { prisma } from "@/lib/prisma"
 import { GET } from "./route"
 
 const mockPrisma = prisma as unknown as {
-  fixture: { findUnique: jest.Mock }
+  fixture: { findUnique: jest.Mock; count: jest.Mock }
   matchEvent: { findMany: jest.Mock }
   player: { findMany: jest.Mock }
   playerMatchStats: { findMany: jest.Mock }
@@ -407,5 +407,138 @@ describe("GET /api/matches/[fixtureId] - player stats content", () => {
     // someone looking at it.
     expect(Object.keys(mockPrisma)).toEqual(["fixture", "matchEvent", "player", "playerMatchStats"])
     expect(Object.keys(mockPrisma.playerMatchStats)).toEqual(["findMany"])
+  })
+})
+
+/**
+ * A championship playoff tie has to introduce itself - which competition,
+ * which round, whether it is the final - and none of that may narrow who is
+ * going to win it.
+ */
+describe("GET /api/matches/[fixtureId] - championship playoff metadata", () => {
+  function stubPlayoffFixture(over: {
+    stage: string
+    playoffId?: string | null
+    playoffPhase?: "ROUND_ROBIN" | "KNOCKOUT" | null
+    playoffRound?: number | null
+    playedAt: Date | null
+  }) {
+    mockPrisma.fixture.findUnique
+      .mockResolvedValueOnce({
+        id: FIXTURE_ID,
+        scheduledAt: KICKOFF,
+        playedAt: over.playedAt,
+        stage: over.stage,
+        playoffId: over.playoffId ?? null,
+        playoffPhase: over.playoffPhase ?? null,
+        playoffRound: over.playoffRound ?? null,
+        homeTeamId: "home-1",
+        awayTeamId: "away-1",
+        homeTeam: { ...TEAM("home-1"), stadiumStyle: null, crowdStyle: null, stadium: null },
+        awayTeam: TEAM("away-1"),
+      })
+      .mockResolvedValueOnce({
+        homeScore: 1,
+        awayScore: 1,
+        homeStats: {},
+        awayStats: {},
+        homeShootoutScore: 5,
+        awayShootoutScore: 4,
+      })
+  }
+
+  async function callRaw(now: Date) {
+    jest.useFakeTimers().setSystemTime(now)
+    try {
+      const response = await GET(new Request("http://localhost/api/matches/fixture-1"), {
+        params: Promise.resolve({ fixtureId: FIXTURE_ID }),
+      })
+      return (await response.json()) as {
+        stage: string
+        neutralVenue: boolean
+        playoff: { phase: string; round: number; isFinal: boolean } | null
+        shootout: { home: number; away: number } | null
+      }
+    } finally {
+      jest.useRealTimers()
+    }
+  }
+
+  it("a round robin tie names its round, on a neutral venue, and is never a final", async () => {
+    stubPlayoffFixture({ stage: "TITLE_PLAYOFF", playoffId: "po-1", playoffPhase: "ROUND_ROBIN", playoffRound: 2, playedAt: null })
+    const body = await callRaw(minutesAfterKickoff(-30))
+
+    expect(body.playoff).toEqual({ phase: "ROUND_ROBIN", round: 2, isFinal: false })
+    expect(body.neutralVenue).toBe(true)
+    // Counting ties is a knockout-only question; a round robin never asks it.
+    expect(mockPrisma.fixture.count).not.toHaveBeenCalled()
+  })
+
+  it("a knockout round with ONE tie is the final", async () => {
+    stubPlayoffFixture({ stage: "TITLE_PLAYOFF", playoffId: "po-1", playoffPhase: "KNOCKOUT", playoffRound: 2, playedAt: null })
+    mockPrisma.fixture.count.mockResolvedValue(1)
+
+    const body = await callRaw(minutesAfterKickoff(-30))
+
+    expect(body.playoff).toEqual({ phase: "KNOCKOUT", round: 2, isFinal: true })
+    expect(mockPrisma.fixture.count).toHaveBeenCalledWith({
+      where: { playoffId: "po-1", playoffPhase: "KNOCKOUT", playoffRound: 2 },
+    })
+  })
+
+  it("a knockout round with several ties is not", async () => {
+    stubPlayoffFixture({ stage: "TITLE_PLAYOFF", playoffId: "po-1", playoffPhase: "KNOCKOUT", playoffRound: 1, playedAt: null })
+    mockPrisma.fixture.count.mockResolvedValue(2)
+
+    const body = await callRaw(minutesAfterKickoff(-30))
+    expect(body.playoff?.isFinal).toBe(false)
+  })
+
+  it("THE COMPETITION IS PUBLIC BEFORE KICKOFF, THE SHOOTOUT IS NOT", async () => {
+    stubPlayoffFixture({ stage: "TITLE_PLAYOFF", playoffId: "po-1", playoffPhase: "KNOCKOUT", playoffRound: 2, playedAt: null })
+    mockPrisma.fixture.count.mockResolvedValue(1)
+
+    const body = await callRaw(minutesAfterKickoff(-30))
+
+    expect(body.playoff).not.toBeNull()
+    expect(body.shootout).toBeNull()
+    // The result read was never even attempted.
+    expect(mockPrisma.fixture.findUnique).toHaveBeenCalledTimes(1)
+  })
+
+  it("the shootout stays hidden for the WHOLE live window of a playoff tie", async () => {
+    stubPlayoffFixture({ stage: "TITLE_PLAYOFF", playoffId: "po-1", playoffPhase: "KNOCKOUT", playoffRound: 2, playedAt: KICKOFF })
+    mockPrisma.fixture.count.mockResolvedValue(1)
+
+    const body = await callRaw(minutesAfterKickoff(9))
+
+    expect(body.shootout).toBeNull()
+    expect(mockPrisma.fixture.findUnique).toHaveBeenCalledTimes(1)
+  })
+
+  it("and appears once the tie is over", async () => {
+    stubPlayoffFixture({ stage: "TITLE_PLAYOFF", playoffId: "po-1", playoffPhase: "KNOCKOUT", playoffRound: 2, playedAt: KICKOFF })
+    mockPrisma.fixture.count.mockResolvedValue(1)
+
+    const body = await callRaw(minutesAfterKickoff(11))
+
+    expect(body.shootout).toEqual({ home: 5, away: 4 })
+  })
+
+  it("a LEAGUE match is not a playoff and is not neutral", async () => {
+    stubPlayoffFixture({ stage: "LEAGUE", playedAt: null })
+    const body = await callRaw(minutesAfterKickoff(-30))
+
+    expect(body.playoff).toBeNull()
+    expect(body.neutralVenue).toBe(false)
+    expect(mockPrisma.fixture.count).not.toHaveBeenCalled()
+  })
+
+  it("a two-club decider is neutral but carries no playoff round", async () => {
+    stubPlayoffFixture({ stage: "TITLE_DECIDER", playedAt: null })
+    const body = await callRaw(minutesAfterKickoff(-30))
+
+    expect(body.neutralVenue).toBe(true)
+    expect(body.playoff).toBeNull()
   })
 })
