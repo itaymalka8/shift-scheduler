@@ -156,32 +156,114 @@ describe("drawKnockout", () => {
     expect(positionOf(after, "zzz")).not.toBe(positionOf(before, "aaa"))
   })
 
-  it("THE LOWEST ID IS NOT FAVOURED - it draws a bye no more often than anyone else", () => {
-    const entrants = ["aaa", "bbb", "ccc", "ddd", "eee"]
-    let lowestGotBye = 0
-    const draws = 600
-    for (let i = 0; i < draws; i++) {
-      if (drawKnockout(entrants, `lowest-${i}`).byes.includes("aaa")) lowestGotBye++
-    }
-    // 3 byes over 5 clubs -> 60% expected for any single club.
-    expect(lowestGotBye).toBeGreaterThan(draws * 0.5)
-    expect(lowestGotBye).toBeLessThan(draws * 0.7)
-  })
-
-  it("NO CLUB IS FAVOURED - byes are distributed evenly across seeds", () => {
-    const entrants = ["a", "b", "c", "d", "e"]
-    const byeCount = new Map(entrants.map((id) => [id, 0]))
-    const draws = 600
-    for (let i = 0; i < draws; i++) {
-      for (const id of drawKnockout(entrants, `fair-${i}`).byes) {
-        byeCount.set(id, (byeCount.get(id) ?? 0) + 1)
+  it("THE PERMUTATION IS A FUNCTION OF (seed, n) AND NOTHING ELSE", () => {
+    // The property that actually severs teamId from the sporting outcome:
+    // seededShuffle never inspects a value, only a position. If that holds,
+    // no club can influence the draw by being who it is - the labels are
+    // carried along by a permutation chosen before they are even looked at.
+    let labelDependent = 0
+    for (let s = 0; s < 2000; s++) {
+      for (const n of [3, 4, 5, 6, 7]) {
+        const indices = Array.from({ length: n }, (_, k) => k)
+        const permutation = seededShuffle(indices, `perm-${s}`)
+        // Deliberately NOT sorted, and deliberately not related to the ranks.
+        const labels = indices.map((k) => `Z${(n * 31 - k * 7) % 97}#${k}`)
+        const shuffled = seededShuffle(labels, `perm-${s}`)
+        for (let position = 0; position < n; position++) {
+          if (shuffled[position] !== labels[permutation[position]]) labelDependent++
+        }
       }
     }
-    // 3 byes per draw over 5 clubs: each club should get ~60% of draws.
-    const expected = (draws * 3) / entrants.length
-    for (const count of byeCount.values()) {
-      expect(count).toBeGreaterThan(expected * 0.8)
-      expect(count).toBeLessThan(expected * 1.2)
+    expect(labelDependent).toBe(0)
+  })
+
+  it("EXACT: every index draw is uniform to within one value of the 2^32 grid", () => {
+    // Not sampled - COMPUTED. rng.int(0, i) is monotone in the underlying
+    // 2^32 output grid of next(), so binary search finds the exact bucket
+    // boundaries and every one of the 4294967296 possible draws is
+    // accounted for. This is the only place a Fisher-Yates shuffle can
+    // acquire bias, so it is bounded here rather than argued about.
+    const TWO32 = 4294967296
+    const indexFor = (k: number, max: number) => Math.floor((k / TWO32) * (max + 1 - Number.EPSILON))
+
+    for (let max = 1; max <= 19; max++) {
+      const firstK: number[] = []
+      for (let m = 0; m <= max + 1; m++) {
+        let lo = 0
+        let hi = TWO32
+        while (lo < hi) {
+          const mid = Math.floor((lo + hi) / 2)
+          if (indexFor(mid, max) >= m) hi = mid
+          else lo = mid + 1
+        }
+        firstK.push(lo)
+      }
+      const sizes = Array.from({ length: max + 1 }, (_, m) => firstK[m + 1] - firstK[m])
+
+      // Every draw is accounted for, and no bucket is empty.
+      expect(sizes.reduce((a, b) => a + b, 0)).toBe(TWO32)
+      expect(Math.min(...sizes)).toBeGreaterThan(0)
+      // As equal as a 2^32 grid can be split into (max + 1) parts.
+      expect(Math.max(...sizes) - Math.min(...sizes)).toBeLessThanOrEqual(2)
+      const mean = TWO32 / sizes.length
+      expect((Math.max(...sizes) - Math.min(...sizes)) / mean).toBeLessThan(1e-8)
+    }
+  })
+
+  describe("no canonical rank is favoured", () => {
+    // Replaces a loose 600-draw eyeball with a bounded statistical test over
+    // a FIXED, deterministic seed sequence - so this either passes forever or
+    // fails forever; it can never flake.
+    //
+    // Under a uniform draw, a club's bye count is Binomial(N, B/n), so the
+    // count's standard deviation is sqrt(N * p * (1 - p)). Four sigma is the
+    // bound: comfortably wider than sampling noise, far narrower than any
+    // real bias would be.
+    const TRIALS = 30000
+    const SIGMA_BOUND = 4
+
+    function draws(n: number) {
+      // Canonical order is exactly lexical teamId order, so index === rank.
+      const entrants = Array.from({ length: n }, (_, k) => `t${String(k).padStart(3, "0")}`)
+      const byes = new Array<number>(n).fill(0)
+      const positions = Array.from({ length: n }, () => new Array<number>(n).fill(0))
+      for (let i = 0; i < TRIALS; i++) {
+        const draw = drawKnockout(entrants, `IL-S1-T1A-${(i * 2654435761) >>> 0}`)
+        for (const id of draw.byes) byes[entrants.indexOf(id)]++
+        draw.order.forEach((id, position) => positions[entrants.indexOf(id)][position]++)
+      }
+      return { entrants, byes, positions, byeSlots: nextPowerOfTwo(n) - n }
+    }
+
+    for (const n of [3, 5, 6]) {
+      it(`n=${n}: a club's BYE probability does not depend on its lexical rank`, () => {
+        const { byes, byeSlots } = draws(n)
+        const p = byeSlots / n
+        const expected = TRIALS * p
+        const sigma = Math.sqrt(TRIALS * p * (1 - p))
+        // Every bye is handed out, every time - nothing is lost or invented.
+        expect(byes.reduce((a, b) => a + b, 0)).toBe(TRIALS * byeSlots)
+        byes.forEach((count, rank) => {
+          const z = Math.abs(count - expected) / sigma
+          // rank is named so a failure says WHICH rank is favoured.
+          expect({ rank, z: z < SIGMA_BOUND }).toEqual({ rank, z: true })
+        })
+      })
+
+      it(`n=${n}: every club reaches every bracket position equally often`, () => {
+        const { positions } = draws(n)
+        const p = 1 / n
+        const expected = TRIALS * p
+        const sigma = Math.sqrt(TRIALS * p * (1 - p))
+        positions.forEach((row, rank) => {
+          // A club occupies exactly one position per draw.
+          expect(row.reduce((a, b) => a + b, 0)).toBe(TRIALS)
+          row.forEach((count, position) => {
+            const z = Math.abs(count - expected) / sigma
+            expect({ rank, position, z: z < SIGMA_BOUND }).toEqual({ rank, position, z: true })
+          })
+        })
+      })
     }
   })
 

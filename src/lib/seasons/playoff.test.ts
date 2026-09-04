@@ -54,22 +54,42 @@ describe("playoffMatchOutcome", () => {
 })
 
 describe("3 / 2 / 1 / 0 points", () => {
-  it("awards 3 and 0 for a win inside the 90", () => {
-    const t = buildPlayoffTable(["A", "B"], [m("A", "B", 2, 0)])
-    expect(row(t, "A").points).toBe(3)
-    expect(row(t, "B").points).toBe(0)
+  // All four ways a playoff match can end, each asserting BOTH clubs and the
+  // total. Stated as a table so the approved 3/2/1/0 rule is readable as one
+  // block rather than inferred from test names.
+  const CASES: { label: string; fixture: PlayoffFixture; home: number; away: number }[] = [
+    { label: "90-minute HOME win (2-0)", fixture: m("HOME", "AWAY", 2, 0), home: 3, away: 0 },
+    { label: "90-minute AWAY win (0-2)", fixture: m("HOME", "AWAY", 0, 2), home: 0, away: 3 },
+    { label: "level 90, HOME wins the shootout (1-1, 5-4)", fixture: m("HOME", "AWAY", 1, 1, 5, 4), home: 2, away: 1 },
+    { label: "level 90, AWAY wins the shootout (1-1, 4-5)", fixture: m("HOME", "AWAY", 1, 1, 4, 5), home: 1, away: 2 },
+  ]
+
+  for (const { label, fixture, home, away } of CASES) {
+    it(`${label} -> HOME ${home}, AWAY ${away}`, () => {
+      const t = buildPlayoffTable(["HOME", "AWAY"], [fixture])
+      expect(row(t, "HOME").points).toBe(home)
+      expect(row(t, "AWAY").points).toBe(away)
+    })
+  }
+
+  it("EVERY completed match distributes exactly 3 table points - 3+0 or 2+1, never 3+1", () => {
+    for (const { label, fixture } of CASES) {
+      const t = buildPlayoffTable(["HOME", "AWAY"], [fixture])
+      const total = row(t, "HOME").points + row(t, "AWAY").points
+      const split = [row(t, "HOME").points, row(t, "AWAY").points].sort((a, b) => b - a)
+      // Named in the assertion so a failure says WHICH case broke the rule.
+      expect({ label, total }).toEqual({ label, total: 3 })
+      expect({ label, split }).toEqual({ label, split: total === 3 && split[0] === 3 ? [3, 0] : [2, 1] })
+    }
   })
 
-  it("awards 2 to the shootout winner and 1 to the shootout loser", () => {
-    const t = buildPlayoffTable(["A", "B"], [m("A", "B", 1, 1, 5, 4)])
-    expect(row(t, "A").points).toBe(2)
-    expect(row(t, "B").points).toBe(1)
-  })
-
-  it("distributes exactly 3 points per match either way - no distortion", () => {
-    for (const fixture of [m("A", "B", 2, 0), m("A", "B", 1, 1, 5, 4), m("A", "B", 0, 3)]) {
+  it("an unresolved match distributes NO points at all", () => {
+    // The one legitimate exception to "3 points per match": a match that has
+    // no usable result is not a completed match and contributes nothing.
+    for (const fixture of [m("A", "B", 1, 1), m("A", "B", null, null), m("A", "B", 0, 0, 4, 4)]) {
       const t = buildPlayoffTable(["A", "B"], [fixture])
-      expect(row(t, "A").points + row(t, "B").points).toBe(3)
+      expect(row(t, "A").points + row(t, "B").points).toBe(0)
+      expect(row(t, "A").played + row(t, "B").played).toBe(0)
     }
   })
 
