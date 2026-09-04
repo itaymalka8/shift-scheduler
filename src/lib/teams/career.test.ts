@@ -14,7 +14,6 @@ import { computeManagerRecord, fixtureBelongsToEra, type EraWindow, type Fixture
 
 const TEAM_A = "team-a"
 const TEAM_B = "team-b"
-const USER = "user-1"
 
 const at = (iso: string) => new Date(iso)
 /** Finished by the time we measure - every fixture below is in the past. */
