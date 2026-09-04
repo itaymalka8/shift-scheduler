@@ -23,6 +23,7 @@ on:
           - prod:eras:verify
           - prod:verify:player-stats
           - prod:champions:verify
+          - prod:routes:check
           - prod:render:autodeploy:off
           - prod:backup:create
           - prod:backup:prune:execute
