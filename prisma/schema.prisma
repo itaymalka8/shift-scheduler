@@ -318,7 +318,7 @@ model StadiumConstructionJob {
 model FinancialTransaction {
   id          String   @id @default(cuid())
   teamId      String
-  team        Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  team        Team     @relation(fields: [teamId], references: [id], onDelete: Restrict)
   type        String
   amount      Int
   description String
@@ -649,12 +649,12 @@ enum PlayoffPhase {
 model Fixture {
   id                String               @id @default(cuid())
   divisionId        String
-  division          Division             @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+  division          Division             @relation(fields: [divisionId], references: [id], onDelete: Restrict)
   matchday          Int
   homeTeamId        String
-  homeTeam          Team                 @relation("HomeFixtures", fields: [homeTeamId], references: [id], onDelete: Cascade)
+  homeTeam          Team                 @relation("HomeFixtures", fields: [homeTeamId], references: [id], onDelete: Restrict)
   awayTeamId        String
-  awayTeam          Team                 @relation("AwayFixtures", fields: [awayTeamId], references: [id], onDelete: Cascade)
+  awayTeam          Team                 @relation("AwayFixtures", fields: [awayTeamId], references: [id], onDelete: Restrict)
   // NOT NULL with a constant default, so every fixture that already exists
   // is a league fixture by definition and the migration rewrites no rows.
   stage             FixtureStage         @default(LEAGUE)
@@ -745,7 +745,7 @@ model PlayerMatchStats {
   fixtureId         String
   fixture           Fixture  @relation(fields: [fixtureId], references: [id], onDelete: Cascade)
   playerId          String
-  player            Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  player            Player   @relation(fields: [playerId], references: [id], onDelete: Restrict)
   teamId            String
   minutesPlayed     Int      @default(0)
   goals             Int      @default(0)
@@ -780,7 +780,7 @@ model MatchEvent {
   fixture           Fixture  @relation(fields: [fixtureId], references: [id], onDelete: Cascade)
   minute            Int
   teamId            String
-  team              Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  team              Team     @relation(fields: [teamId], references: [id], onDelete: Restrict)
   type              String   @default("goal")
   playerId          String?
   secondaryPlayerId String?
