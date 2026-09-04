@@ -224,7 +224,9 @@ async function runOneStep(seasonId: string, now: Date): Promise<OrchestratorStep
             ...context,
           })
 
-          const state = await loadPlayoff(division.divisionId)
+          // Read THROUGH the transaction: on the tick that creates the
+          // playoff, its row is not visible on any other connection yet.
+          const state = await loadPlayoff(division.divisionId, tx)
           if (!state || state.fixtures.length === 0) {
             // Brand new: round 1 is the full tied field.
             playoffFixtures += await createRoundRobinRound(tx, {

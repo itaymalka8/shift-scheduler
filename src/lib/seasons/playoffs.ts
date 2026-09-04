@@ -89,9 +89,18 @@ function toState(row: {
   }
 }
 
-/** The whole playoff for a division, or null if it has never had one. */
-export async function loadPlayoff(divisionId: string): Promise<PlayoffState | null> {
-  const row = await prisma.championshipPlayoff.findUnique({
+/**
+ * The whole playoff for a division, or null if it has never had one.
+ *
+ * Takes an optional client so a caller already inside a transaction can read
+ * through it: the orchestrator creates the playoff and then immediately loads
+ * it, and a read on another connection would not see its own uncommitted row.
+ */
+export async function loadPlayoff(
+  divisionId: string,
+  client: Prisma.TransactionClient | typeof prisma = prisma
+): Promise<PlayoffState | null> {
+  const row = await client.championshipPlayoff.findUnique({
     where: { divisionId },
     select: { id: true, divisionId: true, drawSeed: true, knockoutDraw: true, fixtures: { select: FIXTURE_SELECT } },
   })
