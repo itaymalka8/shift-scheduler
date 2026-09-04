@@ -13,10 +13,12 @@ const mockDivisionFindMany = jest.fn()
 const mockEraFindMany = jest.fn()
 const mockChampionFindUnique = jest.fn()
 const mockChampionCreate = jest.fn()
+const mockFixtureFindMany = jest.fn()
 
 jest.mock("@/lib/prisma", () => ({
   prisma: {
     division: { findMany: (...args: unknown[]) => mockDivisionFindMany(...args) },
+    fixture: { findMany: (...args: unknown[]) => mockFixtureFindMany(...args) },
   },
 }))
 
@@ -34,6 +36,7 @@ const tx = {
 
 beforeEach(() => {
   jest.resetAllMocks()
+  mockFixtureFindMany.mockResolvedValue([])
   mockChampionFindUnique.mockResolvedValue(null)
   mockChampionCreate.mockResolvedValue({})
 })
@@ -210,8 +213,10 @@ describe("persistSeasonChampions", () => {
         seasonId: "s1",
         outcome: { kind: "resolved" as const, teamId: "A", via: "table" as const },
         decidedAt: LAST_KICKOFF,
+        decidedByFixtureId: null,
       },
     ],
+    tiedTeamIdsByDivision: new Map<string, string[]>(),
   }
 
   it("writes one champion row, carrying the era snapshot and the deciding kickoff", async () => {
@@ -228,10 +233,11 @@ describe("persistSeasonChampions", () => {
         teamId: "A",
         teamEraId: "era-human",
         decidedAt: LAST_KICKOFF,
+        decidedByFixtureId: null,
       },
     })
     expect(rows).toEqual([
-      { divisionId: "d1", teamId: "A", teamEraId: "era-human", decidedAt: LAST_KICKOFF, created: true },
+      { divisionId: "d1", teamId: "A", teamEraId: "era-human", decidedAt: LAST_KICKOFF, decidedByFixtureId: null, created: true },
     ])
   })
 
@@ -263,6 +269,7 @@ describe("persistSeasonChampions", () => {
             seasonId: "s1",
             outcome: { kind: "decider", tiedTeamIds: ["A", "B"] },
             decidedAt: LAST_KICKOFF,
+            decidedByFixtureId: null,
           },
         ],
         divisions: [
@@ -271,8 +278,10 @@ describe("persistSeasonChampions", () => {
             seasonId: "s1",
             outcome: { kind: "decider", tiedTeamIds: ["A", "B"] },
             decidedAt: LAST_KICKOFF,
+            decidedByFixtureId: null,
           },
         ],
+        tiedTeamIdsByDivision: new Map([["d1", ["A", "B"]]]),
       })
     ).rejects.toThrow(/still tied/)
     expect(mockChampionCreate).not.toHaveBeenCalled()
@@ -284,9 +293,133 @@ describe("persistSeasonChampions", () => {
         seasonId: "s1",
         fullyResolved: false,
         needsDecider: [],
-        divisions: [{ divisionId: "d1", seasonId: "s1", outcome: { kind: "empty" }, decidedAt: null }],
+        divisions: [{ divisionId: "d1", seasonId: "s1", outcome: { kind: "empty" }, decidedAt: null, decidedByFixtureId: null }],
+        tiedTeamIdsByDivision: new Map<string, string[]>(),
       })
     ).rejects.toThrow()
     expect(mockChampionCreate).not.toHaveBeenCalled()
+  })
+})
+
+describe("a division settled by a title decider", () => {
+  const DECIDER_KICKOFF = finished(0)
+  const tiedFixtures = [
+    { homeTeamId: "A", awayTeamId: "B", homeScore: 1, awayScore: 1, scheduledAt: EARLIER_KICKOFF },
+    { homeTeamId: "B", awayTeamId: "A", homeScore: 2, awayScore: 2, scheduledAt: LAST_KICKOFF },
+  ]
+
+  function decider(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "dec-1",
+      divisionId: "d1",
+      homeTeamId: "A",
+      awayTeamId: "B",
+      scheduledAt: DECIDER_KICKOFF,
+      playedAt: new Date(),
+      homeScore: 2,
+      awayScore: 1,
+      homeShootoutScore: null,
+      awayShootoutScore: null,
+      ...overrides,
+    }
+  }
+
+  beforeEach(() => {
+    mockDivisionFindMany.mockResolvedValue([division({ fixtures: tiedFixtures })])
+  })
+
+  it("the 90-minute winner becomes champion, dated from the DECIDER's kickoff", async () => {
+    mockFixtureFindMany.mockResolvedValue([decider()])
+    const result = await resolveSeasonChampions("s1", NOW)
+
+    expect(result.fullyResolved).toBe(true)
+    expect(result.divisions[0].outcome).toEqual({ kind: "resolved", teamId: "A", via: "decider" })
+    // Not the last league matchday - the decider IS the title-deciding match.
+    expect(result.divisions[0].decidedAt).toEqual(DECIDER_KICKOFF)
+    expect(result.divisions[0].decidedByFixtureId).toBe("dec-1")
+  })
+
+  it("a drawn decider is settled by the shootout", async () => {
+    mockFixtureFindMany.mockResolvedValue([
+      decider({ homeScore: 1, awayScore: 1, homeShootoutScore: 3, awayShootoutScore: 4 }),
+    ])
+    const result = await resolveSeasonChampions("s1", NOW)
+    expect(result.divisions[0].outcome).toEqual({ kind: "resolved", teamId: "B", via: "decider" })
+  })
+
+  it("WAITS while the decider has not kicked off - no champion, not resolved", async () => {
+    const future = new Date(NOW.getTime() + 86_400_000)
+    mockFixtureFindMany.mockResolvedValue([decider({ scheduledAt: future, playedAt: null, homeScore: null, awayScore: null })])
+    const result = await resolveSeasonChampions("s1", NOW)
+    expect(result.fullyResolved).toBe(false)
+    expect(result.divisions[0].awaitingDeciderFixtureId).toBe("dec-1")
+  })
+
+  it("WAITS while the decider is LIVE, even though its score is already stored", async () => {
+    // The engine writes the result at kickoff, so this decider already has
+    // 2-1 in the database while the match is still on screen. Crowning a
+    // champion from it would announce the result to someone watching.
+    const live = new Date(NOW.getTime() - LIVE_WINDOW_MS / 2)
+    mockFixtureFindMany.mockResolvedValue([decider({ scheduledAt: live })])
+    const result = await resolveSeasonChampions("s1", NOW)
+    expect(result.fullyResolved).toBe(false)
+    expect(result.divisions[0].outcome.kind).toBe("decider")
+    expect(result.divisions[0].awaitingDeciderFixtureId).toBe("dec-1")
+  })
+
+  it("WAITS for a decider whose live window elapsed but which was never simulated", async () => {
+    mockFixtureFindMany.mockResolvedValue([decider({ playedAt: null, homeScore: null, awayScore: null })])
+    const result = await resolveSeasonChampions("s1", NOW)
+    expect(result.fullyResolved).toBe(false)
+  })
+
+  it("FAILS CLOSED on a finished decider that is drawn with no shootout", async () => {
+    mockFixtureFindMany.mockResolvedValue([decider({ homeScore: 1, awayScore: 1 })])
+    const result = await resolveSeasonChampions("s1", NOW)
+    expect(result.fullyResolved).toBe(false)
+    expect(result.divisions[0].awaitingDeciderFixtureId).toBe("dec-1")
+  })
+
+  it("reports the tied clubs so the caller can create the decider without re-resolving", async () => {
+    mockFixtureFindMany.mockResolvedValue([])
+    const result = await resolveSeasonChampions("s1", NOW)
+    expect(result.tiedTeamIdsByDivision.get("d1")).toEqual(["A", "B"])
+    expect(result.needsDecider).toHaveLength(1)
+  })
+
+  it("persists decidedByFixtureId so a trophy cabinet can say how it was won", async () => {
+    mockFixtureFindMany.mockResolvedValue([decider()])
+    mockEraFindMany.mockResolvedValue([
+      { id: "era-human", teamId: "A", startedAt: new Date("2026-01-01T00:00:00Z"), endedAt: null },
+    ])
+    const resolution = await resolveSeasonChampions("s1", NOW)
+    await persistSeasonChampions(tx, resolution)
+    expect(mockChampionCreate.mock.calls[0][0]).toMatchObject({
+      data: { teamId: "A", decidedAt: DECIDER_KICKOFF, decidedByFixtureId: "dec-1" },
+    })
+  })
+
+  it("HUMAN TAKEOVER BEFORE THE DECIDER receives the manager title", async () => {
+    mockFixtureFindMany.mockResolvedValue([decider()])
+    const takeover = new Date(DECIDER_KICKOFF.getTime() - 3600_000)
+    mockEraFindMany.mockResolvedValue([
+      { id: "era-bot", teamId: "A", startedAt: new Date("2026-01-01T00:00:00Z"), endedAt: takeover },
+      { id: "era-human", teamId: "A", startedAt: takeover, endedAt: null },
+    ])
+    const resolution = await resolveSeasonChampions("s1", NOW)
+    await persistSeasonChampions(tx, resolution)
+    expect(mockChampionCreate.mock.calls[0][0]).toMatchObject({ data: { teamEraId: "era-human" } })
+  })
+
+  it("HUMAN TAKEOVER AFTER THE DECIDER does not - the bot era keeps it", async () => {
+    mockFixtureFindMany.mockResolvedValue([decider()])
+    const takeover = new Date(DECIDER_KICKOFF.getTime() + 3600_000)
+    mockEraFindMany.mockResolvedValue([
+      { id: "era-bot", teamId: "A", startedAt: new Date("2026-01-01T00:00:00Z"), endedAt: takeover },
+      { id: "era-human", teamId: "A", startedAt: takeover, endedAt: null },
+    ])
+    const resolution = await resolveSeasonChampions("s1", NOW)
+    await persistSeasonChampions(tx, resolution)
+    expect(mockChampionCreate.mock.calls[0][0]).toMatchObject({ data: { teamEraId: "era-bot" } })
   })
 })

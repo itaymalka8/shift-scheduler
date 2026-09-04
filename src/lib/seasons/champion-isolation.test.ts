@@ -64,9 +64,28 @@ describe("title attribution uses eras, never current ownership", () => {
 
   it("attribution is dated from scheduledAt, never playedAt", () => {
     const source = read("lib", "seasons", "champions.ts")
-    expect(source).toContain("scheduledAt")
-    // playedAt may be named in prose, but never read as a value.
-    expect(source).not.toMatch(/playedAt:\s*true|\.playedAt\b/)
+
+    // playedAt IS read - as a readiness check, exactly as countsTowardRecord
+    // reads it: a match whose live window has elapsed but which the
+    // scheduler never simulated has no result to crown anyone with. What it
+    // must never be is the attribution INSTANT, so the rule asserted here is
+    // that decidedAt is only ever assigned from a scheduledAt.
+    const assignments = [...source.matchAll(/decidedAt:\s*([^,\n]+)/g)].map((m) => m[1].trim())
+    expect(assignments.length).toBeGreaterThan(0)
+    for (const value of assignments) {
+      expect(value).not.toMatch(/playedAt/)
+    }
+    expect(source).toContain("decider.scheduledAt")
+    expect(source).not.toMatch(/decidedAt\s*=\s*[^=]*playedAt/)
+  })
+
+  it("a decider only settles a title once it is genuinely finished", () => {
+    const source = read("lib", "seasons", "champions.ts")
+    // Both halves of the gate: the live window has played out AND a result
+    // was actually stored. Either alone would crown a champion from a match
+    // still on screen, or from one that was never simulated.
+    expect(source).toContain("isMatchFinished(decider.scheduledAt, now)")
+    expect(source).toContain("decider.playedAt")
   })
 })
 

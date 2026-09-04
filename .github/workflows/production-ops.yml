@@ -21,6 +21,7 @@ on:
           - prod:eras:classify
           - prod:eras:verify
           - prod:verify:player-stats
+          - prod:champions:verify
           - prod:render:autodeploy:off
           - prod:deploy:safe
 

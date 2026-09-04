@@ -8,6 +8,7 @@ import { SeasonLifecycleError } from "./errors"
 import { countRemainingSeasonLifecyclePlayers, processSeasonPlayerLifecycle } from "./player-lifecycle"
 import { activateNextSeason, ensureNextSeasonStructure, isNextSeasonStructureComplete, rescheduleIfStale } from "./next-season"
 import { persistSeasonChampions, resolveSeasonChampions } from "./champions"
+import { ensureTitleDecider } from "./deciders"
 
 /** Bot intakes handled per orchestrator run - keeps one tick bounded without ever holding a long transaction. */
 export const DEFAULT_BOT_INTAKE_BATCH = 20
@@ -85,6 +86,8 @@ export interface OrchestratorStepSummary {
   championsPersisted?: number
   /** Divisions still level after every head-to-head criterion, and therefore awaiting a decider. */
   divisionsAwaitingDecider?: number
+  /** Title deciders this step created. Zero when they already existed. */
+  decidersCreated?: number
 }
 
 /**
@@ -134,13 +137,46 @@ async function runOneStep(seasonId: string, now: Date): Promise<OrchestratorStep
     // offseason starting on top of an undecided title.
     if (!champions.fullyResolved) {
       const tied = champions.needsDecider.length
+      if (tied === 0) {
+        return { ...base, detail: "season finished but its champions could not be resolved from the data" }
+      }
+
+      // A tied division needs one more match played, so create it - inside
+      // the SAME Season lock every stage transition uses, and never
+      // transition the season here. Once the decider exists and is
+      // unplayed, isSeasonReadyForOffseason is false again by itself, which
+      // is what holds the season ACTIVE until it has been played out. No new
+      // status, no stored "waiting" flag, nothing to get out of step.
+      const created = await prisma.$transaction(async (tx) => {
+        const locked = await lockSeason(tx, seasonId)
+        if (locked.status !== "ACTIVE" || locked.offseasonStage !== "NONE") return 0
+        if (!(await isSeasonReadyForOffseason(seasonId, now))) return 0
+
+        let madeCount = 0
+        for (const division of champions.needsDecider) {
+          const tiedTeamIds = champions.tiedTeamIdsByDivision.get(division.divisionId)
+          // Only a two-club tie can be settled by a single match. A three-way
+          // tie surviving every head-to-head criterion is not something one
+          // fixture resolves, so it is reported rather than guessed at.
+          if (!tiedTeamIds || tiedTeamIds.length !== 2) continue
+          const decider = await ensureTitleDecider(tx, {
+            divisionId: division.divisionId,
+            tiedTeamIds,
+            now,
+          })
+          if (decider.created) madeCount++
+        }
+        return madeCount
+      })
+
       return {
         ...base,
         detail:
-          tied > 0
-            ? `season finished but ${tied} division(s) still level after head-to-head - a title decider is required (Phase 2C)`
-            : "season finished but its champions could not be resolved from the data",
+          created > 0
+            ? `season finished but ${tied} division(s) still level - ${created} title decider(s) scheduled; season stays ACTIVE until they are played`
+            : `season finished but ${tied} division(s) still level - waiting on their title decider(s)`,
         divisionsAwaitingDecider: tied,
+        decidersCreated: created,
       }
     }
 

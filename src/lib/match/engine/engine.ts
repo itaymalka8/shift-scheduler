@@ -177,6 +177,22 @@ export interface EngineResult {
   homeStats: EngineTeamStats
   awayStats: EngineTeamStats
   playerStats: EnginePlayerStats[]
+  /**
+   * Who was actually on the pitch at the final whistle, per side, in
+   * formation-slot order.
+   *
+   * Purely additive OUTPUT - it changes no probability and consumes no
+   * random draw, so a given seed and snapshot still produce the identical
+   * match. It exists because a penalty shootout needs the eleven who
+   * finished the game, and that cannot be recovered afterwards from
+   * PlayerMatchStats: a substituted player and one still on at 90 both have
+   * minutesPlayed > 0, so minutes alone would put a player who came off in
+   * the 60th minute on the spot. The engine tracks this exactly; reporting
+   * it is better than approximating it.
+   *
+   * Players sent off are excluded - they cannot take a penalty.
+   */
+  finalOnPitch: { home: string[]; away: string[] }
 }
 
 // --- Internal per-side state ---------------------------------------------------
@@ -330,7 +346,11 @@ export function simulateMatch(
   const contextFor = (side: SideState, minute: number): EffectiveContext => {
     let multiplier = side.momentum.multiplier()
 
-    if (side.isHome) {
+    // `isHome` alone is a DATABASE role. It only means "playing at home",
+    // and therefore only earns home advantage, when the match is actually
+    // at someone's ground. A championship decider is played on neutral
+    // turf, so neither side gets either half of it.
+    if (side.isHome && !snapshot.neutralVenue) {
       multiplier *= config.homeAdvantage
       multiplier *= calculateCrowdEffect(
         { minute, homeGoals, awayGoals },
@@ -907,6 +927,11 @@ export function simulateMatch(
     s.rating = calculateMatchRating(s, s.teamId === home.snapshot.teamId ? homeGoals : awayGoals, s.teamId === home.snapshot.teamId ? awayGoals : homeGoals)
   }
 
+  // Read off the state the engine already maintained all match - no extra
+  // computation, no random draw, and therefore no effect on the result.
+  const stillOn = (side: SideState) =>
+    side.onPitch.filter((p) => !p.sentOff).map((p) => p.snapshot.id)
+
   return {
     homeGoals,
     awayGoals,
@@ -914,6 +939,7 @@ export function simulateMatch(
     homeStats: home.stats,
     awayStats: away.stats,
     playerStats: allStats,
+    finalOnPitch: { home: stillOn(home), away: stillOn(away) },
   }
 }
 

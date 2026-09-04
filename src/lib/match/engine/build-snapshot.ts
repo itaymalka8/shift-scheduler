@@ -63,7 +63,16 @@ export async function buildTeamSnapshot(teamId: string): Promise<SnapshotTeam> {
  * because it's built server-side from the database, a client can never
  * inject its own ratings, lineup, or result.
  */
-export async function buildMatchSnapshot(fixtureId: string, seed: string): Promise<MatchSnapshot> {
+export interface SnapshotOptions {
+  /** True only for a championship decider - see MatchSnapshot.neutralVenue. */
+  neutralVenue?: boolean
+}
+
+export async function buildMatchSnapshot(
+  fixtureId: string,
+  seed: string,
+  options: SnapshotOptions = {}
+): Promise<MatchSnapshot> {
   const fixture = await prisma.fixture.findUniqueOrThrow({ where: { id: fixtureId } })
   const [home, away] = await Promise.all([
     buildTeamSnapshot(fixture.homeTeamId),
@@ -90,5 +99,8 @@ export async function buildMatchSnapshot(fixtureId: string, seed: string): Promi
     attendance: attendance.total,
     stadiumCapacity: capacity,
     fanType: homeTeam.crowdStyle === "ultras" ? "ultras" : "calm",
+    // Absent/false for every league fixture, so their snapshots - and
+    // therefore their simulations - are unchanged.
+    neutralVenue: options.neutralVenue ?? false,
   }
 }

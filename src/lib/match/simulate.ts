@@ -11,10 +11,35 @@ import { buildMatchSnapshot } from "./engine/build-snapshot"
 import { generateMatchSeed, SeededRandom } from "./engine/rng"
 import { DEFAULT_GAME_BALANCE_CONFIG } from "./engine/config"
 import { rollFanIncident, fanIncidentFine } from "./engine/crowd"
+import { runShootout } from "./shootout"
+import { buildShootoutSide, type TakerCandidate } from "./shootout-takers"
 
 // Only a domestic league exists so far - cup/international competitions
 // (and their higher cost modifiers) plug in here once they're built.
 const CURRENT_COMPETITION = "league" as const
+
+/**
+ * The attributes a shootout needs, for the players who finished the match.
+ *
+ * One query, explicit select: no names, no club ownership, nothing that
+ * could make the shootout depend on anything mutable. The ids come from
+ * EngineResult.finalOnPitch, so this asks about the eleven-a-side who were
+ * actually on the pitch at the whistle and nobody else.
+ */
+async function loadTakerCandidates(playerIds: string[]): Promise<TakerCandidate[]> {
+  if (playerIds.length === 0) return []
+  return prisma.player.findMany({
+    where: { id: { in: playerIds } },
+    select: { id: true, primaryPosition: true, penalties: true, penaltySaving: true },
+  }).then((rows) =>
+    rows.map((r) => ({
+      playerId: r.id,
+      primaryPosition: r.primaryPosition,
+      penalties: r.penalties,
+      penaltySaving: r.penaltySaving,
+    }))
+  )
+}
 
 /**
  * Plays a fixture through the match engine the first time it's needed,
@@ -31,8 +56,32 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
   if (!fixture.scheduledAt || fixture.scheduledAt.getTime() > Date.now()) return
 
   const seed = fixture.matchSeed ?? generateMatchSeed()
-  const snapshot = await buildMatchSnapshot(fixtureId, seed)
+  // A championship decider is played on neutral turf: neither club gets the
+  // home multiplier or the home crowd. Everything else about the match -
+  // the engine, its probabilities, the events, the ratings - is identical.
+  const isDecider = fixture.stage === "TITLE_DECIDER"
+  const snapshot = await buildMatchSnapshot(fixtureId, seed, { neutralVenue: isDecider })
   const result = simulateMatch(snapshot)
+
+  // A decider cannot end level. If the 90 minutes did, the same seed that
+  // played the match decides the penalties - salted, exactly as the
+  // fan-incident roll is, so the shootout draws its own stream rather than
+  // continuing the match's.
+  let shootout: { home: number; away: number } | null = null
+  if (isDecider && result.homeGoals === result.awayGoals) {
+    const candidates = await loadTakerCandidates([
+      ...result.finalOnPitch.home,
+      ...result.finalOnPitch.away,
+    ])
+    const byId = new Map(candidates.map((c) => [c.playerId, c]))
+    const pick = (ids: string[]) => ids.map((id) => byId.get(id)).filter((c): c is TakerCandidate => !!c)
+    const outcome = runShootout(
+      buildShootoutSide(snapshot.home.teamId, pick(result.finalOnPitch.home), snapshot.home.penaltyTakerId),
+      buildShootoutSide(snapshot.away.teamId, pick(result.finalOnPitch.away), snapshot.away.penaltyTakerId),
+      `${seed}-shootout`
+    )
+    shootout = { home: outcome.homeScore, away: outcome.awayScore }
+  }
 
   // Gate revenue/expenses for the home side. Attendance comes from the same
   // snapshot the engine ran on, so the crowd that affected the match is the
@@ -45,9 +94,27 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
     { teamTotalQuality: calculateTeamTotalQuality(homePlayers) },
     { seats: toSeatCounts(homeStadium) }
   )
-  const revenue = calculateMatchStadiumRevenue(attendanceDetail.bySeatType)
-  const expenses = calculateHomeMatchExpenses({ capacity }, snapshot.attendance, CURRENT_COMPETITION)
-  const awayTravelCost = calculateAwayTravelCost(CURRENT_COMPETITION)
+  // NEUTRAL VENUE MEANS NEUTRAL MONEY TOO.
+  //
+  // League economics are asymmetric by design: the home club takes the gate
+  // and pays to host, the away club pays to travel, and only the home crowd
+  // can incur a fan fine. At a neutral ground for a one-off title decider
+  // every one of those would be an arbitrary advantage handed to whichever
+  // club happened to sort first by teamId - which is explicitly a technical
+  // role with no sporting meaning.
+  //
+  // V1 therefore records ZERO club money for a decider rather than splitting
+  // a modelled gate. Splitting would require inventing a neutral-venue
+  // revenue share, a ticket split and a hosting-cost rule that no part of
+  // this game has yet - inventing an economy to avoid an asymmetry is a
+  // bigger risk than not paying anyone. The match is still played in full
+  // and still draws a crowd; the money is simply not modelled.
+  const neutralMoney = isDecider
+  const revenue = neutralMoney ? { total: 0 } : calculateMatchStadiumRevenue(attendanceDetail.bySeatType)
+  const expenses = neutralMoney
+    ? { total: 0 }
+    : calculateHomeMatchExpenses({ capacity }, snapshot.attendance, CURRENT_COMPETITION)
+  const awayTravelCost = neutralMoney ? 0 : calculateAwayTravelCost(CURRENT_COMPETITION)
 
   // Fan incidents are rolled from the same seed, so they're reproducible
   // alongside the match itself.
@@ -59,7 +126,8 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
     DEFAULT_GAME_BALANCE_CONFIG,
     incidentRng.next()
   )
-  const fine = fanIncident ? fanIncidentFine(DEFAULT_GAME_BALANCE_CONFIG, incidentRng.next()) : 0
+  // No home crowd at a neutral venue, so no home-crowd fine either.
+  const fine = fanIncident && !neutralMoney ? fanIncidentFine(DEFAULT_GAME_BALANCE_CONFIG, incidentRng.next()) : 0
 
   await prisma.$transaction(async (tx) => {
     // SELECT ... FOR UPDATE, not a plain findUnique: this actually locks the
@@ -127,6 +195,10 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
         attendance: snapshot.attendance,
         homeRevenue: revenue.total,
         homeMatchExpense: expenses.total,
+        // Null unless penalties were actually taken. The database CHECK
+        // constraints refuse a half-written, drawn, or non-decider shootout.
+        homeShootoutScore: shootout?.home ?? null,
+        awayShootoutScore: shootout?.away ?? null,
         homeStats: result.homeStats as unknown as object,
         awayStats: result.awayStats as unknown as object,
       },
@@ -134,20 +206,27 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
 
     // Mandatory match-day costs/income - these must go through even if the
     // club's balance goes negative as a result; that pressure is the point.
-    await createFinancialTransaction(tx, {
-      teamId: fixture.homeTeamId,
-      type: "matchRevenue",
-      amount: revenue.total,
-      description: "הכנסות קהל ממשחק בית",
-      referenceId: `MATCH_${fixtureId}_HOME_REVENUE`,
-    })
-    await createFinancialTransaction(tx, {
-      teamId: fixture.homeTeamId,
-      type: "matchExpense",
-      amount: -expenses.total,
-      description: "הוצאות אירוח משחק בית",
-      referenceId: `MATCH_${fixtureId}_HOME_EXPENSE`,
-    })
+    //
+    // A neutral-venue decider writes NO financial row at all - not a zero
+    // row. A zero-valued transaction would still appear in a club's ledger
+    // as a match-day entry that earned nothing, which is a worse story than
+    // "this competition's finances are not modelled".
+    if (!neutralMoney) {
+      await createFinancialTransaction(tx, {
+        teamId: fixture.homeTeamId,
+        type: "matchRevenue",
+        amount: revenue.total,
+        description: "הכנסות קהל ממשחק בית",
+        referenceId: `MATCH_${fixtureId}_HOME_REVENUE`,
+      })
+      await createFinancialTransaction(tx, {
+        teamId: fixture.homeTeamId,
+        type: "matchExpense",
+        amount: -expenses.total,
+        description: "הוצאות אירוח משחק בית",
+        referenceId: `MATCH_${fixtureId}_HOME_EXPENSE`,
+      })
+    }
     if (awayTravelCost > 0) {
       await createFinancialTransaction(tx, {
         teamId: fixture.awayTeamId,

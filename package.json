@@ -33,7 +33,8 @@
     "prod:ops:preflight": "tsx scripts/production/ops-check.ts preflight",
     "prod:ops:season-status": "tsx scripts/production/ops-check.ts season-status",
     "prod:ops:scheduled-check": "tsx scripts/production/ops-check.ts scheduled-check",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "prod:champions:verify": "tsx scripts/production/verify-season-champions.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.10.0",

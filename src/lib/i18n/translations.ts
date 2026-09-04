@@ -238,6 +238,10 @@ const he = {
   "league.colGoalDiff": "הפרש",
   "league.colPoints": "נק",
 
+  "match.decider.title": "משחק הכרעה על האליפות",
+  "match.decider.neutralVenue": "מגרש ניטרלי",
+  "match.decider.penalties": "פנדלים {home}-{away}",
+  "match.decider.wonBy": "{team} אלופה",
   "match.title": "משחק חי",
   "match.scheduled": "המשחק עוד לא התחיל",
   "match.scheduledFor": "המשחק יתחיל ב-{date}",
@@ -1123,6 +1127,10 @@ const en: Record<keyof typeof he, string> = {
   "league.colGoalDiff": "GD",
   "league.colPoints": "PTS",
 
+  "match.decider.title": "Championship decider",
+  "match.decider.neutralVenue": "Neutral venue",
+  "match.decider.penalties": "Penalties {home}-{away}",
+  "match.decider.wonBy": "{team} are champions",
   "match.title": "Live match",
   "match.scheduled": "The match hasn't started yet",
   "match.scheduledFor": "Kicks off {date}",
@@ -2005,6 +2013,10 @@ const ar: Record<keyof typeof he, string> = {
   "league.colGoalDiff": "فرق",
   "league.colPoints": "نقاط",
 
+  "match.decider.title": "مباراة حسم اللقب",
+  "match.decider.neutralVenue": "ملعب محايد",
+  "match.decider.penalties": "ركلات الترجيح {home}-{away}",
+  "match.decider.wonBy": "{team} بطل الدوري",
   "match.title": "مباراة مباشرة",
   "match.scheduled": "المباراة لم تبدأ بعد",
   "match.scheduledFor": "تبدأ المباراة في {date}",

@@ -48,6 +48,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ fix
       // (POST .../ensure-simulated) is still worth trying, without ever
       // selecting homeScore/awayScore/homeStats/awayStats here.
       playedAt: true,
+      // Which competition this fixture belongs to. Public from the moment
+      // the fixture is created - a manager can see "Championship Decider"
+      // in their fixture list days beforehand - so it is not a spoiler and
+      // belongs in the base query, unlike anything about the result.
+      stage: true,
       homeTeamId: true,
       awayTeamId: true,
       homeTeam: {
@@ -90,12 +95,17 @@ export async function GET(_request: Request, { params }: { params: Promise<{ fix
     // Lets a "live" client tell "kicked off, waiting on simulation" apart
     // from "kicked off, already simulated" without exposing the result.
     simulationReady: !!fixture.playedAt,
+    stage: fixture.stage,
+    // A decider is played on neutral turf, so the Match Center must not
+    // present either club as hosting. Derived from stage rather than stored,
+    // because it is the same fact said twice.
+    neutralVenue: fixture.stage === "TITLE_DECIDER",
     homeTeam: { ...homeTeam, stadiumCapacity },
     awayTeam: fixture.awayTeam,
   }
 
   if (!kickedOff) {
-    return NextResponse.json({ ...base, liveScore: null, events: [], liveStats: null, finalStats: null, playerStats: null })
+    return NextResponse.json({ ...base, liveScore: null, events: [], liveStats: null, finalStats: null, playerStats: null, shootout: null })
   }
 
   // Every event the engine ever produced for this fixture is already in the
@@ -135,6 +145,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ fix
   const liveStats = computeLiveStats(revealed, fixture.homeTeamId, fixture.awayTeamId)
 
   let finalStats: { homeScore: number; awayScore: number; home: unknown; away: unknown } | null = null
+  /** Penalties, when a decider needed them. Null for every other match, and while live. */
+  let shootout: { home: number; away: number } | null = null
   let playerStats: PlayerMatchStatView[] | null = null
   if (finished) {
     // Isolated, finished-only read of the authoritative result. This code
@@ -142,10 +154,26 @@ export async function GET(_request: Request, { params }: { params: Promise<{ fix
     // real score/stats can never leak into a live response.
     const result = await prisma.fixture.findUnique({
       where: { id: fixtureId },
-      select: { homeScore: true, awayScore: true, homeStats: true, awayStats: true },
+      // The shootout scores ride in this SAME finished-only query, for
+      // exactly the reason playerStats does: a penalty result is the final
+      // score by another name, and a decider's shootout is the most
+      // spoiling single number in the game - it names the champion. Being
+      // selected only here means the columns never enter the process while
+      // the match is live, rather than being fetched and then filtered.
+      select: {
+        homeScore: true,
+        awayScore: true,
+        homeStats: true,
+        awayStats: true,
+        homeShootoutScore: true,
+        awayShootoutScore: true,
+      },
     })
     if (result?.homeScore != null && result.awayScore != null) {
       finalStats = { homeScore: result.homeScore, awayScore: result.awayScore, home: result.homeStats, away: result.awayStats }
+    }
+    if (result?.homeShootoutScore != null && result.awayShootoutScore != null) {
+      shootout = { home: result.homeShootoutScore, away: result.awayShootoutScore }
     }
 
     // PER-PLAYER STATISTICS - deliberately INSIDE this same finished-only
@@ -217,5 +245,5 @@ export async function GET(_request: Request, { params }: { params: Promise<{ fix
     }))
   }
 
-  return NextResponse.json({ ...base, liveScore, events, liveStats, finalStats, playerStats })
+  return NextResponse.json({ ...base, liveScore, events, liveStats, finalStats, playerStats, shootout })
 }

@@ -625,37 +625,51 @@ enum FixtureStage {
 }
 
 model Fixture {
-  id               String             @id @default(cuid())
-  divisionId       String
-  division         Division           @relation(fields: [divisionId], references: [id], onDelete: Cascade)
-  matchday         Int
-  homeTeamId       String
-  homeTeam         Team               @relation("HomeFixtures", fields: [homeTeamId], references: [id], onDelete: Cascade)
-  awayTeamId       String
-  awayTeam         Team               @relation("AwayFixtures", fields: [awayTeamId], references: [id], onDelete: Cascade)
+  id                String             @id @default(cuid())
+  divisionId        String
+  division          Division           @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+  matchday          Int
+  homeTeamId        String
+  homeTeam          Team               @relation("HomeFixtures", fields: [homeTeamId], references: [id], onDelete: Cascade)
+  awayTeamId        String
+  awayTeam          Team               @relation("AwayFixtures", fields: [awayTeamId], references: [id], onDelete: Cascade)
   // NOT NULL with a constant default, so every fixture that already exists
   // is a league fixture by definition and the migration rewrites no rows.
-  stage            FixtureStage       @default(LEAGUE)
-  homeScore        Int?
-  awayScore        Int?
-  attendance       Int?
-  homeRevenue      Int?
-  homeMatchExpense Int?
+  stage             FixtureStage       @default(LEAGUE)
+  homeScore         Int?
+  // PENALTY SHOOTOUT, and only that.
+  //
+  // Both null for every league match, and for a decider settled inside the
+  // 90 minutes - the shootout did not happen, so there is no score to
+  // record, and a 0-0 would be a lie about a match that never went to
+  // penalties. Both set, and never equal, when it did: the whole reason a
+  // shootout exists is that it cannot end level.
+  //
+  // Three database CHECK constraints enforce exactly that (see the
+  // migration): both-or-neither, TITLE_DECIDER only, and never equal. They
+  // are constraints rather than application rules because a wrong value
+  // here would silently name the wrong champion.
+  homeShootoutScore Int?
+  awayShootoutScore Int?
+  awayScore         Int?
+  attendance        Int?
+  homeRevenue       Int?
+  homeMatchExpense  Int?
   // Seeds the match engine's RNG, so re-running a fixture's simulation
   // from the same snapshot always produces the identical match.
-  matchSeed        String?
+  matchSeed         String?
   // Team-level match statistics, as produced by the engine (possession,
   // shots, corners, ...). Stored as JSON since it's a read-only result
   // blob the engine defines, never queried field-by-field.
-  homeStats        Json?
-  awayStats        Json?
-  scheduledAt      DateTime?
-  playedAt         DateTime?
-  createdAt        DateTime           @default(now())
-  events           MatchEvent[]
-  playerStats      PlayerMatchStats[]
+  homeStats         Json?
+  awayStats         Json?
+  scheduledAt       DateTime?
+  playedAt          DateTime?
+  createdAt         DateTime           @default(now())
+  events            MatchEvent[]
+  playerStats       PlayerMatchStats[]
   // Set only on a TITLE_DECIDER that actually settled a title.
-  decidedChampion  SeasonChampion?
+  decidedChampion   SeasonChampion?
 
   // Postgres does not index a foreign key on its own, so until now this
   // table had no index at all beyond its primary key and every read below

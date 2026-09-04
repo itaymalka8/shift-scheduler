@@ -55,7 +55,7 @@ export interface TitleTableRow {
 
 export type TitleOutcome =
   /** One club is clear. `via` records which criterion separated them, for the audit trail. */
-  | { kind: "resolved"; teamId: string; via: "table" | "headToHead" }
+  | { kind: "resolved"; teamId: string; via: "table" | "headToHead" | "decider" }
   /** Still level after every criterion. These clubs must play a decider. */
   | { kind: "decider"; tiedTeamIds: string[] }
   /** No club has played a countable match - crown nobody rather than invent a champion. */

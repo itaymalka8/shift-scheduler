@@ -81,4 +81,23 @@ export interface MatchApiResponse {
   // the rows never enter the process at all. See the route for why partial
   // reveal is impossible - PlayerMatchStats has no minute dimension.
   playerStats: PlayerMatchStatView[] | null
+  /**
+   * Which competition this fixture is. Public from creation - a manager sees
+   * "Championship Decider" in their fixture list days ahead - so unlike
+   * anything about the result it is safe before kickoff.
+   */
+  stage: "LEAGUE" | "TITLE_DECIDER"
+  /** A decider is played on neutral turf: neither club is hosting. */
+  neutralVenue: boolean
+  /**
+   * The penalty shootout, when a decider needed one. Null for every league
+   * match, for a decider settled inside 90 minutes, and - critically - for
+   * ANY match that is not yet finished.
+   *
+   * Same structural guarantee as playerStats: the columns are selected only
+   * inside the route's finished-only branch, so a shootout result cannot
+   * leak while the match is live. It is the single most spoiling number in
+   * the game, because it names the champion.
+   */
+  shootout: { home: number; away: number } | null
 }

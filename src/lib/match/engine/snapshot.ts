@@ -42,8 +42,23 @@ export interface MatchSnapshot {
   seed: string
   home: SnapshotTeam
   away: SnapshotTeam
-  /** Home crowd context. */
+  /** Home crowd context. Inert when neutralVenue is true - see below. */
   attendance: number
   stadiumCapacity: number
   fanType: "calm" | "ultras"
+  /**
+   * A neutral ground: NEITHER side gets home advantage.
+   *
+   * Only a championship decider sets this. It is the whole of "neutral
+   * venue" as far as the simulation is concerned, because home advantage in
+   * this engine is exactly two things and both are gated on `side.isHome`:
+   * the flat config.homeAdvantage multiplier, and the home crowd effect.
+   * With this true, neither is applied, so `home`/`away` become nothing but
+   * database roles and the crowd fields above have no sporting effect.
+   *
+   * Optional, and absent means false, so every existing snapshot and every
+   * league fixture behaves exactly as before - byte-identical for a given
+   * seed. There is a test asserting precisely that.
+   */
+  neutralVenue?: boolean
 }

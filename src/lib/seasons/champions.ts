@@ -20,6 +20,8 @@ import { prisma } from "@/lib/prisma"
 import { isMatchFinished } from "@/lib/match/timing"
 import { instantBelongsToEra } from "@/lib/teams/era"
 import { resolveDivisionTitle, type TitleFixture, type TitleOutcome } from "./champion"
+import { deciderWinnerTeamId } from "./decider"
+import { loadDecidersForSeason } from "./deciders"
 
 /** One division's answer, plus everything needed to write it down or explain why it cannot be. */
 export interface DivisionTitleResolution {
@@ -35,10 +37,15 @@ export interface DivisionTitleResolution {
    * exactly this reason. This is that same rule applied to the match that
    * settled the title.
    *
-   * Phase 2C replaces this with the TITLE_DECIDER's own scheduledAt whenever
-   * a decider was played.
+   * When a TITLE_DECIDER settled the title, this is the DECIDER's own
+   * scheduledAt instead - because the decider is then the title-deciding
+   * match, and the same kickoff rule applies to it.
    */
   decidedAt: Date | null
+  /** The decider that settled it, when one was needed. Null for a title won on the table. */
+  decidedByFixtureId: string | null
+  /** Set when the division is tied and a decider exists but has not finished. */
+  awaitingDeciderFixtureId?: string | null
 }
 
 export interface SeasonTitleResolution {
@@ -46,8 +53,10 @@ export interface SeasonTitleResolution {
   divisions: DivisionTitleResolution[]
   /** Every division has exactly one champion and a decidedAt - the only state that may be persisted. */
   fullyResolved: boolean
-  /** Divisions still level after every head-to-head criterion. Non-empty means Phase 2C is required. */
+  /** Divisions level after every head-to-head criterion, with no finished decider yet. */
   needsDecider: DivisionTitleResolution[]
+  /** The tied clubs per division, so the caller can create the decider without re-resolving. */
+  tiedTeamIdsByDivision: Map<string, string[]>
 }
 
 /**
@@ -80,6 +89,11 @@ export async function resolveSeasonChampions(
     orderBy: { id: "asc" },
   })
 
+  // Deciders already created for this season, so a division that went to
+  // one is resolved from its result rather than from the table that could
+  // not separate them.
+  const deciders = await loadDecidersForSeason(seasonId)
+
   const resolutions: DivisionTitleResolution[] = divisions.map((division) => {
     // The same two-part gate computeStandings and countsTowardRecord use:
     // the live window has fully played out AND a result is actually stored.
@@ -101,14 +115,61 @@ export async function resolveSeasonChampions(
       if (f.scheduledAt && (!decidedAt || f.scheduledAt.getTime() > decidedAt.getTime())) decidedAt = f.scheduledAt
     }
 
+    const outcome = resolveDivisionTitle(
+      division.teams.map((t) => t.teamId),
+      titleFixtures
+    )
+
+    // --- The table separated them: nothing more to do -------------------
+    if (outcome.kind !== "decider") {
+      return { divisionId: division.id, seasonId, outcome, decidedAt, decidedByFixtureId: null }
+    }
+
+    // --- Still level. Only a decider can settle it ----------------------
+    const decider = deciders.get(division.id)
+    if (!decider) {
+      // None created yet - the caller creates one and does not transition.
+      return { divisionId: division.id, seasonId, outcome, decidedAt, decidedByFixtureId: null }
+    }
+
+    // A decider that has not finished settles nothing yet. The SAME
+    // isMatchFinished gate every other match uses: a decider two minutes
+    // into its live window already has its score stored, and crowning a
+    // champion from it would announce the result of a match being watched.
+    if (!isMatchFinished(decider.scheduledAt, now) || !decider.playedAt) {
+      return {
+        divisionId: division.id,
+        seasonId,
+        outcome,
+        decidedAt,
+        decidedByFixtureId: null,
+        awaitingDeciderFixtureId: decider.id,
+      }
+    }
+
+    const winner = deciderWinnerTeamId(decider)
+    if (!winner) {
+      // Finished, but unreadable: a draw with no shootout, or a missing
+      // score. Fail closed - no champion, season stays ACTIVE.
+      return {
+        divisionId: division.id,
+        seasonId,
+        outcome,
+        decidedAt,
+        decidedByFixtureId: null,
+        awaitingDeciderFixtureId: decider.id,
+      }
+    }
+
     return {
       divisionId: division.id,
       seasonId,
-      outcome: resolveDivisionTitle(
-        division.teams.map((t) => t.teamId),
-        titleFixtures
-      ),
-      decidedAt,
+      outcome: { kind: "resolved", teamId: winner, via: "decider" },
+      // The decider IS the title-deciding match, so its kickoff is the
+      // attribution instant - the same rule, applied to the match that
+      // actually settled it.
+      decidedAt: decider.scheduledAt,
+      decidedByFixtureId: decider.id,
     }
   })
 
@@ -117,7 +178,12 @@ export async function resolveSeasonChampions(
     resolutions.length > 0 &&
     resolutions.every((r) => r.outcome.kind === "resolved" && r.decidedAt !== null)
 
-  return { seasonId, divisions: resolutions, fullyResolved, needsDecider }
+  const tiedTeamIdsByDivision = new Map<string, string[]>()
+  for (const r of resolutions) {
+    if (r.outcome.kind === "decider") tiedTeamIdsByDivision.set(r.divisionId, r.outcome.tiedTeamIds)
+  }
+
+  return { seasonId, divisions: resolutions, fullyResolved, needsDecider, tiedTeamIdsByDivision }
 }
 
 /**
@@ -152,6 +218,7 @@ export interface PersistedChampion {
   teamId: string
   teamEraId: string | null
   decidedAt: Date
+  decidedByFixtureId: string | null
   created: boolean
 }
 
@@ -200,6 +267,7 @@ export async function persistSeasonChampions(
           teamId,
           teamEraId: era?.id ?? null,
           decidedAt,
+          decidedByFixtureId: division.decidedByFixtureId,
         },
       })
     }
@@ -209,6 +277,7 @@ export async function persistSeasonChampions(
       teamId,
       teamEraId: era?.id ?? null,
       decidedAt,
+      decidedByFixtureId: division.decidedByFixtureId,
       created: !existing,
     })
   }
