@@ -380,6 +380,47 @@ async function main() {
     record(checks, playoffChampionPremature === 0, `champions crowned before their playoff round finished: ${playoffChampionPremature}`)
     record(checks, notTheDecidingRow === 0, `champions dated from a row that is not their round's deciding fixture: ${notTheDecidingRow}`)
 
+    // --- THE DATABASE IS THE FINAL AUTHORITY ------------------------------
+    //
+    // Application code cannot overwrite a draw, and 8b would catch a stored
+    // draw that stopped matching its seed. Neither helps against a manual,
+    // self-consistent UPDATE from a psql session or a console. The write-once
+    // trigger does, so its PRESENCE is itself an invariant worth verifying -
+    // a Production without it is a Production where sporting history can be
+    // rewritten silently.
+    console.info("\n--- 8e. HISTORICAL DRAW IMMUTABILITY (DATABASE LEVEL) ---")
+    const triggers = await prisma.$queryRaw<{ tgname: string; timing: string; level: string; enabled: string }[]>`
+      SELECT tgname,
+             CASE WHEN (tgtype & 2) > 0 THEN 'BEFORE' ELSE 'AFTER' END AS timing,
+             CASE WHEN (tgtype & 1) > 0 THEN 'ROW' ELSE 'STATEMENT' END AS level,
+             tgenabled::text AS enabled
+      FROM pg_trigger
+      WHERE tgrelid = '"ChampionshipPlayoff"'::regclass
+        AND NOT tgisinternal
+        AND tgname = 'ChampionshipPlayoff_draw_write_once'
+    `
+    const trigger = triggers[0]
+    record(checks, !!trigger, `write-once trigger present on ChampionshipPlayoff: ${trigger ? "yes" : "NO"}`)
+    if (trigger) {
+      console.info(`  INFO  ${trigger.tgname} ${trigger.timing} UPDATE FOR EACH ${trigger.level}`)
+      record(checks, trigger.timing === "BEFORE" && trigger.level === "ROW", `trigger fires BEFORE UPDATE per row: ${trigger.timing}/${trigger.level}`)
+      // 'O' is origin - the trigger fires for ordinary local writes. A
+      // disabled ('D') trigger is present and useless, which is worse than
+      // absent because it looks protected.
+      record(checks, trigger.enabled === "O", `trigger is enabled (tgenabled=${trigger.enabled})`)
+    }
+
+    const functions = await prisma.$queryRaw<{ proname: string; kind: string }[]>`
+      SELECT proname, pg_get_function_result(oid) AS kind
+      FROM pg_proc
+      WHERE proname = 'championship_playoff_draw_write_once'
+    `
+    record(
+      checks,
+      functions.length === 1 && functions[0].kind === "trigger",
+      `write-once trigger function present and returns trigger: ${functions.length === 1 ? functions[0].kind : "MISSING"}`
+    )
+
     console.info("\n--- 9. HISTORICAL PRESERVATION ---")
     const [leagueFixtures, nonLeagueFixtures, teams, eras] = await Promise.all([
       prisma.fixture.count({ where: { stage: "LEAGUE" } }),
