@@ -248,6 +248,8 @@ export interface PersistedChampion {
   teamEraId: string | null
   decidedAt: Date
   decidedByFixtureId: string | null
+  /** The club's name as it stood when the title was decided. Display only. */
+  clubNameAtDecision: string | null
   created: boolean
 }
 
@@ -284,6 +286,12 @@ export async function persistSeasonChampions(
     const decidedAt = division.decidedAt
     const era = await findEraAt(tx, teamId, decidedAt)
 
+    // THE DISPLAY SNAPSHOT. Read inside this transaction, which is the last
+    // moment the name is still the name the title was won under: the very
+    // next takeover rewrites Team.name, and nothing anywhere records what it
+    // used to be. Never read again for identity - teamId is the champion.
+    const club = await tx.team.findUnique({ where: { id: teamId }, select: { name: true } })
+
     const existing = await tx.seasonChampion.findUnique({
       where: { divisionId: division.divisionId },
       select: { id: true },
@@ -297,6 +305,7 @@ export async function persistSeasonChampions(
           teamEraId: era?.id ?? null,
           decidedAt,
           decidedByFixtureId: division.decidedByFixtureId,
+          clubNameAtDecision: club?.name ?? null,
         },
       })
     }
@@ -307,6 +316,7 @@ export async function persistSeasonChampions(
       teamEraId: era?.id ?? null,
       decidedAt,
       decidedByFixtureId: division.decidedByFixtureId,
+      clubNameAtDecision: club?.name ?? null,
       created: !existing,
     })
   }

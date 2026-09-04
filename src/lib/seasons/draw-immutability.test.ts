@@ -22,6 +22,9 @@ const MIGRATION_DIR = "20260904090000_championship_playoff_draw_write_once"
 const migration = readFileSync(join(MIGRATIONS, MIGRATION_DIR, "migration.sql"), "utf8")
 const sql = migration.replace(/^\s*--.*$/gm, "")
 
+const SNAPSHOT_DIR = "20260904120000_season_champion_club_name_snapshot"
+const snapshotSql = readFileSync(join(MIGRATIONS, SNAPSHOT_DIR, "migration.sql"), "utf8").replace(/^\s*--.*$/gm, "")
+
 function readCode(...parts: string[]): string {
   return readFileSync(join(ROOT, "src", ...parts), "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "")
@@ -109,5 +112,66 @@ describe("the application has not grown a second write path", () => {
   it("never writes drawSeed anywhere but the create", () => {
     const update = playoffs.slice(playoffs.indexOf("championshipPlayoff.update("))
     expect(update.slice(0, 300)).not.toContain("drawSeed")
+  })
+})
+
+describe("the club-name snapshot migration", () => {
+  it("adds exactly one nullable column and nothing else", () => {
+    // Nullable with no default is catalog-only in Postgres 11+: no row is
+    // read or rewritten, whatever the table already holds.
+    expect(snapshotSql).toMatch(/ALTER TABLE "SeasonChampion" ADD COLUMN IF NOT EXISTS "clubNameAtDecision" TEXT;/)
+    expect(snapshotSql).not.toMatch(/NOT NULL|DEFAULT|DROP COLUMN|CREATE TABLE|CREATE TYPE|CREATE INDEX/i)
+    expect(snapshotSql.match(/ALTER TABLE/g)).toHaveLength(1)
+  })
+
+  it("makes the snapshot write-once at the database", () => {
+    expect(snapshotSql).toMatch(/CREATE OR REPLACE FUNCTION "season_champion_club_name_write_once"/)
+    expect(snapshotSql).toMatch(/BEFORE UPDATE ON "SeasonChampion"[\s\S]*?FOR EACH ROW/)
+    expect(snapshotSql).toMatch(
+      /IF NEW\."clubNameAtDecision" IS DISTINCT FROM OLD\."clubNameAtDecision" THEN[\s\S]*?RAISE EXCEPTION/
+    )
+    expect(snapshotSql).toContain("clubNameAtDecision is write-once")
+  })
+
+  it("is ABSOLUTE - it does not carve out a null-to-value transition", () => {
+    // Stricter than the playoff draw on purpose: the name is known at INSERT
+    // and is never knowable afterwards, so a later write could only be
+    // someone deciding today what a club "was called" years ago.
+    expect(snapshotSql).not.toMatch(/OLD\."clubNameAtDecision" IS NOT NULL/)
+    expect(snapshotSql).not.toMatch(/OLD\."clubNameAtDecision" IS NULL/)
+  })
+
+  it("inspects that column and the id, so later fields stay updatable", () => {
+    const body = snapshotSql.slice(snapshotSql.indexOf("BEGIN"), snapshotSql.indexOf("END;"))
+    const columns = new Set([...body.matchAll(/(?:NEW|OLD)\."(\w+)"/g)].map((m) => m[1]))
+    expect([...columns].sort()).toEqual(["clubNameAtDecision", "id"])
+  })
+
+  it("is safe to apply more than once, in BOTH halves", () => {
+    expect(snapshotSql).toContain("ADD COLUMN IF NOT EXISTS")
+    expect(snapshotSql).toContain("CREATE OR REPLACE FUNCTION")
+    expect(snapshotSql).toContain('DROP TRIGGER IF EXISTS "SeasonChampion_club_name_write_once"')
+  })
+})
+
+describe("the snapshot is a display field, never an identity", () => {
+  const champions = readCode("lib", "seasons", "champions.ts")
+
+  it("is written at creation and never updated", () => {
+    expect(champions).toMatch(/clubNameAtDecision: club\?\.name \?\? null/)
+    expect(champions).not.toContain("seasonChampion.update(")
+    expect(champions).not.toContain("seasonChampion.upsert(")
+  })
+
+  it("is never used to find, join or group a club anywhere in the tree", () => {
+    const offenders = readdirSync(join(ROOT, "src"), { recursive: true, encoding: "utf8" })
+      .filter((f) => (f.endsWith(".ts") || f.endsWith(".tsx")) && !f.includes("generated") && !f.endsWith(".test.ts"))
+      .filter((f) => {
+        const code = readFileSync(join(ROOT, "src", f), "utf8")
+        // A where/orderBy/groupBy that mentions it would make a display
+        // snapshot into a lookup key, which is exactly what it must not be.
+        return /(?:where|orderBy|groupBy|distinct)[\s\S]{0,200}clubNameAtDecision/.test(code)
+      })
+    expect(offenders).toEqual([])
   })
 })

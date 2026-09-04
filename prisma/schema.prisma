@@ -1099,6 +1099,25 @@ model SeasonChampion {
   decidedByFixtureId String?  @unique
   decidedByFixture   Fixture? @relation(fields: [decidedByFixtureId], references: [id], onDelete: Restrict)
 
+  // THE CLUB'S NAME AT THE INSTANT THE TITLE WAS DECIDED.
+  //
+  // A DISPLAY SNAPSHOT AND NOTHING ELSE. The canonical identity of the
+  // champion is teamId, and stays teamId: never join on this column, never
+  // group by it, never use it to find a club.
+  //
+  // It exists because Team.name is mutable and the takeover flow rewrites
+  // it (src/app/api/register/route.ts renames a bot club to whatever the new
+  // manager typed at signup). Without the snapshot, a title won by "Hapoel
+  // Ashdod B" in season 1 would be rendered under a name a different person
+  // chose in season 4 - which is not a rebrand, it is a false statement
+  // about who won.
+  //
+  // Nullable for one reason only: a row that predates this column cannot
+  // have one, and no name can honestly be reconstructed for it. Production
+  // holds zero SeasonChampion rows, so in practice every title the game ever
+  // awards carries its name. Write-once at the database - see the migration.
+  clubNameAtDecision String?
+
   // When the row was written, which differs from decidedAt by however long
   // the hourly orchestrator took to notice the season had ended.
   createdAt DateTime @default(now())

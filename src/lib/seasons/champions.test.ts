@@ -28,8 +28,11 @@ import { findEraAt, persistSeasonChampions, resolveSeasonChampions } from "./cha
 import type { Prisma } from "@/generated/prisma"
 
 /** Stands in for the interactive transaction client the orchestrator passes in. */
+const mockTxTeamFindUnique = jest.fn()
+
 const tx = {
   teamEra: { findMany: (...args: unknown[]) => mockEraFindMany(...args) },
+  team: { findUnique: (...args: unknown[]) => mockTxTeamFindUnique(...args) },
   seasonChampion: {
     findUnique: (...args: unknown[]) => mockChampionFindUnique(...args),
     create: (...args: unknown[]) => mockChampionCreate(...args),
@@ -42,6 +45,7 @@ beforeEach(() => {
   mockPlayoffFindMany.mockResolvedValue([])
   mockChampionFindUnique.mockResolvedValue(null)
   mockChampionCreate.mockResolvedValue({})
+  mockTxTeamFindUnique.mockResolvedValue({ name: "Hapoel Ashdod B" })
 })
 
 const NOW = new Date("2026-05-01T12:00:00Z")
@@ -237,10 +241,19 @@ describe("persistSeasonChampions", () => {
         teamEraId: "era-human",
         decidedAt: LAST_KICKOFF,
         decidedByFixtureId: null,
+        clubNameAtDecision: "Hapoel Ashdod B",
       },
     })
     expect(rows).toEqual([
-      { divisionId: "d1", teamId: "A", teamEraId: "era-human", decidedAt: LAST_KICKOFF, decidedByFixtureId: null, created: true },
+      {
+        divisionId: "d1",
+        teamId: "A",
+        teamEraId: "era-human",
+        decidedAt: LAST_KICKOFF,
+        decidedByFixtureId: null,
+        clubNameAtDecision: "Hapoel Ashdod B",
+        created: true,
+      },
     ])
   })
 
@@ -253,6 +266,59 @@ describe("persistSeasonChampions", () => {
     const rows = await persistSeasonChampions(tx, resolved)
     expect(mockChampionCreate).not.toHaveBeenCalled()
     expect(rows[0].created).toBe(false)
+  })
+
+  it("SNAPSHOTS THE CLUB NAME as it stands when the title is decided", async () => {
+    mockEraFindMany.mockResolvedValue([
+      { id: "era-bot", teamId: "A", startedAt: new Date("2026-01-01T00:00:00Z"), endedAt: null },
+    ])
+    mockTxTeamFindUnique.mockResolvedValue({ name: "Maccabi Bnei Yam" })
+
+    const rows = await persistSeasonChampions(tx, resolved)
+
+    expect(mockChampionCreate.mock.calls[0][0]).toMatchObject({
+      data: { clubNameAtDecision: "Maccabi Bnei Yam" },
+    })
+    expect(rows[0].clubNameAtDecision).toBe("Maccabi Bnei Yam")
+    // Read inside the SAME transaction that writes the title, by id.
+    expect(mockTxTeamFindUnique).toHaveBeenCalledWith({ where: { id: "A" }, select: { name: true } })
+  })
+
+  it("snapshots a BOT era's champion name exactly as it does a HUMAN one", async () => {
+    // The snapshot is about the CLUB, not the manager - a bot title carries
+    // its name for the same reason and by the same code path.
+    mockEraFindMany.mockResolvedValue([
+      { id: "era-bot", teamId: "A", startedAt: new Date("2026-01-01T00:00:00Z"), endedAt: null },
+    ])
+    mockTxTeamFindUnique.mockResolvedValue({ name: "FC Bot 17" })
+
+    await persistSeasonChampions(tx, resolved)
+    expect(mockChampionCreate.mock.calls[0][0]).toMatchObject({
+      data: { teamEraId: "era-bot", clubNameAtDecision: "FC Bot 17" },
+    })
+  })
+
+  it("THE SNAPSHOT IS NEVER AN IDENTITY: teamId still names the champion", async () => {
+    mockEraFindMany.mockResolvedValue([
+      { id: "era-bot", teamId: "A", startedAt: new Date("2026-01-01T00:00:00Z"), endedAt: null },
+    ])
+    mockTxTeamFindUnique.mockResolvedValue({ name: "Some Other Club" })
+
+    const rows = await persistSeasonChampions(tx, resolved)
+    // Even with a name that resembles a different club, the row's identity
+    // is the id the title was resolved to.
+    expect(rows[0].teamId).toBe("A")
+    expect(mockChampionCreate.mock.calls[0][0]).toMatchObject({ data: { teamId: "A" } })
+  })
+
+  it("records the name as null rather than inventing one when the club cannot be read", async () => {
+    mockEraFindMany.mockResolvedValue([
+      { id: "era-bot", teamId: "A", startedAt: new Date("2026-01-01T00:00:00Z"), endedAt: null },
+    ])
+    mockTxTeamFindUnique.mockResolvedValue(null)
+
+    await persistSeasonChampions(tx, resolved)
+    expect(mockChampionCreate.mock.calls[0][0]).toMatchObject({ data: { clubNameAtDecision: null } })
   })
 
   it("records teamEraId as null rather than failing when the club has no covering era", async () => {

@@ -51,7 +51,32 @@ describe("title attribution uses eras, never current ownership", () => {
   it("champions.ts never reads Team.userId", () => {
     const source = read("lib", "seasons", "champions.ts")
     expect(source).not.toMatch(/team\.userId|userId:\s*true/)
-    expect(source).not.toMatch(/prisma\.team\.|tx\.team\./)
+  })
+
+  it("the ONLY thing it reads off Team is the display-name snapshot", () => {
+    // This guard used to forbid every Team read outright. That was the right
+    // shape while nothing needed one; it is now too broad, because the club
+    // name snapshot legitimately reads Team - so it is tightened to its
+    // actual intent instead of relaxed. Attribution still comes from eras
+    // alone; a Team read is permitted only for `name`, and only by id.
+    const source = read("lib", "seasons", "champions.ts")
+    const reads = [...source.matchAll(/tx\.team\.(\w+)\(([^)]*)\)/g)]
+    expect(reads).toHaveLength(1)
+    expect(reads[0][1]).toBe("findUnique")
+    expect(reads[0][2]).toBe("{ where: { id: teamId }, select: { name: true } }")
+    // No client-level Team access at all, and no write of any kind.
+    expect(source).not.toMatch(/prisma\.team\./)
+    expect(source).not.toMatch(/tx\.team\.(update|create|upsert|delete)/)
+  })
+
+  it("the snapshot never becomes the champion's identity", () => {
+    const source = read("lib", "seasons", "champions.ts")
+    // teamId is what is resolved and what is written as the champion.
+    expect(source).toMatch(/const teamId = division\.outcome\.teamId/)
+    expect(source).toMatch(/teamId,/)
+    // The name is only ever assigned, never compared or searched on.
+    expect(source).not.toMatch(/clubNameAtDecision\s*===|clubNameAtDecision\s*!==/)
+    expect(source).not.toMatch(/where:\s*\{[^}]*clubNameAtDecision/)
   })
 
   it("champions.ts resolves ownership through the shared era rule rather than a second copy of it", () => {
