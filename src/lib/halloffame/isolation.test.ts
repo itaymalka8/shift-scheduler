@@ -24,6 +24,20 @@ const HALL_OF_FAME: [string, string[]][] = [
   ["page.tsx", ["app", "hall-of-fame", "page.tsx"]],
 ]
 
+/**
+ * The player modules. Held apart from HALL_OF_FAME above because the
+ * manager-only guards do not apply to them verbatim: player-queries.ts reads
+ * prisma.team on purpose, for club NAMES, which the manager reader is forbidden
+ * from doing because it would be asking the Team table who holds a club. The
+ * guards that DO apply to both are run over EVERY_MODULE.
+ */
+const PLAYER_HALL_OF_FAME: [string, string[]][] = [
+  ["players.ts", ["lib", "halloffame", "players.ts"]],
+  ["player-queries.ts", ["lib", "halloffame", "player-queries.ts"]],
+]
+
+const EVERY_MODULE = [...HALL_OF_FAME, ...PLAYER_HALL_OF_FAME]
+
 describe("the Hall of Fame never uses current ownership", () => {
   for (const [label, path] of HALL_OF_FAME) {
     it(`${label} never reads Team.userId or Team.isBot`, () => {
@@ -74,7 +88,7 @@ describe("the Hall of Fame never recomputes a sporting result", () => {
 })
 
 describe("no new source of truth", () => {
-  for (const [label, path] of HALL_OF_FAME) {
+  for (const [label, path] of EVERY_MODULE) {
     it(`${label} touches no summary, trophy or achievement table`, () => {
       const source = readCode(...path)
       expect(source).not.toMatch(/managerCareerStats|ManagerCareerStats/)
@@ -178,5 +192,209 @@ describe("no N+1 leaderboard", () => {
     expect(code).not.toMatch(/for\s*\([\s\S]{0,300}await prisma\./)
     expect(code).not.toMatch(/\.map\(\s*async[\s\S]{0,200}prisma\./)
     expect(code).not.toContain("Promise.all(")
+  })
+})
+
+
+/**
+ * PHASE 3G. The player boards answer a different question from the manager
+ * boards, and can be wrong in ways the manager guards above cannot see: a
+ * career attributed to a club the player has since left, a goal recounted from
+ * MatchEvent, a retired player quietly filtered out.
+ */
+describe("a player's history is never attributed to their CURRENT club", () => {
+  it("the pure layer is never handed Player.teamId at all", () => {
+    const source = readCode("lib", "halloffame", "players.ts")
+    // The record type carries teamId - the club of THAT match - and nothing
+    // that could carry current ownership. `currentTeam`/`player.teamId` here
+    // would be the whole bug.
+    expect(source).not.toMatch(/currentTeam|currentClub/)
+    expect(source).not.toMatch(/player\.teamId|\.player\.teamId/)
+    expect(source).toContain("teamId: string")
+  })
+
+  it("the reader never selects Player.teamId, so it cannot leak into a career", () => {
+    const source = readCode("lib", "halloffame", "player-queries.ts")
+    const playerRead = source.slice(source.indexOf("prisma.player.findMany"))
+    const select = playerRead.slice(playerRead.indexOf("select:"), playerRead.indexOf("})"))
+    expect(select).toContain("firstName")
+    expect(select).not.toContain("teamId")
+  })
+
+  it("historical club comes from the stats row's teamId", () => {
+    const source = readCode("lib", "halloffame", "player-queries.ts")
+    const statsRead = source.slice(source.indexOf("prisma.playerMatchStats.findMany"))
+    expect(statsRead.slice(0, 600)).toContain("teamId: true")
+  })
+})
+
+describe("a career is grouped by playerId and nothing else", () => {
+  it("the aggregation keys on playerId alone", () => {
+    const source = readCode("lib", "halloffame", "players.ts")
+    // A composite key is how a transferred player silently becomes two people.
+    expect(source).toContain("careers.get(record.playerId)")
+    expect(source).not.toMatch(/`\$\{record\.playerId\}[^`]*\$\{record\.teamId\}/)
+    expect(source).not.toMatch(/careers\.get\([^)]*teamId/)
+  })
+
+  it("appearances are counted, never DISTINCTed", () => {
+    const source = readCode("lib", "halloffame", "players.ts")
+    expect(source).toContain("career.appearances += 1")
+    expect(source).not.toMatch(/distinct/i)
+  })
+})
+
+describe("a retired player is never filtered out", () => {
+  it("neither module ever tests careerStatus to decide inclusion", () => {
+    for (const [, path] of PLAYER_HALL_OF_FAME) {
+      const source = readCode(...path)
+      expect(source).not.toMatch(/careerStatus:\s*"?(ACTIVE|RETIRED)"?/)
+      expect(source).not.toMatch(/careerStatus\s*===\s*"ACTIVE"/)
+      expect(source).not.toMatch(/careerStatus:\s*\{/)
+    }
+  })
+
+  it("the reader selects careerStatus only to label the row", () => {
+    const source = readCode("lib", "halloffame", "player-queries.ts")
+    expect(source).toContain("careerStatus: true")
+    // and never as a where clause on the player read
+    const playerRead = source.slice(source.indexOf("prisma.player.findMany"))
+    const where = playerRead.slice(playerRead.indexOf("where:"), playerRead.indexOf("select:"))
+    expect(where).not.toContain("careerStatus")
+  })
+})
+
+describe("goals and ratings have exactly one source", () => {
+  it("no player board is ever recounted from MatchEvent", () => {
+    for (const [, path] of PLAYER_HALL_OF_FAME) {
+      const source = readCode(...path)
+      expect(source).not.toMatch(/matchEvent|MatchEvent/)
+      expect(source).not.toMatch(/type:\s*"GOAL"/)
+    }
+  })
+
+  it("the rating is read, never recomputed", () => {
+    for (const [, path] of PLAYER_HALL_OF_FAME) {
+      const source = readCode(...path)
+      expect(source).not.toMatch(/calculateMatchRating/)
+    }
+  })
+
+  it("the average rating is never persisted or cached", () => {
+    for (const [, path] of PLAYER_HALL_OF_FAME) {
+      const source = readCode(...path)
+      expect(source).not.toMatch(/averageRating:\s*\{?\s*(set|increment)/)
+      expect(source).not.toMatch(/unstable_cache|revalidate|cache\(/)
+    }
+  })
+})
+
+describe("the player pure layer is pure", () => {
+  it("players.ts reaches no database and no clock", () => {
+    const source = readCode("lib", "halloffame", "players.ts")
+    expect(source).not.toMatch(/from "@\/lib\/prisma"/)
+    expect(source).not.toMatch(/new Date\(|Date\.now\(/)
+  })
+
+  it("the threshold is one exported constant, stated once", () => {
+    const source = readCode("lib", "halloffame", "players.ts")
+    expect(source.match(/MIN_APPEARANCES_FOR_RATING = /g)).toHaveLength(1)
+    // and the page states it to the reader rather than hard-coding a number
+    const page = readCode("app", "hall-of-fame", "page.tsx")
+    expect(page).toContain("players.minimumAppearancesForRating")
+    expect(page).not.toMatch(/min:\s*"20"/)
+  })
+})
+
+describe("the player boards cannot see a live match", () => {
+  it("the stats read is gated on the fixture's live window, in SQL", () => {
+    const source = readCode("lib", "halloffame", "player-queries.ts")
+    expect(source).toContain("MATCH_REAL_DURATION_MINUTES")
+    expect(source).toContain("playedAt: { not: null }")
+    expect(source).toContain("lte: liveWindowCutoff")
+    // Filtering after the fetch would still have pulled a live match into memory.
+    expect(source).not.toMatch(/\.filter\([^)]*playedAt/)
+  })
+})
+
+describe("no N+1 player board", () => {
+  const source = () => readCode("lib", "halloffame", "player-queries.ts")
+
+  it("THREE queries for every player board, whatever the number of players", () => {
+    expect(source().match(/prisma\.\w+\.findMany/g)).toHaveLength(3)
+    expect(source().match(/prisma\.playerMatchStats\.findMany/g)).toHaveLength(1)
+    expect(source().match(/prisma\.player\.findMany/g)).toHaveLength(1)
+    expect(source().match(/prisma\.team\.findMany/g)).toHaveLength(1)
+  })
+
+  it("identity and club reads are IN (...) over the ids the first query returned", () => {
+    const code = source()
+    expect(code).toContain("id: { in: playerIds }")
+    expect(code).toContain("id: { in: teamIds }")
+  })
+
+  it("no query sits inside a loop or a map", () => {
+    const code = source()
+    expect(code).not.toMatch(/for\s*\([\s\S]{0,300}await prisma\./)
+    expect(code).not.toMatch(/\.map\(\s*async[\s\S]{0,200}prisma\./)
+  })
+})
+
+describe("no player board is unbounded", () => {
+  it("every player board is cut to a fixed number of places", () => {
+    const source = readCode("lib", "halloffame", "players.ts")
+    // 844 players already have history in Production; an uncapped board is a
+    // page of hundreds of rows.
+    expect(source.match(/boardTop\(/g)).toHaveLength(4)
+    expect(source.match(/PLAYER_BOARD_PLACES = /g)).toHaveLength(1)
+    // Places alone are not a bound - a shared place can be any width - so a
+    // row budget is required alongside them.
+    expect(source.match(/PLAYER_BOARD_MAX_ROWS = /g)).toHaveLength(1)
+    expect(source.match(/PLAYER_BOARD_MAX_ROWS\b/g)).toHaveLength(5)
+  })
+
+  it("the cut is by rank, so it can never split a tie", () => {
+    const source = readCode("lib", "halloffame", "leaderboards.ts")
+    const fn = source.slice(source.indexOf("export function boardTop"))
+    const body = fn.slice(0, fn.indexOf("\n}"))
+    // Groups are taken whole: the loop walks equal ranks, and a group that
+    // does not fit is DESCRIBED rather than cut into.
+    expect(body).toContain("ranked[end].rank === rank")
+    expect(body).toContain("rows.length + group.length <= maxRows")
+    expect(body).toContain("players: group.length")
+    // The only slice is the whole group; there is no slice(0, n) truncation.
+    expect(body.match(/\.slice\(/g)).toHaveLength(1)
+    expect(body).toContain("ranked.slice(i, end)")
+  })
+
+  it("the cap is applied AFTER ranking, so a rank is a rank either way", () => {
+    const source = readCode("lib", "halloffame", "players.ts")
+    // boardTop wraps rankEntries, never the other way round.
+    expect(source).not.toMatch(/rankEntries\([\s\S]{0,80}boardTop\(/)
+    expect(source).toMatch(/boardTop\(\s*rankEntries\(/)
+  })
+})
+
+describe("the page renders the player boards it was given", () => {
+  const page = () => readCode("app", "hall-of-fame", "page.tsx")
+
+  it("renders every player board", () => {
+    for (const board of ["players.mostGoals", "players.mostAssists", "players.mostAppearances", "players.bestAverageRating"]) {
+      expect(page()).toContain(board)
+    }
+  })
+
+  it("measures both read models from ONE instant", () => {
+    const code = page()
+    expect(code.match(/const now = new Date\(\)/g)).toHaveLength(1)
+    expect(code).toContain("loadHallOfFame(now)")
+    expect(code).toContain("loadPlayerHallOfFame(now)")
+  })
+
+  it("formats the rating for display only, after the rank is decided", () => {
+    const code = page()
+    expect(code).toContain("ratings.format(row.value)")
+    // Rounding BEFORE the rank would invent ties; the pure layer ranks the mean.
+    expect(code).not.toMatch(/toFixed\(2\)[\s\S]{0,80}sort/)
   })
 })

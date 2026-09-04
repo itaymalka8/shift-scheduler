@@ -119,6 +119,74 @@ export function rankEntries<T>(items: T[], valueOf: (item: T) => number, display
   return ranked
 }
 
+/**
+ * A summarised rank group: a shared place too crowded to list row by row.
+ */
+export interface SharedPlace {
+  rank: number
+  value: number
+  players: number
+}
+
+export interface BoardCut<T> {
+  rows: RankedEntry<T>[]
+  /**
+   * Shared places that did not fit, described instead of listed. Never a
+   * partial group: a rank is shown in full or summarised in full.
+   */
+  shared: SharedPlace[]
+}
+
+/**
+ * The top of a board.
+ *
+ * A hall of fame board is a top-N list, and the player boards need one that
+ * actually bounds the page. Two rules pull against each other here, and both
+ * matter:
+ *
+ *   1. A TIE IS NEVER SPLIT. Everyone on the same figure holds the same rank,
+ *      so cutting a board mid-group would use array position to prefer one of
+ *      them - the exact thing sharing a rank means we do not do.
+ *   2. THE PAGE IS BOUNDED. Rule 1 alone is not a bound: a tie can be
+ *      arbitrarily wide. Production's appearance figures are currently
+ *      IDENTICAL for 844 players, so "whole groups up to ten places" is 844
+ *      rows, today, in practice.
+ *
+ * So groups are taken WHOLE while they fit inside `maxRows`, and a group that
+ * would not fit is SUMMARISED rather than truncated - "1st, shared by 844
+ * players on 2 appearances" is both bounded and true, where thirty arbitrary
+ * names out of 844 would be neither.
+ *
+ * Once one group is summarised every later group is too: showing 2nd place in
+ * full beneath a hidden 1st place would misrepresent the board.
+ *
+ * `ranked` is expected to arrive from rankEntries, already ranked and ordered.
+ */
+export function boardTop<T>(ranked: RankedEntry<T>[], places: number, maxRows: number): BoardCut<T> {
+  const rows: RankedEntry<T>[] = []
+  const shared: SharedPlace[] = []
+  let summarising = false
+
+  for (let i = 0; i < ranked.length; ) {
+    const rank = ranked[i].rank
+    if (rank > places) break
+
+    let end = i
+    while (end < ranked.length && ranked[end].rank === rank) end++
+    const group = ranked.slice(i, end)
+
+    if (!summarising && rows.length + group.length <= maxRows) {
+      rows.push(...group)
+    } else {
+      summarising = true
+      shared.push({ rank, value: group[0].value, players: group.length })
+    }
+    i = end
+  }
+
+  return { rows, shared }
+}
+
 // ---------------------------------------------------------------------------
 // HONOURS
 // ---------------------------------------------------------------------------

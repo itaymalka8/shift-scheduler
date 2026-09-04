@@ -1,9 +1,11 @@
 import Link from "next/link"
 import { cookies } from "next/headers"
-import { Trophy, Timer, Medal, Building2 } from "lucide-react"
+import { Trophy, Timer, Medal, Building2, Target, Star } from "lucide-react"
 import { DEFAULT_LOCALE, getTranslator, isLocale, pluralise, type Translator } from "@/lib/i18n/translations"
 import { loadHallOfFame } from "@/lib/halloffame/queries"
-import type { RankedEntry } from "@/lib/halloffame/leaderboards"
+import { loadPlayerHallOfFame } from "@/lib/halloffame/player-queries"
+import type { PlayerEntry } from "@/lib/halloffame/players"
+import type { BoardCut, RankedEntry, SharedPlace } from "@/lib/halloffame/leaderboards"
 import { TeamCrest } from "@/components/team-crest"
 
 export const dynamic = "force-dynamic"
@@ -26,7 +28,9 @@ export default async function HallOfFamePage() {
   const t = getTranslator(locale)
 
   const now = new Date()
-  const board = await loadHallOfFame(now)
+  // Both read models are measured from the SAME instant, so a manager's win
+  // rate and a player's appearance count on one screen describe one moment.
+  const [board, players] = await Promise.all([loadHallOfFame(now), loadPlayerHallOfFame(now)])
 
   const numbers = new Intl.NumberFormat(locale === "he" ? "he-IL" : locale === "ar" ? "ar" : "en-GB")
   const percent = new Intl.NumberFormat(locale === "he" ? "he-IL" : locale === "ar" ? "ar" : "en-GB", {
@@ -38,6 +42,40 @@ export default async function HallOfFamePage() {
   // in their own ways.
   const count = (key: string, n: number) => pluralise(locale, t, key, n, numbers.format(n))
   const days = (ms: number) => count("hof.days", Math.max(0, Math.floor(ms / 86_400_000)))
+  // Two decimals is display only. The RANK was already decided on the
+  // unrounded mean, so two players who both show 7.45 may legitimately hold
+  // different ranks - which is honest, where inventing a tie would not be.
+  const ratings = new Intl.NumberFormat(locale === "he" ? "he-IL" : locale === "ar" ? "ar" : "en-GB", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+
+  /**
+   * A shared place the board could not list: "3rd - 844 players on 2
+   * appearances". The whole group or none of it; see boardTop.
+   */
+  const sharedPlace = (place: SharedPlace, metric: string) =>
+    t("hof.sharedPlace", {
+      rank: numbers.format(place.rank),
+      players: count("hof.players", place.players),
+      metric,
+    })
+
+  /**
+   * A player row. No href: there is no player profile route yet, so the row
+   * carries its own context instead of promising a page that does not exist.
+   */
+  const playerRow = (entry: PlayerEntry, metric: string, extra?: string) => {
+    const position = t(`squad.position.${entry.player.primaryPosition}` as Parameters<typeof t>[0])
+    const club = entry.historicalClub?.name
+    const retired = entry.player.careerStatus === "RETIRED" ? t("hof.retired") : null
+    return {
+      key: entry.player.playerId,
+      label: `${entry.player.firstName} ${entry.player.lastName}`,
+      metric,
+      context: [position, club, extra, retired].filter(Boolean).join(" · "),
+    }
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -142,6 +180,49 @@ export default async function HallOfFamePage() {
           />
         </Section>
 
+        {/* PLAYER HONOURS */}
+        <Section icon={<Target className="size-4" aria-hidden />} title={t("hof.sectionPlayerHonours")}>
+          <Board
+            title={t("hof.mostGoals")}
+            empty={t("hof.emptyPlayers")}
+            rows={players.mostGoals}
+            t={t}
+            render={(row) => playerRow(row.entry, count("hof.goals", row.value))}
+            renderShared={(p) => sharedPlace(p, count("hof.goals", p.value))}
+          />
+          <Board
+            title={t("hof.mostAssists")}
+            empty={t("hof.emptyPlayers")}
+            rows={players.mostAssists}
+            t={t}
+            render={(row) => playerRow(row.entry, count("hof.assists", row.value))}
+            renderShared={(p) => sharedPlace(p, count("hof.assists", p.value))}
+          />
+        </Section>
+
+        {/* PLAYER CAREERS */}
+        <Section icon={<Star className="size-4" aria-hidden />} title={t("hof.sectionPlayerCareers")}>
+          <Board
+            title={t("hof.mostAppearances")}
+            empty={t("hof.emptyPlayers")}
+            rows={players.mostAppearances}
+            t={t}
+            render={(row) => playerRow(row.entry, count("hof.appearances", row.value))}
+            renderShared={(p) => sharedPlace(p, count("hof.appearances", p.value))}
+          />
+          <Board
+            title={t("hof.bestAverageRating")}
+            note={t("hof.ratingMinimum", { min: String(players.minimumAppearancesForRating) })}
+            empty={t("hof.emptyRating", { min: String(players.minimumAppearancesForRating) })}
+            rows={players.bestAverageRating}
+            t={t}
+            render={(row) =>
+              playerRow(row.entry, ratings.format(row.value), count("hof.appearances", row.entry.career.appearances))
+            }
+            renderShared={(p) => sharedPlace(p, ratings.format(p.value))}
+          />
+        </Section>
+
         {/* CLUB HONOURS */}
         <Section icon={<Building2 className="size-4" aria-hidden />} title={t("hof.sectionClubHonours")}>
           <Board
@@ -159,7 +240,9 @@ export default async function HallOfFamePage() {
           />
         </Section>
 
-        <p className="text-center text-[11px] text-muted-foreground">{t("hof.tieNote")}</p>
+        <p className="text-center text-[11px] text-muted-foreground">
+          {t("hof.boardSize", { n: String(players.places) })} · {t("hof.tieNote")}
+        </p>
       </main>
     </div>
   )
@@ -179,7 +262,13 @@ function Section({ icon, title, children }: { icon: React.ReactNode; title: stri
 
 interface RowView {
   key: string
-  href: string
+  /**
+   * Optional ON PURPOSE. Manager and club rows link to a profile that exists;
+   * player rows do not, because there is no player profile route yet. A row
+   * that looks clickable and goes nowhere is worse than a row that does not,
+   * so an unlinked row renders as plain content rather than a dead Link.
+   */
+  href?: string
   label: string
   metric: string
   context?: string
@@ -209,15 +298,23 @@ function Board<T>({
   empty,
   rows,
   render,
+  renderShared,
   t,
 }: {
   title: string
   note?: string
   empty: string
-  rows: RankedEntry<T>[]
+  /**
+   * A plain ranked list (the manager boards, which are small enough to show
+   * whole) or a cut one (the player boards, which are not - see boardTop).
+   */
+  rows: RankedEntry<T>[] | BoardCut<T>
   render: (row: RankedEntry<T>) => RowView
+  /** How to describe a shared place too crowded to list. Cut boards only. */
+  renderShared?: (place: SharedPlace) => string
   t: Translator
 }) {
+  const board: BoardCut<T> = Array.isArray(rows) ? { rows, shared: [] } : rows
   return (
     <div className="goalx-broadcast-panel overflow-hidden">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-b px-4 py-3">
@@ -225,47 +322,72 @@ function Board<T>({
         {note ? <span className="text-[11px] text-muted-foreground">{note}</span> : null}
       </div>
 
-      {rows.length === 0 ? (
+      {board.rows.length === 0 && board.shared.length === 0 ? (
         <p className="px-4 py-6 text-center text-sm text-muted-foreground">{empty}</p>
       ) : (
         <ol className="divide-y">
-          {rows.map((row) => {
+          {board.rows.map((row) => {
             const view = render(row)
+            const body = (
+              <>
+                <span
+                  className="w-6 shrink-0 text-sm font-semibold tabular-nums text-muted-foreground"
+                  aria-label={`${t("hof.colRank")} ${row.rank}`}
+                >
+                  {row.rank}
+                </span>
+                {view.crest ? (
+                  <TeamCrest
+                    shape={view.crest.crestShape}
+                    pattern={view.crest.crestPattern}
+                    icon={view.crest.crestIcon}
+                    color={view.crest.crestColor}
+                    secondaryColor={view.crest.crestSecondaryColor}
+                    borderColor={view.crest.crestBorderColor}
+                    imageUrl={view.crest.crestImageUrl}
+                    size={28}
+                    className="shrink-0"
+                  />
+                ) : null}
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium">{view.label}</span>
+                  {view.context ? (
+                    <span className="block truncate text-[11px] text-muted-foreground">{view.context}</span>
+                  ) : null}
+                </span>
+                <span className="shrink-0 text-sm font-semibold tabular-nums">{view.metric}</span>
+              </>
+            )
             return (
               <li key={view.key}>
-                <Link href={view.href} className="flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-accent/50">
-                  <span
-                    className="w-6 shrink-0 text-sm font-semibold tabular-nums text-muted-foreground"
-                    aria-label={`${t("hof.colRank")} ${row.rank}`}
+                {view.href ? (
+                  <Link
+                    href={view.href}
+                    className="flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-accent/50"
                   >
-                    {row.rank}
-                  </span>
-                  {view.crest ? (
-                    <TeamCrest
-                      shape={view.crest.crestShape}
-                      pattern={view.crest.crestPattern}
-                      icon={view.crest.crestIcon}
-                      color={view.crest.crestColor}
-                      secondaryColor={view.crest.crestSecondaryColor}
-                      borderColor={view.crest.crestBorderColor}
-                      imageUrl={view.crest.crestImageUrl}
-                      size={28}
-                      className="shrink-0"
-                    />
-                  ) : null}
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium">{view.label}</span>
-                    {view.context ? (
-                      <span className="block truncate text-[11px] text-muted-foreground">{view.context}</span>
-                    ) : null}
-                  </span>
-                  <span className="shrink-0 text-sm font-semibold tabular-nums">{view.metric}</span>
-                </Link>
+                    {body}
+                  </Link>
+                ) : (
+                  <div className="flex items-center gap-3 px-4 py-2.5">{body}</div>
+                )}
               </li>
             )
           })}
         </ol>
       )}
+
+      {/* A place shared by more players than the board can list. Described,
+          never truncated: naming an arbitrary few of them would break the
+          tie the shared rank exists to express. */}
+      {board.shared.length > 0 && renderShared ? (
+        <ul className="divide-y border-t">
+          {board.shared.map((place) => (
+            <li key={place.rank} className="px-4 py-2.5 text-xs text-muted-foreground">
+              {renderShared(place)}
+            </li>
+          ))}
+        </ul>
+      ) : null}
     </div>
   )
 }

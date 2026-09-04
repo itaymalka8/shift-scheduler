@@ -314,7 +314,31 @@ const he = {
   "hof.empty": "עוד אין רשומות בקטגוריה הזאת",
   "hof.emptyChampionships": "עוד לא הוכרעה אף אליפות",
   "hof.tieNote": "תוצאה זהה מקבלת אותו דירוג",
+  "hof.boardSize": "מוצגים {n} המובילים בכל קטגוריה",
+  "hof.sharedPlace": "מקום {rank} · {players} · {metric}",
+  "hof.players.one": "שחקן אחד",
+  "hof.players.two": "שני שחקנים",
+  "hof.players.other": "{n} שחקנים",
   "hof.measuredAt": "נכון ל־{time}",
+  "hof.sectionPlayerHonours": "כבוד לשחקנים",
+  "hof.sectionPlayerCareers": "קריירות שחקנים",
+  "hof.mostGoals": "הכי הרבה שערים",
+  "hof.mostAssists": "הכי הרבה בישולים",
+  "hof.mostAppearances": "הכי הרבה הופעות",
+  "hof.bestAverageRating": "הדירוג הממוצע הגבוה ביותר",
+  "hof.ratingMinimum": "לפחות {min} הופעות",
+  "hof.goals.one": "שער אחד",
+  "hof.goals.two": "שני שערים",
+  "hof.goals.other": "{n} שערים",
+  "hof.assists.one": "בישול אחד",
+  "hof.assists.two": "שני בישולים",
+  "hof.assists.other": "{n} בישולים",
+  "hof.appearances.one": "הופעה אחת",
+  "hof.appearances.two": "שתי הופעות",
+  "hof.appearances.other": "{n} הופעות",
+  "hof.emptyPlayers": "עוד לא נרשמו מספיק משחקים",
+  "hof.emptyRating": "אף שחקן עוד לא הגיע ל־{min} הופעות",
+  "hof.retired": "פרש",
   "trophy.season": "עונה {season}",
   "trophy.tier": "ליגה {tier}",
   "trophy.wonOnTable": "הוכרעה בטבלה",
@@ -993,7 +1017,7 @@ const he = {
   "youth.promoteErrorNotFound": "השחקן הזה לא נמצא יותר.",
 }
 
-const en: Record<keyof typeof he, string> = {
+const en: LocaleDictionary = {
   "app.name": "Goalx Manager",
 
   "landing.tagline":
@@ -1292,7 +1316,31 @@ const en: Record<keyof typeof he, string> = {
   "hof.empty": "No entries in this category yet",
   "hof.emptyChampionships": "No championship has been decided yet",
   "hof.tieNote": "Equal figures share a rank",
+  "hof.boardSize": "Top {n} in each category",
+  "hof.sharedPlace": "Rank {rank} · {players} · {metric}",
+  "hof.players.one": "1 player",
+  "hof.players.two": "{n} players",
+  "hof.players.other": "{n} players",
   "hof.measuredAt": "As of {time}",
+  "hof.sectionPlayerHonours": "Player honours",
+  "hof.sectionPlayerCareers": "Player careers",
+  "hof.mostGoals": "Most goals",
+  "hof.mostAssists": "Most assists",
+  "hof.mostAppearances": "Most appearances",
+  "hof.bestAverageRating": "Best average rating",
+  "hof.ratingMinimum": "At least {min} appearances",
+  "hof.goals.one": "1 goal",
+  "hof.goals.two": "{n} goals",
+  "hof.goals.other": "{n} goals",
+  "hof.assists.one": "1 assist",
+  "hof.assists.two": "{n} assists",
+  "hof.assists.other": "{n} assists",
+  "hof.appearances.one": "1 appearance",
+  "hof.appearances.two": "{n} appearances",
+  "hof.appearances.other": "{n} appearances",
+  "hof.emptyPlayers": "No matches have been recorded yet",
+  "hof.emptyRating": "No player has reached {min} appearances yet",
+  "hof.retired": "Retired",
   "trophy.season": "Season {season}",
   "trophy.tier": "Tier {tier}",
   "trophy.wonOnTable": "Won on the table",
@@ -1971,7 +2019,7 @@ const en: Record<keyof typeof he, string> = {
   "youth.promoteErrorNotFound": "This player could no longer be found.",
 }
 
-const ar: Record<keyof typeof he, string> = {
+const ar: LocaleDictionary = {
   "app.name": "Goalx Manager",
 
   "landing.tagline": "أدر ناديك لكرة القدم، درّب اللاعبين، حدد التكتيكات، ونافس مديرين آخرين في دوري حي",
@@ -2267,7 +2315,43 @@ const ar: Record<keyof typeof he, string> = {
   "hof.empty": "لا توجد سجلات في هذه الفئة بعد",
   "hof.emptyChampionships": "لم تُحسم أي بطولة بعد",
   "hof.tieNote": "النتائج المتساوية تتشارك الترتيب",
+  "hof.boardSize": "أفضل {n} في كل فئة",
+  "hof.sharedPlace": "المركز {rank} · {players} · {metric}",
+  "hof.players.zero": "بلا لاعبين",
+  "hof.players.one": "لاعب واحد",
+  "hof.players.two": "لاعبان",
+  "hof.players.few": "{n} لاعبين",
+  "hof.players.many": "{n} لاعباً",
+  "hof.players.other": "{n} لاعب",
   "hof.measuredAt": "حتى {time}",
+  "hof.sectionPlayerHonours": "أوسمة اللاعبين",
+  "hof.sectionPlayerCareers": "مسيرات اللاعبين",
+  "hof.mostGoals": "الأكثر تسجيلاً للأهداف",
+  "hof.mostAssists": "الأكثر صناعة للأهداف",
+  "hof.mostAppearances": "الأكثر مشاركة",
+  "hof.bestAverageRating": "أعلى متوسط تقييم",
+  "hof.ratingMinimum": "{min} مباراة على الأقل",
+  "hof.goals.zero": "بلا أهداف",
+  "hof.goals.one": "هدف واحد",
+  "hof.goals.two": "هدفان",
+  "hof.goals.few": "{n} أهداف",
+  "hof.goals.many": "{n} هدفاً",
+  "hof.goals.other": "{n} هدف",
+  "hof.assists.zero": "بلا صناعة أهداف",
+  "hof.assists.one": "صناعة هدف واحد",
+  "hof.assists.two": "صناعة هدفين",
+  "hof.assists.few": "صناعة {n} أهداف",
+  "hof.assists.many": "صناعة {n} هدفاً",
+  "hof.assists.other": "صناعة {n} هدف",
+  "hof.appearances.zero": "بلا مشاركات",
+  "hof.appearances.one": "مشاركة واحدة",
+  "hof.appearances.two": "مشاركتان",
+  "hof.appearances.few": "{n} مشاركات",
+  "hof.appearances.many": "{n} مشاركة",
+  "hof.appearances.other": "{n} مشاركة",
+  "hof.emptyPlayers": "لم تُسجَّل أي مباريات بعد",
+  "hof.emptyRating": "لم يبلغ أي لاعب {min} مشاركة بعد",
+  "hof.retired": "اعتزل",
   "trophy.season": "الموسم {season}",
   "trophy.tier": "الدرجة {tier}",
   "trophy.wonOnTable": "حُسم بالجدول",
@@ -2946,9 +3030,36 @@ const ar: Record<keyof typeof he, string> = {
   "youth.promoteErrorNotFound": "لم يعد بالإمكان العثور على هذا اللاعب.",
 }
 
-export const TRANSLATIONS: Record<Locale, Record<keyof typeof he, string>> = { he, en, ar }
-
 export type TranslationKey = keyof typeof he
+
+/**
+ * The plural stems: every counted key that declares an `.other` form.
+ *
+ * Written as a distributive conditional over a naked type parameter, which is
+ * what makes it fan out across the union of keys rather than test the union
+ * as a whole.
+ */
+type StemOf<K> = K extends `${infer S}.other` ? S : never
+
+/**
+ * The plural categories a locale may carry that Hebrew never will.
+ *
+ * The key type is derived from `he`, and for ordinary strings that is exactly
+ * right: a key missing from Hebrew is a typo, and the checker should say so.
+ * But plural categories are not a matter of taste - Intl.PluralRules selects
+ * three for Hebrew (one, two, other) and six for Arabic (zero, one, two, few,
+ * many, other), so Arabic legitimately needs forms Hebrew has no word for.
+ *
+ * Only those three suffixes are allowed, and only on a stem that already
+ * declares `.other`, so this widens the type by exactly the amount grammar
+ * requires and not one key more. A misspelt key is still an error.
+ */
+type ExtraPluralKey = `${StemOf<TranslationKey>}.${"zero" | "few" | "many"}`
+
+/** Every Hebrew key, plus the plural categories a locale's grammar adds. */
+type LocaleDictionary = Record<TranslationKey, string> & Partial<Record<ExtraPluralKey, string>>
+
+export const TRANSLATIONS: Record<Locale, LocaleDictionary> = { he, en, ar }
 
 export function isLocale(value: string | undefined | null): value is Locale {
   return !!value && (LOCALES as readonly string[]).includes(value)
@@ -2981,7 +3092,10 @@ export function getTranslator(locale: Locale): Translator {
  */
 export function pluralise(locale: Locale, t: Translator, key: string, count: number, formatted: string): string {
   const category = new Intl.PluralRules(locale).select(count)
-  const specific = `${key}.${category}` as TranslationKey
+  // The lookup may land on a category Hebrew does not have (Arabic's zero, few
+  // and many), so it is typed as either kind of key; `t` is then given the
+  // narrow one, because whatever survives the fallback exists in this locale.
+  const specific = `${key}.${category}` as TranslationKey | ExtraPluralKey
   const chosen = TRANSLATIONS[locale][specific] !== undefined ? specific : (`${key}.other` as TranslationKey)
-  return t(chosen, { n: formatted })
+  return t(chosen as TranslationKey, { n: formatted })
 }
