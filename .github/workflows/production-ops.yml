@@ -25,6 +25,7 @@ on:
           - prod:champions:verify
           - prod:routes:check
           - prod:retention:verify
+          - prod:players:distribution
           - prod:render:autodeploy:off
           - prod:backup:create
           - prod:backup:prune:execute
