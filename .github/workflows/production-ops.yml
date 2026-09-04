@@ -18,12 +18,19 @@ on:
           - prod:post-deploy-check
           - prod:render:status
           - prod:backup:list
+          - prod:backup:prune
           - prod:eras:classify
           - prod:eras:verify
           - prod:verify:player-stats
           - prod:champions:verify
           - prod:render:autodeploy:off
+          - prod:backup:create
+          - prod:backup:prune:execute
           - prod:deploy:safe
+      branch_ids:
+        description: "prod:backup:prune only - explicit comma-separated Neon branch ids to prune. Leave empty for an inventory + recommendation. There is no wildcard."
+        required: false
+        type: string
 
 # Secrets come ONLY from this repository's GitHub Secrets
 # (Settings > Secrets and variables > Actions): RENDER_API_KEY,
@@ -36,13 +43,20 @@ on:
 
 jobs:
   # ---------------------------------------------------------------------
-  # Every read-only production command. The two commands that mutate
-  # Production - prod:deploy:safe and prod:render:autodeploy:off - are
-  # deliberately excluded here; each gets its own job below, because
+  # Every read-only production command. The four commands that mutate
+  # Production - prod:deploy:safe, prod:render:autodeploy:off,
+  # prod:backup:create and prod:backup:prune:execute - are deliberately
+  # excluded here; each gets its own job below, because
   # PRODUCTION_WRITE_CONFIRM must never be in scope for a read-only run.
+  # prod:backup:prune (no :execute) IS read-only and belongs here: without
+  # the confirmation in scope it cannot delete even if asked to.
   # ---------------------------------------------------------------------
   read-only:
-    if: github.event.inputs.command != 'prod:deploy:safe' && github.event.inputs.command != 'prod:render:autodeploy:off'
+    if: >-
+      github.event.inputs.command != 'prod:deploy:safe' &&
+      github.event.inputs.command != 'prod:render:autodeploy:off' &&
+      github.event.inputs.command != 'prod:backup:create' &&
+      github.event.inputs.command != 'prod:backup:prune:execute'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -75,6 +89,10 @@ jobs:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
           PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          # Read by prod:backup:prune only. This job never sets
+          # PRODUCTION_WRITE_CONFIRM, so a prune reaching it is a DRY RUN by
+          # construction - even PRUNE_EXECUTE could not make it delete.
+          PRUNE_BRANCH_IDS: ${{ github.event.inputs.branch_ids }}
         run: npm run "$COMMAND"
 
   # ---------------------------------------------------------------------
@@ -102,6 +120,71 @@ jobs:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           PRODUCTION_WRITE_CONFIRM: I_UNDERSTAND_THIS_CHANGES_PRODUCTION
         run: npm run prod:render:autodeploy:off
+
+  # ---------------------------------------------------------------------
+  # prod:backup:create only. MUTATES the Neon account (provisions a new
+  # backup branch). No Render key, no database URL - creating a branch has
+  # no business with either.
+  # ---------------------------------------------------------------------
+  backup-create:
+    if: github.event.inputs.command == 'prod:backup:create'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run prod:backup:create
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          PRODUCTION_WRITE_CONFIRM: I_UNDERSTAND_THIS_CHANGES_PRODUCTION
+        run: npm run prod:backup:create
+
+  # ---------------------------------------------------------------------
+  # prod:backup:prune:execute only. DESTRUCTIVE: permanently deletes Neon
+  # backup branches, which Neon cannot undo and this project keeps no copy
+  # of. It runs ONLY with an explicit branch_ids allowlist - the step below
+  # refuses before npm is invoked when that input is empty, and the script
+  # itself refuses a wildcard anyway.
+  #
+  # Run prod:backup:prune (the read-only job) FIRST and read its plan. The
+  # ids you paste here should be the ones that dry run printed.
+  # ---------------------------------------------------------------------
+  backup-prune-execute:
+    if: github.event.inputs.command == 'prod:backup:prune:execute'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Refuse an empty allowlist
+        env:
+          BRANCH_IDS: ${{ github.event.inputs.branch_ids }}
+        run: |
+          if [ -z "$BRANCH_IDS" ]; then
+            echo "REFUSED: prod:backup:prune:execute requires an explicit branch_ids allowlist."
+            echo "Run prod:backup:prune first to get the plan, then paste those ids in."
+            exit 1
+          fi
+          echo "Allowlist: $BRANCH_IDS"
+
+      - name: Run prod:backup:prune:execute
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          PRUNE_BRANCH_IDS: ${{ github.event.inputs.branch_ids }}
+          PRODUCTION_WRITE_CONFIRM: I_UNDERSTAND_THIS_CHANGES_PRODUCTION
+        run: npm run prod:backup:prune:execute
 
   # ---------------------------------------------------------------------
   # prod:deploy:safe only. PRODUCTION_WRITE_CONFIRM is set ONLY in this

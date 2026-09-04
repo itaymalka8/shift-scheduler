@@ -8,6 +8,7 @@ jest.mock("./neon-client", () => {
     getBranchDetails: jest.fn(),
     getProjectDetails: jest.fn(),
     listBranches: jest.fn(),
+    deleteBranch: jest.fn(),
     NeonApiError: actual.NeonApiError,
   }
 })
@@ -17,11 +18,12 @@ jest.mock("./neon-discovery", () => ({
   resolveProductionBranchId: jest.fn(async () => "prod-branch-1"),
 }))
 
-import { createBranch, getBranchDetails, NeonApiError } from "./neon-client"
-import { createBackupBranch, verifyBackupBranch } from "./neon-ops"
+import { createBranch, deleteBranch, getBranchDetails, NeonApiError } from "./neon-client"
+import { BackupDeletionRefusedError, createBackupBranch, deleteBackupBranch, verifyBackupBranch } from "./neon-ops"
 
 const mockCreateBranch = createBranch as jest.Mock
 const mockGetBranchDetails = getBranchDetails as jest.Mock
+const mockDeleteBranch = deleteBranch as jest.Mock
 
 beforeEach(() => {
   jest.clearAllMocks()
@@ -70,5 +72,72 @@ describe("verifyBackupBranch", () => {
   it("propagates a network-level error rather than reporting a false negative", async () => {
     mockGetBranchDetails.mockRejectedValue(new Error("network down"))
     await expect(verifyBackupBranch("backup-1", {})).rejects.toThrow("network down")
+  })
+})
+
+describe("deleteBackupBranch", () => {
+  const CONFIRMED = { PRODUCTION_WRITE_CONFIRM: PRODUCTION_WRITE_CONFIRMATION }
+  const goodBackup = {
+    id: "backup-1",
+    name: "pre-deploy-goalx-2026-09-03-1121",
+    createdAt: "t",
+    parentId: "prod-branch-1",
+    primary: false,
+  }
+
+  it("REFUSES without PRODUCTION_WRITE_CONFIRM, before making any API call", async () => {
+    await expect(deleteBackupBranch("backup-1", {})).rejects.toBeInstanceOf(ProductionWriteNotConfirmedError)
+    expect(mockDeleteBranch).not.toHaveBeenCalled()
+    expect(mockGetBranchDetails).not.toHaveBeenCalled()
+  })
+
+  it("REFUSES a confirmation that is merely truthy rather than the exact string", async () => {
+    for (const value of ["true", "1", "yes", "I_UNDERSTAND_THIS_CHANGES_PRODUCTION ", ""]) {
+      await expect(deleteBackupBranch("backup-1", { PRODUCTION_WRITE_CONFIRM: value })).rejects.toBeInstanceOf(ProductionWriteNotConfirmedError)
+    }
+    expect(mockDeleteBranch).not.toHaveBeenCalled()
+  })
+
+  it("REFUSES the production branch id without even reading the branch", async () => {
+    await expect(deleteBackupBranch("prod-branch-1", CONFIRMED)).rejects.toBeInstanceOf(BackupDeletionRefusedError)
+    expect(mockGetBranchDetails).not.toHaveBeenCalled()
+    expect(mockDeleteBranch).not.toHaveBeenCalled()
+  })
+
+  it("REFUSES a branch the API reports as primary, even if the planner cleared it", async () => {
+    mockGetBranchDetails.mockResolvedValue({ ...goodBackup, primary: true })
+    await expect(deleteBackupBranch("backup-1", CONFIRMED)).rejects.toThrow(/marked primary/)
+    expect(mockDeleteBranch).not.toHaveBeenCalled()
+  })
+
+  it("REFUSES a branch whose name is not the backup convention", async () => {
+    mockGetBranchDetails.mockResolvedValue({ ...goodBackup, name: "dev" })
+    await expect(deleteBackupBranch("backup-1", CONFIRMED)).rejects.toThrow(/naming convention/)
+    expect(mockDeleteBranch).not.toHaveBeenCalled()
+  })
+
+  it("REFUSES a backup-named branch that is not a child of production", async () => {
+    mockGetBranchDetails.mockResolvedValue({ ...goodBackup, parentId: "some-other-branch" })
+    await expect(deleteBackupBranch("backup-1", CONFIRMED)).rejects.toThrow(/not a child of the production branch/)
+    expect(mockDeleteBranch).not.toHaveBeenCalled()
+  })
+
+  it("re-reads identity from the API rather than trusting the caller", async () => {
+    mockGetBranchDetails.mockResolvedValue(goodBackup)
+    await deleteBackupBranch("backup-1", CONFIRMED)
+    expect(mockGetBranchDetails).toHaveBeenCalledWith(expect.anything(), "proj-1", "backup-1")
+    expect(mockDeleteBranch).toHaveBeenCalledWith(expect.anything(), "proj-1", "backup-1")
+  })
+
+  it("propagates a Neon API failure instead of reporting a deletion that did not happen", async () => {
+    mockGetBranchDetails.mockResolvedValue(goodBackup)
+    mockDeleteBranch.mockRejectedValue(new NeonApiError("Neon API error on /branches: rate limited", 429))
+    await expect(deleteBackupBranch("backup-1", CONFIRMED)).rejects.toBeInstanceOf(NeonApiError)
+  })
+
+  it("surfaces a 404 on the identity read rather than treating it as already-deleted", async () => {
+    mockGetBranchDetails.mockRejectedValue(new NeonApiError("Neon API error: not found", 404))
+    await expect(deleteBackupBranch("backup-1", CONFIRMED)).rejects.toBeInstanceOf(NeonApiError)
+    expect(mockDeleteBranch).not.toHaveBeenCalled()
   })
 })

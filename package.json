@@ -28,6 +28,8 @@
     "prod:eras:classify": "tsx scripts/production/classify-team-eras.ts",
     "prod:eras:backfill": "tsx scripts/production/backfill-team-eras.ts",
     "prod:backup:create": "tsx scripts/production/backup-create.ts",
+    "prod:backup:prune": "tsx scripts/production/backup-prune.ts",
+    "prod:backup:prune:execute": "tsx scripts/production/backup-prune.ts --execute",
     "prod:deploy:safe": "tsx scripts/production/deploy-safe.ts",
     "prod:ops:provision-token": "tsx scripts/production/provision-ops-token.ts",
     "prod:ops:preflight": "tsx scripts/production/ops-check.ts preflight",

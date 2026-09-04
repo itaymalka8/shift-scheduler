@@ -147,3 +147,21 @@ export async function createBranch(client: NeonClient, projectId: string, option
   })
   return readBranchSummary(body.branch)
 }
+
+/**
+ * PERMANENTLY DELETES a branch and everything stored on it. Neon has no undo
+ * for this and this project keeps no copy elsewhere - a deleted pre-deploy
+ * backup is a recovery point that no longer exists.
+ *
+ * This function performs NO safety check of its own on purpose: it is the
+ * raw verb, and every rule about what may be deleted lives one layer up in
+ * neon-ops.deleteBackupBranch and backup-prune.ts, where it can be tested
+ * without an account. Nothing should call this directly.
+ *
+ * A 404 is surfaced, not swallowed. "The branch was already gone" and "you
+ * pointed at a branch that never existed" look identical from here, and a
+ * caller deciding whether its allowlist described reality needs to see it.
+ */
+export async function deleteBranch(client: NeonClient, projectId: string, branchId: string): Promise<void> {
+  await neonFetch<unknown>(client, `/projects/${projectId}/branches/${branchId}`, { method: "DELETE" })
+}
