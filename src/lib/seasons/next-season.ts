@@ -1,8 +1,8 @@
-import { Prisma } from "@/generated/prisma"
 import { prisma } from "@/lib/prisma"
 import { generateDoubleRoundRobin } from "@/lib/leagues/round-robin"
 import { computeMatchdayDate, getNextSeasonStartMonday } from "@/lib/match/schedule"
 import { SeasonLifecycleError } from "./errors"
+import { verifyNextSeasonMembership } from "./promotion/membership"
 
 // Same reasoning as the league seed's own INSERT_CHUNK: Postgres caps a
 // statement at 65535 bound parameters, and this keeps 1140 fixture rows to a
@@ -13,45 +13,6 @@ function chunk<T>(items: T[], size: number): T[][] {
   const out: T[][] = []
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
   return out
-}
-
-/**
- * The season N+1 row, created at most once however many runs race for it.
- *
- * Prisma's upsert is find-then-write, not an atomic INSERT ... ON CONFLICT,
- * so two concurrent orchestrators both find nothing and both insert - one
- * wins and the other gets a raw P2002 on @@unique([countryCode, number]).
- * That constraint IS the authority here; losing the race just means reading
- * back what the winner created, exactly as the youth intake generator does
- * for its own uniqueness race.
- */
-async function upsertNextSeasonRow(countryCode: string, number: number): Promise<{ id: string; number: number }> {
-  const existing = await prisma.season.findUnique({
-    where: { countryCode_number: { countryCode, number } },
-    select: { id: true, number: true },
-  })
-  if (existing) return existing
-
-  try {
-    // Created dormant on purpose: isActive false (season N is still the
-    // country's live one, and the partial unique index allows only one), and
-    // status OFFSEASON because that is the honest description of a season
-    // that exists but is not being played. Nothing here claims it is under
-    // way - that only becomes true in activateNextSeason below.
-    return await prisma.season.create({
-      data: { countryCode, number, isActive: false, status: "OFFSEASON", offseasonStage: "NONE" },
-      select: { id: true, number: true },
-    })
-  } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-      const winner = await prisma.season.findUnique({
-        where: { countryCode_number: { countryCode, number } },
-        select: { id: true, number: true },
-      })
-      if (winner) return winner
-    }
-    throw error
-  }
 }
 
 /** A double round-robin between `teamCount` clubs is exactly this many fixtures - 380 for 20 clubs. */
@@ -71,58 +32,64 @@ export interface NextSeasonStructureResult {
 }
 
 /**
- * Builds season N+1's whole structure - the season row, its divisions, their
- * memberships and their fixtures - without ever switching it on. Idempotent
- * and crash-safe at every step, because nothing here relies on remembering
- * how far a previous run got: each piece is checked against the data itself.
+ * Builds season N+1's FIXTURES, and nothing else.
  *
- *  - The season row is an upsert on the existing @@unique([countryCode,
- *    number]), so two concurrent runs produce one season, not two.
- *  - Divisions are upserts on @@unique([seasonId, tier, group]).
- *  - Memberships are createMany({ skipDuplicates }) behind
- *    @@unique([divisionId, teamId]).
+ * IT NO LONGER CREATES MEMBERSHIP, AND MUST NEVER DO SO AGAIN. Until Phase 3Q
+ * this function mirrored season N's DivisionTeam rows into season N+1 - which
+ * was correct only while promotion did not exist, and is now the single most
+ * dangerous thing that could come back. A CREATE_NEXT retry that re-copied the
+ * old membership on top of a moved league would put clubs in two divisions at
+ * once, and the fixture count would not notice: twenty WRONG clubs still
+ * produce exactly 380 fixtures, so the repair branch below would see nothing
+ * amiss. Membership has exactly one author now,
+ * src/lib/seasons/promotion/membership.ts, and this function REFUSES to run
+ * until that author has finished.
+ *
+ * Idempotent and crash-safe, because nothing here relies on remembering how
+ * far a previous run got: each piece is checked against the data itself.
+ *
  *  - Fixtures are compared against the exact count a double round-robin must
  *    produce. A division left PARTIALLY written by a crash (0 < n < expected)
  *    is rebuilt from scratch rather than topped up - safe only because this
  *    season has never been played, which is asserted before deleting.
  *
- * Deliberately NOT one big interactive transaction. 1 season + 3 divisions +
- * 60 memberships + 1140 fixtures in a single Prisma interactive transaction
- * is exactly the shape that produced P2028 timeouts in this project before;
- * each division's fixtures commit on their own instead.
- *
- * Promotion and relegation are out of scope for V1, so every club stays in
- * the division it was in: the new structure mirrors season N's own divisions
- * and memberships rather than re-deriving anything from league config.
+ * Deliberately NOT one big interactive transaction. 1140 fixtures in a single
+ * Prisma interactive transaction is exactly the shape that produced P2028
+ * timeouts in this project before; each division's fixtures commit on their own.
  */
-export async function ensureNextSeasonStructure(
-  oldSeasonId: string,
+export async function ensureNextSeasonFixtures(
+  nextSeasonId: string,
   now: Date = new Date()
 ): Promise<NextSeasonStructureResult> {
-  const oldSeason = await prisma.season.findUnique({
-    where: { id: oldSeasonId },
-    select: { id: true, countryCode: true, number: true },
+  const nextSeason = await prisma.season.findUnique({
+    where: { id: nextSeasonId },
+    select: { id: true, number: true },
   })
-  if (!oldSeason) {
-    throw new SeasonLifecycleError("SEASON_NOT_FOUND", `No such season: ${oldSeasonId}`)
+  if (!nextSeason) {
+    throw new SeasonLifecycleError("SEASON_NOT_FOUND", `No such season: ${nextSeasonId}`)
   }
 
-  const nextNumber = oldSeason.number + 1
-
-  const nextSeason = await upsertNextSeasonRow(oldSeason.countryCode, nextNumber)
-
-  const oldDivisions = await prisma.division.findMany({
-    where: { seasonId: oldSeason.id },
+  const divisions = await prisma.division.findMany({
+    where: { seasonId: nextSeasonId },
     orderBy: [{ tier: "asc" }, { group: "asc" }],
-    select: {
-      tier: true,
-      group: true,
-      name: true,
-      teams: { orderBy: { joinedAt: "asc" }, select: { teamId: true } },
-    },
+    select: { id: true, _count: { select: { teams: true } } },
   })
-  if (oldDivisions.length === 0) {
-    throw new SeasonLifecycleError("SEASON_NOT_FOUND", `Season ${oldSeasonId} has no divisions to carry forward`)
+  if (divisions.length === 0) {
+    throw new SeasonLifecycleError("SEASON_NOT_FOUND", `Season ${nextSeasonId} has no divisions to schedule`)
+  }
+
+  // THE MEMBERSHIP PRECONDITION. Fixtures are generated FROM the membership
+  // list, so a division with no members would silently produce a season with
+  // no matches, and CREATE_NEXT would report success. Refusing here is what
+  // makes "movement first, always" a runtime fact rather than an ordering
+  // convention somebody could reorder.
+  const empty = divisions.filter((d) => d._count.teams === 0)
+  if (empty.length > 0) {
+    throw new SeasonLifecycleError(
+      "SEASON_NOT_FOUND",
+      `Refusing to schedule season ${nextSeasonId}: ${empty.length} division(s) have no members. ` +
+        `Membership is written by the PROMOTION_RELEGATION stage and must be complete first.`
+    )
   }
 
   // One schedule anchor for the whole season. Re-derived from fixtures that
@@ -135,25 +102,10 @@ export async function ensureNextSeasonStructure(
   })
   const seasonStartMonday = earliestExisting?.scheduledAt ?? getNextSeasonStartMonday(now)
 
-  let memberships = 0
   let fixturesCreated = 0
   let fixturesRepaired = 0
 
-  for (const oldDivision of oldDivisions) {
-    // Division.group is nullable in the schema but every real row uses a
-    // string ("" for a single-group tier). Normalising null to "" here is
-    // also the safer carry-forward: Postgres treats NULLs as distinct in a
-    // unique index, so a NULL group would quietly defeat the
-    // @@unique([seasonId, tier, group]) this upsert relies on.
-    const group = oldDivision.group ?? ""
-    const division = await ensureDivisionRow(nextSeason.id, oldDivision.tier, group, oldDivision.name)
-
-    const created = await prisma.divisionTeam.createMany({
-      data: oldDivision.teams.map((t) => ({ divisionId: division.id, teamId: t.teamId })),
-      skipDuplicates: true,
-    })
-    memberships += created.count
-
+  for (const division of divisions) {
     const result = await ensureDivisionFixtures(division.id, nextSeason.id, seasonStartMonday)
     fixturesCreated += result.created
     fixturesRepaired += result.repaired
@@ -162,41 +114,11 @@ export async function ensureNextSeasonStructure(
   return {
     nextSeasonId: nextSeason.id,
     nextSeasonNumber: nextSeason.number,
-    divisions: oldDivisions.length,
-    memberships,
+    divisions: divisions.length,
+    memberships: divisions.reduce((sum, d) => sum + d._count.teams, 0),
     fixturesCreated,
     fixturesRepaired,
     seasonStartMonday,
-  }
-}
-
-/**
- * The division row for season N+1, created at most once under concurrency -
- * same find-then-create race, and same resolution, as upsertNextSeasonRow.
- */
-async function ensureDivisionRow(
-  seasonId: string,
-  tier: number,
-  group: string,
-  name: string
-): Promise<{ id: string }> {
-  const existing = await prisma.division.findUnique({
-    where: { seasonId_tier_group: { seasonId, tier, group } },
-    select: { id: true },
-  })
-  if (existing) return existing
-
-  try {
-    return await prisma.division.create({ data: { seasonId, tier, group, name }, select: { id: true } })
-  } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-      const winner = await prisma.division.findUnique({
-        where: { seasonId_tier_group: { seasonId, tier, group } },
-        select: { id: true },
-      })
-      if (winner) return winner
-    }
-    throw error
   }
 }
 
@@ -367,18 +289,66 @@ export async function activateNextSeason(
   })
 }
 
-/** Whether a prepared season's structure is complete enough to switch on - checked against the data, never a stored flag. */
-export async function isNextSeasonStructureComplete(nextSeasonId: string, expectedDivisions: number): Promise<boolean> {
+/**
+ * Whether a prepared season may be switched on - checked against the data,
+ * never against a stored flag, and never against "greater than zero".
+ *
+ * Until Phase 3Q this asked only that every division had SOME clubs and the
+ * right number of fixtures for however many it had. That was sufficient while
+ * membership was a verbatim copy of a known-good season. It is not sufficient
+ * once movement decides membership: a division with nineteen clubs produces
+ * exactly the fixture count nineteen clubs should have, so the old check would
+ * have passed a broken league and activated it.
+ *
+ * What it now proves, all of it re-derived from the database:
+ *   - the same number of divisions as season N, at the same sizes
+ *   - exactly the season N cohort, every club exactly once
+ *   - no club in two divisions of the season
+ *   - a complete double round-robin per division
+ *   - every LEAGUE fixture played between members of its own division
+ *
+ * That last one is scoped to LEAGUE deliberately. A PROMOTION_PLAYOFF fixture
+ * is filed on the tier 1 division and played by four tier 2 clubs; it is not
+ * the league, and FixtureStage is what says so. The membership rule is a
+ * league rule.
+ */
+export async function isNextSeasonStructureComplete(
+  oldSeasonId: string,
+  nextSeasonId: string
+): Promise<{ ok: boolean; failures: string[] }> {
+  const verdict = await verifyNextSeasonMembership(oldSeasonId, nextSeasonId)
+  const failures = [...verdict.failures]
+
   const divisions = await prisma.division.findMany({
     where: { seasonId: nextSeasonId },
+    orderBy: [{ tier: "asc" }, { group: "asc" }],
     select: {
       id: true,
-      _count: { select: { teams: true, fixtures: { where: { stage: "LEAGUE" } } } },
+      tier: true,
+      group: true,
+      teams: { select: { teamId: true } },
+      fixtures: {
+        where: { stage: "LEAGUE" },
+        select: { homeTeamId: true, awayTeamId: true },
+      },
     },
   })
-  if (divisions.length !== expectedDivisions) return false
-  // Compared against expectedFixtureCount, which counts a double
-  // round-robin - so the count it is compared with must be league fixtures
-  // and nothing else.
-  return divisions.every((d) => d._count.teams > 0 && d._count.fixtures === expectedFixtureCount(d._count.teams))
+
+  for (const division of divisions) {
+    const label = `tier ${division.tier}${division.group ?? ""}`
+    const expected = expectedFixtureCount(division.teams.length)
+    if (division.fixtures.length !== expected) {
+      failures.push(`${label} has ${division.fixtures.length} LEAGUE fixtures, expected ${expected}`)
+      continue
+    }
+    const members = new Set(division.teams.map((t) => t.teamId))
+    for (const fixture of division.fixtures) {
+      if (!members.has(fixture.homeTeamId) || !members.has(fixture.awayTeamId)) {
+        failures.push(`${label} has a LEAGUE fixture between clubs that are not both its members`)
+        break
+      }
+    }
+  }
+
+  return { ok: failures.length === 0, failures }
 }

@@ -378,6 +378,11 @@ enum SeasonOffseasonStage {
   BOT_PROMOTION
   WAITING_HUMANS
   SQUAD_REPLENISHMENT
+  // Reads season N's FINAL sporting facts and writes season N+1's complete
+  // membership. Creates no fixture of any kind: every match that could
+  // change who goes up or down was played while season N was still ACTIVE,
+  // on the squads that earned the result. See src/lib/seasons/promotion/.
+  PROMOTION_RELEGATION
   CREATE_NEXT
   DONE
 }
@@ -408,6 +413,7 @@ model Season {
   offseasonStage   SeasonOffseasonStage    @default(NONE)
   createdAt        DateTime                @default(now())
   divisions        Division[]
+  divisionTeams    DivisionTeam[]
   youthIntakes     YouthIntake[]
   playerLifecycles PlayerSeasonLifecycle[]
   teamErasStarted  TeamEra[]               @relation("TeamEraStarted")
@@ -446,11 +452,37 @@ model DivisionTeam {
   id         String   @id @default(cuid())
   divisionId String
   division   Division @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+  // DENORMALISED FROM Division, and the reason is a constraint that cannot
+  // be expressed without it.
+  //
+  // @@unique([divisionId, teamId]) forbids a club appearing twice in ONE
+  // division. It does not forbid a club appearing in TWO divisions of the
+  // same season - those are different divisionIds, so the index is satisfied
+  // by a row that says a club is in both Ligat Ha'al and Liga Shniya A at
+  // once. Until promotion existed the only writer copied a partition, so the
+  // state was unreachable; a movement stage that can be retried makes it
+  // reachable, and the symptom would be a 21-club division discovered one
+  // stage too late.
+  //
+  // RESTRICT, deliberately stronger than the path it shadows: Division ->
+  // Season is Cascade and DivisionTeam -> Division is Cascade, so deleting a
+  // Season would otherwise take the league's whole membership history with
+  // it. That is blocked today only INCIDENTALLY, by Fixture_divisionId_fkey
+  // being RESTRICT - which protects nothing for a division with no fixtures.
+  // This states the rule directly.
+  seasonId   String
+  season     Season   @relation(fields: [seasonId], references: [id], onDelete: Restrict)
   teamId     String
   team       Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
   joinedAt   DateTime @default(now())
 
   @@unique([divisionId, teamId])
+  // ONE DIVISION PER CLUB PER SEASON. Kept alongside the unique above rather
+  // than replacing it: that one is the conflict target
+  // createMany({ skipDuplicates }) resolves against on the divisionId path,
+  // and it indexes (divisionId, teamId) leftmost-by-division, which this
+  // cannot serve. The two forbid different things.
+  @@unique([seasonId, teamId])
   // The reverse direction of the unique above, which only indexes
   // divisionId as its leftmost column. "Which division is this club in"
   // runs on every dashboard load today, and "which divisions has this club
@@ -653,6 +685,30 @@ enum FixtureStage {
   // TITLE_DECIDER there are MANY of these per division, and each belongs to
   // a ChampionshipPlayoff that says which round of which phase it is.
   TITLE_PLAYOFF
+  // A place, not a title. Played when a tie survives every statistical
+  // criterion AND its clubs would otherwise receive DIFFERENT sporting
+  // outcomes - promotion versus a playoff place, safety versus relegation.
+  // A tie inside one outcome class is a genuine tie that changes nothing,
+  // and gets no fixture: this game never manufactures a full table order it
+  // has no use for.
+  //
+  // boundaryRank says WHICH boundary is being settled (the last rank of the
+  // upper outcome class) and boundaryRound which round of the mechanism it
+  // is. Both are required here and forbidden everywhere else - CHECK
+  // constraints enforce both directions.
+  BOUNDARY_DECIDER
+  // The two-fixture bracket that fills tier 1's last two promotion places:
+  // A2 v B3 and B2 v A3, winners promoted.
+  //
+  // ITS CLUBS ARE NOT MEMBERS OF THE DIVISION IT IS FILED UNDER. The bracket
+  // is stored on season N's tier 1 Division because a Fixture must belong to
+  // a competition of its season and this IS the promotion playoff to tier 1 -
+  // but the four clubs remain tier 2 members for the whole of season N, and
+  // their DivisionTeam rows are never touched. FixtureStage, not divisionId,
+  // is what says which competition a match belongs to; the "both clubs are
+  // members of their own division" rule is a LEAGUE rule and this is
+  // explicitly not the league.
+  PROMOTION_PLAYOFF
 }
 
 // WHICH PART OF A CHAMPIONSHIP PLAYOFF A FIXTURE BELONGS TO.
@@ -692,6 +748,20 @@ model Fixture {
   // a slot in the Mon/Wed/Sat calendar, which computeMatchdayDate is defined
   // on - and one playoff round can span several matchdays.
   playoffRound          Int?
+  // WHICH SPORTING BOUNDARY THIS MATCH SETTLES - the last rank of the upper
+  // outcome class, so 16 for tier 1's safe|relegated line and 2 or 3 for a
+  // tier 2 promotion-playoff seeding line. Set on BOUNDARY_DECIDER and on
+  // nothing else, in both directions, by CHECK constraint.
+  //
+  // Deliberately a RANK rather than a named boundary: the rank is what the
+  // rules are written in, it sorts, and it does not need a new enum value
+  // every time a competition's shape changes.
+  boundaryRank          Int?
+  // The round WITHIN that boundary's mechanism. 1..3 are neutral round-robin
+  // rounds over the clubs still level; anything beyond that is the terminal
+  // ladder, which fixes exactly one position per match and therefore
+  // terminates. Not matchday, for the same reason playoffRound is not.
+  boundaryRound         Int?
   homeScore             Int?
   // PENALTY SHOOTOUT, and only that.
   //

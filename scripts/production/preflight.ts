@@ -14,12 +14,7 @@ import { printProductionBanner } from "../../src/lib/production/report"
 import { ProductionSafetyError } from "../../src/lib/production/env-guard"
 import { findDuplicateActiveSeasons } from "../../src/lib/production/duplicate-active-seasons"
 import { QA_MATCHDAY } from "../../src/lib/production/qa-residue"
-import {
-  expectedFixtureCount,
-  V1_EXPECTED_DIVISIONS,
-  V1_EXPECTED_DIVISION_TEAM_MEMBERSHIPS,
-  V1_EXPECTED_TOTAL_FIXTURES,
-} from "../../src/lib/production/league-structure"
+import { expectedFixtureCount, judgeLeagueStructure } from "../../src/lib/production/league-structure"
 
 interface MigrationRow {
   migration_name: string
@@ -85,15 +80,26 @@ async function hasFixtureStageColumn(
 
 async function countFixturesByStage(
   prisma: ReturnType<typeof createProductionClient>["prisma"],
-  hasStage: boolean
+  hasStage: boolean,
+  activeSeasonId: string | null
 ): Promise<FixturesByStage> {
-  if (!hasStage) return { league: await prisma.fixture.count(), nonLeague: 0 }
+  if (!hasStage) {
+    return {
+      league: await prisma.fixture.count({ where: { division: { seasonId: activeSeasonId ?? "__none__" } } }),
+      nonLeague: 0,
+    }
+  }
 
   // Raw rather than the typed client for the same reason: this file must
   // keep working against a database one migration behind its own branch,
-  // and the generated client's `stage` filter cannot express that.
+  // and the generated client's `stage` filter cannot express that. Scoped to
+  // the active season so a second season cannot double the count.
   const rows = await prisma.$queryRaw<{ stage: string; count: bigint }[]>`
-    SELECT "stage"::text AS stage, count(*) AS count FROM "Fixture" GROUP BY "stage"`
+    SELECT f."stage"::text AS stage, count(*) AS count
+      FROM "Fixture" f
+      JOIN "Division" d ON d."id" = f."divisionId"
+     WHERE d."seasonId" = ${activeSeasonId ?? "__none__"}
+     GROUP BY f."stage"`
   let league = 0
   let nonLeague = 0
   for (const row of rows) {
@@ -137,9 +143,18 @@ async function main() {
 
     // --- Seasons + duplicate-active check --------------------------------
     const seasons = await prisma.season.findMany({
-      select: { countryCode: true, number: true, status: true, offseasonStage: true, isActive: true },
+      select: { id: true, countryCode: true, number: true, status: true, offseasonStage: true, isActive: true },
       orderBy: [{ countryCode: "asc" }, { number: "asc" }],
     })
+    // EVERY STRUCTURAL COUNT BELOW IS SCOPED TO THE ACTIVE SEASON. Global
+    // counts meant the same thing while exactly one season existed; the day a
+    // second one is created they double, and a hard-coded 3 / 60 / 1140 would
+    // fail this gate and block every deploy - including the one that would
+    // fix it. "__none__" is a deliberate no-match sentinel so a country
+    // mid-handover reports zeroes rather than silently counting everything.
+    const activeSeasons = seasons.filter((s) => s.isActive).length
+    const activeSeasonId = seasons.find((s) => s.isActive)?.id ?? null
+    const activeSeasonScope = { seasonId: activeSeasonId ?? "__none__" }
     lines.push(`Seasons: ${seasons.length} total, ${seasons.filter((s) => s.isActive).length} active`)
     for (const s of seasons) {
       lines.push(`  ${s.countryCode} n${s.number}: ${s.status}/${s.offseasonStage} active=${s.isActive}`)
@@ -169,11 +184,11 @@ async function main() {
       youthProspectCount,
       playerSeasonLifecycleCount,
     ] = await Promise.all([
-      prisma.division.count(),
-      prisma.divisionTeam.count(),
+      prisma.division.count({ where: activeSeasonScope }),
+      prisma.divisionTeam.count({ where: activeSeasonScope }),
       prisma.team.count(),
       prisma.player.count(),
-      countFixturesByStage(prisma, hasStage),
+      countFixturesByStage(prisma, hasStage, activeSeasonId),
       prisma.fixture.count({ where: { playedAt: { not: null } } }),
       prisma.matchEvent.count(),
       prisma.playerMatchStats.count(),
@@ -188,22 +203,21 @@ async function main() {
       `FinancialTransactions=${financialTransactionCount} YouthIntakes=${youthIntakeCount} YouthProspects=${youthProspectCount} PlayerSeasonLifecycle=${playerSeasonLifecycleCount}`
     )
 
-    // --- V1 fixed-shape hard checks -----------------------------------
-    // Not warnings: these are the exact numbers V1's one-country,
-    // three-division world is defined to have. A mismatch means something
-    // is structurally broken, not just "worth a look".
-    if (divisionCount !== V1_EXPECTED_DIVISIONS) {
-      errors.push(`Expected ${V1_EXPECTED_DIVISIONS} Divisions for V1, found ${divisionCount}.`)
-    }
-    if (divisionTeamCount !== V1_EXPECTED_DIVISION_TEAM_MEMBERSHIPS) {
-      errors.push(`Expected ${V1_EXPECTED_DIVISION_TEAM_MEMBERSHIPS} DivisionTeam memberships for V1, found ${divisionTeamCount}.`)
-    }
-    if (fixturesByStage.league !== V1_EXPECTED_TOTAL_FIXTURES) {
-      errors.push(`Expected ${V1_EXPECTED_TOTAL_FIXTURES} LEAGUE Fixtures for V1, found ${fixturesByStage.league}.`)
-    }
-    if (fixturesByStage.nonLeague > 0) {
-      warnings.push(`${fixturesByStage.nonLeague} non-LEAGUE fixture(s) present (title deciders / playoffs).`)
-    }
+    // --- Structural hard checks, per ACTIVE SEASON, LEAGUE only --------
+    // Not warnings: these are the exact numbers a country's league is
+    // defined to have. A mismatch means something is structurally broken,
+    // not just "worth a look". Both scopings matter - a second season would
+    // double a global count, and a decider or promotion playoff is a real
+    // fixture that is not part of the double round robin.
+    const structure = judgeLeagueStructure({
+      activeSeasons,
+      divisions: divisionCount,
+      memberships: divisionTeamCount,
+      leagueFixtures: fixturesByStage.league,
+      nonLeagueFixtures: fixturesByStage.nonLeague,
+    })
+    errors.push(...structure.errors)
+    warnings.push(...structure.notes)
 
     // --- League structure ---------------------------------------------
     // Same pre-migration constraint as the counts above: on a Production
@@ -212,6 +226,7 @@ async function main() {
     // fixture, so the unfiltered shape is the correct one there.
     const leagueOnly = hasStage ? ({ stage: "LEAGUE" } as const) : undefined
     const divisions = await prisma.division.findMany({
+      where: activeSeasonScope,
       select: {
         tier: true,
         group: true,

@@ -10,12 +10,7 @@ import { prisma } from "@/lib/prisma"
 import { isMatchFinished } from "@/lib/match/timing"
 import { findDuplicateActiveSeasons } from "@/lib/production/duplicate-active-seasons"
 import { QA_MATCHDAY } from "@/lib/production/qa-residue"
-import {
-  expectedFixtureCount,
-  V1_EXPECTED_DIVISIONS,
-  V1_EXPECTED_DIVISION_TEAM_MEMBERSHIPS,
-  V1_EXPECTED_TOTAL_FIXTURES,
-} from "@/lib/production/league-structure"
+import { expectedFixtureCount, judgeLeagueStructure } from "@/lib/production/league-structure"
 
 export interface OpsPreflightResult {
   pass: boolean
@@ -39,50 +34,55 @@ export async function runPreflightCheck(): Promise<OpsPreflightResult> {
   const warnings: string[] = []
 
   const seasons = await prisma.season.findMany({
-    select: { countryCode: true, number: true, status: true, offseasonStage: true, isActive: true },
+    select: { id: true, countryCode: true, number: true, status: true, offseasonStage: true, isActive: true },
   })
   const duplicates = findDuplicateActiveSeasons(seasons)
   if (duplicates.length > 0) {
     errors.push(`Duplicate active Season per country: ${duplicates.join(", ")}`)
   }
 
-  // V1_EXPECTED_TOTAL_FIXTURES describes the LEAGUE - three divisions of
-  // twenty clubs playing a double round-robin. It was written when every
-  // fixture was a league fixture, so a plain count() meant the same thing.
-  // It no longer does: a championship decider is a real, wanted fixture
-  // that is not part of that shape, and counting it here would turn a
-  // correct season-end into a failed preflight. The check is made
-  // semantically correct rather than relaxed - it still demands EXACTLY
-  // 1140 league fixtures, and a missing or duplicated one still fails.
+  // The contract describes the LEAGUE of ONE season - three divisions of
+  // twenty clubs playing a double round-robin. It is scoped both ways, and
+  // both scopings are load-bearing.
+  //
+  // BY STAGE: a championship decider, a boundary decider and a promotion
+  // playoff are all real, wanted fixtures that are not part of that shape;
+  // counting them here would turn a correct season-end into a failed
+  // preflight. The check stays exact - 1140 LEAGUE fixtures, no more and no
+  // fewer - and non-LEAGUE fixtures are reported separately.
+  //
+  // BY SEASON. Global counts were correct while exactly one
+  // season existed; the moment season 2 is created they become 6 / 120 / 2280
+  // and a hard-coded 3 / 60 / 1140 fails preflight, blocking every deploy
+  // including the one that would fix it.
+  const activeSeason = seasons.find((s) => s.isActive) ?? null
+  const seasonScope = activeSeason ? { seasonId: activeSeason.id } : { seasonId: "__none__" }
   const [divisionCount, divisionTeamCount, leagueFixtureCount, nonLeagueFixtureCount, playedFixtureCount, qaFixtures] =
     await Promise.all([
-      prisma.division.count(),
-      prisma.divisionTeam.count(),
-      prisma.fixture.count({ where: { stage: "LEAGUE" } }),
-      prisma.fixture.count({ where: { stage: { not: "LEAGUE" } } }),
+      prisma.division.count({ where: seasonScope }),
+      prisma.divisionTeam.count({ where: seasonScope }),
+      prisma.fixture.count({ where: { stage: "LEAGUE", division: seasonScope } }),
+      prisma.fixture.count({ where: { stage: { not: "LEAGUE" }, division: seasonScope } }),
       prisma.fixture.count({ where: { playedAt: { not: null } } }),
       prisma.fixture.count({ where: { matchday: QA_MATCHDAY } }),
     ])
 
-  if (divisionCount !== V1_EXPECTED_DIVISIONS) {
-    errors.push(`Expected ${V1_EXPECTED_DIVISIONS} Divisions for V1, found ${divisionCount}.`)
-  }
-  if (divisionTeamCount !== V1_EXPECTED_DIVISION_TEAM_MEMBERSHIPS) {
-    errors.push(`Expected ${V1_EXPECTED_DIVISION_TEAM_MEMBERSHIPS} DivisionTeam memberships for V1, found ${divisionTeamCount}.`)
-  }
-  if (leagueFixtureCount !== V1_EXPECTED_TOTAL_FIXTURES) {
-    errors.push(`Expected ${V1_EXPECTED_TOTAL_FIXTURES} LEAGUE Fixtures for V1, found ${leagueFixtureCount}.`)
-  }
-  // Not an error - a decider is legitimate. Surfaced so a non-league
-  // fixture can never appear in Production unnoticed.
-  if (nonLeagueFixtureCount > 0) {
-    warnings.push(`${nonLeagueFixtureCount} non-LEAGUE fixture(s) present (title deciders / playoffs).`)
-  }
+  const structure = judgeLeagueStructure({
+    activeSeasons: seasons.filter((s) => s.isActive).length,
+    divisions: divisionCount,
+    memberships: divisionTeamCount,
+    leagueFixtures: leagueFixtureCount,
+    nonLeagueFixtures: nonLeagueFixtureCount,
+  })
+  errors.push(...structure.errors)
+  warnings.push(...structure.notes)
+
   if (qaFixtures > 0) {
     errors.push(`${qaFixtures} fixture(s) with matchday=${QA_MATCHDAY} (QA residue) found.`)
   }
 
   const divisions = await prisma.division.findMany({
+    where: seasonScope,
     select: { _count: { select: { teams: true, fixtures: { where: { stage: "LEAGUE" } } } } },
   })
   for (const d of divisions) {

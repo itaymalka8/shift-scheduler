@@ -54,6 +54,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ fix
       // in their fixture list days beforehand - so it is not a spoiler and
       // belongs in the base query, unlike anything about the result.
       stage: true,
+      boundaryRank: true,
+      boundaryRound: true,
       // Which tie of a championship playoff this is. Same reasoning as
       // `stage`: created with the fixture, visible in the fixture list days
       // beforehand, and says nothing about any result.
@@ -126,6 +128,10 @@ export async function GET(_request: Request, { params }: { params: Promise<{ fix
     // from "kicked off, already simulated" without exposing the result.
     simulationReady: !!fixture.playedAt,
     stage: fixture.stage,
+    // Boundary metadata, public from creation exactly like the stage itself:
+    // it says WHICH place is being settled, never how it went.
+    boundaryRank: fixture.boundaryRank,
+    boundaryRound: fixture.boundaryRound,
     // A championship match is played on neutral turf, so the Match Center
     // must not present either club as hosting. Derived from stage rather
     // than stored, because it is the same fact said twice - and asked

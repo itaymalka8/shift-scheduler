@@ -26,10 +26,30 @@ export function CompetitionBanner({ data }: { data: MatchApiResponse }) {
   const winnerName = shootout ? (homeWon ? data.homeTeam.name : data.awayTeam.name) : null
 
   const playoff = data.playoff
-  const title = playoff ? t("match.playoff.title") : t("match.decider.title")
+  // WHAT THIS MATCH IS, decided from FixtureStage and from nothing else.
+  //
+  // A PROMOTION_PLAYOFF fixture is stored on season N's TIER 1 Division even
+  // though its four clubs are still tier 2 members - a Fixture must belong to
+  // a competition of its season, and this is the promotion playoff TO tier 1.
+  // So divisionId cannot be read as "which competition this is", and a banner
+  // that fell through to the championship copy would tell a manager they were
+  // playing an ordinary Ligat Ha'al league match. FixtureStage is
+  // authoritative here.
+  const title =
+    data.stage === "PROMOTION_PLAYOFF"
+      ? t("match.promotion.title")
+      : data.stage === "BOUNDARY_DECIDER"
+        ? t("match.boundary.title")
+        : playoff
+          ? t("match.playoff.title")
+          : t("match.decider.title")
   // The round label is fixture metadata, public from creation like the stage
   // itself: it says which tie this is, never how any of them went.
-  const round = playoff
+  const round = data.stage === "BOUNDARY_DECIDER"
+    ? data.boundaryRound !== null
+      ? t("match.boundary.round", { round: String(data.boundaryRound) })
+      : null
+    : playoff
     ? playoff.phase === "ROUND_ROBIN"
       ? t("match.playoff.roundRobin", { round: String(playoff.round) })
       : playoff.isFinal
@@ -40,11 +60,21 @@ export function CompetitionBanner({ data }: { data: MatchApiResponse }) {
   // A shootout only ever names the winner of THIS tie. In a playoff that is
   // not the same thing as naming the champion, so the copy differs: the
   // decider says "are champions", a playoff tie says "go through".
+  // A shootout only ever names the winner of THIS tie, and what winning it
+  // MEANS differs per competition: a title decider crowns a champion, a
+  // championship playoff tie sends a club through, a promotion playoff
+  // promotes, a boundary decider settles a league position. Saying the wrong
+  // one is not a cosmetic slip - it announces a title that was not won.
+  const winnerLine = (team: string) => {
+    if (data.stage === "PROMOTION_PLAYOFF") return t("match.promotion.wonBy", { team })
+    if (data.stage === "BOUNDARY_DECIDER") return t("match.boundary.wonBy", { team })
+    if (playoff && !playoff.isFinal) return t("match.playoff.wonBy", { team })
+    return t("match.decider.wonBy", { team })
+  }
+
   const shootoutLine = shootout
     ? `${t("match.decider.penalties", { home: String(shootout.home), away: String(shootout.away) })}${
-        winnerName
-          ? ` — ${playoff && !playoff.isFinal ? t("match.playoff.wonBy", { team: winnerName }) : t("match.decider.wonBy", { team: winnerName })}`
-          : ""
+        winnerName ? ` — ${winnerLine(winnerName)}` : ""
       }`
     : null
 

@@ -144,7 +144,9 @@ describe("Phase 2B creates no decider", () => {
     const source = read("lib", "seasons", "orchestrator.ts")
     // The fail-closed branch returns before the transaction that would
     // change status, so no `status: "OFFSEASON"` write can be reached.
-    const failClosed = source.indexOf("if (!champions.fullyResolved)")
+    // Phase 3Q widened the condition to cover promotion/relegation's own
+    // sporting questions; the guard is still that the branch comes first.
+    const failClosed = source.indexOf("if (!champions.fullyResolved || !sporting || !sporting.complete)")
     const transition = source.indexOf('data: { status: "OFFSEASON", offseasonStage: "PLAYER_LIFECYCLE" }')
     expect(failClosed).toBeGreaterThan(-1)
     expect(transition).toBeGreaterThan(failClosed)

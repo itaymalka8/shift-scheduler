@@ -12,6 +12,7 @@
  * says who won; this module only says how it was won and what to call the
  * club.
  */
+import type { FixtureStage, PlayoffPhase } from "@/generated/prisma"
 import { isMatchFinished } from "@/lib/match/timing"
 
 /**
@@ -122,9 +123,16 @@ type ChampionshipRow = {
   }
   decidedByFixture: {
     id: string
-    stage: "LEAGUE" | "TITLE_DECIDER" | "TITLE_PLAYOFF"
+    // The enum itself, not a hand-copied union. Phase 3Q added
+    // BOUNDARY_DECIDER and PROMOTION_PLAYOFF, and a frozen list here would
+    // have needed editing for every future competition - which is the drift
+    // this file's own "derive, never duplicate" rule exists to prevent. A
+    // title is still only ever decided by LEAGUE, TITLE_DECIDER or
+    // TITLE_PLAYOFF; that is enforced where titles are resolved, not by
+    // narrowing a display type.
+    stage: FixtureStage
     playoffId: string | null
-    playoffPhase: "ROUND_ROBIN" | "KNOCKOUT" | null
+    playoffPhase: PlayoffPhase | null
     playoffRound: number | null
     scheduledAt: Date | null
     playedAt: Date | null

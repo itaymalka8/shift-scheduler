@@ -1,3 +1,4 @@
+import type { FixtureStage } from "@/generated/prisma"
 import type { MatchEventView } from "./event-meta"
 import type { PlayerMatchStatView } from "@/lib/match/player-stats-view"
 
@@ -86,7 +87,13 @@ export interface MatchApiResponse {
    * "Championship Decider" in their fixture list days ahead - so unlike
    * anything about the result it is safe before kickoff.
    */
-  stage: "LEAGUE" | "TITLE_DECIDER" | "TITLE_PLAYOFF"
+  // The competition this match belongs to, and the ONLY thing that may say
+  // so. A PROMOTION_PLAYOFF fixture is filed on the tier 1 Division even
+  // though its four clubs are tier 2 members, so divisionId cannot be read as
+  // "which competition" - FixtureStage can, and is.
+  stage: FixtureStage
+  boundaryRank: number | null
+  boundaryRound: number | null
   /** A decider and a playoff tie are played on neutral turf: neither club is hosting. */
   neutralVenue: boolean
   /**

@@ -86,6 +86,7 @@ function buildDivisionSeedData(tierConfig: LeagueTierConfig, nameIndex: number) 
  */
 async function seedDivisionTeams(
   divisionId: string,
+  seasonId: string,
   tierConfig: LeagueTierConfig,
   nameIndex: number,
   seasonStartMonday: Date
@@ -100,7 +101,11 @@ async function seedDivisionTeams(
       })
 
       await tx.divisionTeam.createMany({
-        data: teams.map((t) => ({ divisionId, teamId: t.id })),
+        // seasonId is denormalised from the division on purpose - it is what
+        // carries UNIQUE(seasonId, teamId), the constraint that makes a club
+        // in two divisions of one season unstorable. It is written, never
+        // derived at read time, so it must be passed at every insert.
+        data: teams.map((t) => ({ divisionId, seasonId, teamId: t.id })),
       })
 
       // Every club is born owned by someone, and a seeded club is born a
@@ -211,7 +216,7 @@ async function ensureDivisionSeeded(
     // does - worth a line in the server log so a slow or failed first
     // registration is diagnosable without guesswork.
     const startedAt = Date.now()
-    await seedDivisionTeams(division.id, tierConfig, nameIndex, seasonStartMonday)
+    await seedDivisionTeams(division.id, seasonId, tierConfig, nameIndex, seasonStartMonday)
     console.info(`Seeded division ${division.name}: ${tierConfig.groupSize} teams in ${Date.now() - startedAt}ms`)
     return
   }

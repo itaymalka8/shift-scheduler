@@ -6,6 +6,7 @@ import { topAttributesForPosition } from "@/lib/players/position-weights"
 import { getActiveRosterCount, MAX_ACTIVE_ROSTER_SIZE } from "@/lib/players/roster"
 import { settleIntakeDeadline } from "@/lib/youth/deadline"
 import { handleYouthApiError } from "@/lib/youth/http"
+import { findCurrentSeasonIdForTeam } from "@/lib/leagues/current-division"
 
 const PROSPECT_ATTRIBUTE_HIGHLIGHT_COUNT = 4
 
@@ -25,12 +26,15 @@ export async function handleGetYouthIntake(teamId: string): Promise<NextResponse
   const now = new Date()
 
   try {
-    const membership = await prisma.divisionTeam.findFirst({
-      where: { teamId },
-      include: { division: { select: { seasonId: true } } },
-      orderBy: { joinedAt: "desc" },
-    })
-    const seasonId = membership?.division.seasonId ?? null
+    // The ACTIVE season, not "newest membership by joinedAt". Season N+1's
+    // rows exist before that season is switched on, so the old query resolved
+    // to N+1 during the offseason and reported "no intake" for an intake that
+    // genuinely exists in season N - during WAITING_HUMANS, which is exactly
+    // when a manager is trying to use it. The write path
+    // (src/lib/youth/intake.ts) was always correctly season-scoped; only this
+    // read was not.
+    const club = await prisma.team.findUnique({ where: { id: teamId }, select: { countryCode: true } })
+    const seasonId = await findCurrentSeasonIdForTeam(teamId, club?.countryCode ?? null)
 
     let intakeRow = seasonId
       ? await prisma.youthIntake.findUnique({ where: { teamId_seasonId: { teamId, seasonId } } })

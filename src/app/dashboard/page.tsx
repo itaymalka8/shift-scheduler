@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { TeamCrest } from "@/components/team-crest"
 import { getLeagueTiers, getDivisionName } from "@/lib/leagues/config"
+import { findCurrentMembership } from "@/lib/leagues/current-division"
 import { computeStandings, type StandingRow } from "@/lib/leagues/standings"
 import { ensureIsraelSeasonSeeded } from "@/lib/leagues/seed"
 import { ensureTeamForUser } from "@/lib/team-setup"
@@ -68,11 +69,12 @@ export default async function DashboardPage() {
   // on hosted Postgres, not just local-loopback latency.
   const [membership, players, stadium, lineupSlots] = team
     ? await Promise.all([
-        prisma.divisionTeam.findFirst({
-          where: { teamId: team.id },
-          include: { division: true },
-          orderBy: { joinedAt: "desc" },
-        }),
+        // The club's division in the country's ACTIVE season - never "newest
+        // membership by joinedAt". Season N+1's rows are written during the
+        // offseason, before the season is switched on, so the old query
+        // returned the club's FUTURE division for the whole of that window.
+        // With promotion that means showing a club the wrong tier.
+        findCurrentMembership(team.id, team.countryCode),
         prisma.player.findMany({
           where: { teamId: team.id },
           select: {
@@ -91,17 +93,17 @@ export default async function DashboardPage() {
       ])
     : [null, [], null, []]
 
-  const division = membership?.division ?? null
+  const division = membership
   const tierConfig = division ? getLeagueTiers(team!.countryCode ?? "").find((tc) => tc.tier === division.tier) : null
-  const divisionName = division && tierConfig ? getDivisionName(tierConfig, division.group ?? "", locale) : null
+  const divisionName = division && tierConfig ? getDivisionName(tierConfig, division.group, locale) : null
 
   // Both depend on `division` but not on each other.
   const [standings, upcomingFixtures] = division
     ? await Promise.all([
-        computeStandings(division.id),
+        computeStandings(division.divisionId),
         prisma.fixture.findMany({
           where: {
-            divisionId: division.id,
+            divisionId: division.divisionId,
             homeScore: null,
             OR: [{ homeTeamId: team!.id }, { awayTeamId: team!.id }],
           },

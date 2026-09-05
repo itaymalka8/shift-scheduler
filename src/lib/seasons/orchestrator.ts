@@ -11,7 +11,15 @@ import {
 } from "./squad-replenishment"
 import { SeasonLifecycleError } from "./errors"
 import { countRemainingSeasonLifecyclePlayers, processSeasonPlayerLifecycle } from "./player-lifecycle"
-import { activateNextSeason, ensureNextSeasonStructure, isNextSeasonStructureComplete, rescheduleIfStale } from "./next-season"
+import { activateNextSeason, ensureNextSeasonFixtures, isNextSeasonStructureComplete, rescheduleIfStale } from "./next-season"
+import {
+  createBoundaryFixtures,
+  createPromotionBracket,
+  isSportingResolutionComplete,
+  loadSeasonResolutionState,
+  resolveSeasonSporting,
+} from "./promotion/resolution"
+import { materialiseNextSeasonMembership, verifyNextSeasonMembership } from "./promotion/membership"
 import { persistSeasonChampions, resolveSeasonChampions } from "./champions"
 import { ensureTitleDecider } from "./deciders"
 import { decidePlayoff } from "./playoff-resolution"
@@ -131,6 +139,14 @@ export interface OrchestratorStepSummary {
   championsPersisted?: number
   /** Divisions still level after every head-to-head criterion, and therefore awaiting a decider. */
   divisionsAwaitingDecider?: number
+  /** Boundary fixtures this step created, across all divisions. */
+  boundaryFixturesCreated?: number
+  /** Promotion playoff fixtures this step created (0 or 2). */
+  promotionFixturesCreated?: number
+  /** Membership rows the PROMOTION_RELEGATION stage wrote (0 on a retry). */
+  membershipsWritten?: number
+  promotedTeamIds?: string[]
+  relegatedTeamIds?: string[]
   /** Title deciders this step created. Zero when they already existed. */
   decidersCreated?: number
   /** Championship playoff fixtures this step created, across all divisions. */
@@ -178,15 +194,26 @@ async function runOneStep(seasonId: string, now: Date): Promise<OrchestratorStep
     // before anything is written, which is what actually makes this safe.
     const champions = await resolveSeasonChampions(seasonId, now)
 
+    // PROMOTION AND RELEGATION'S OWN SPORTING QUESTIONS, read at the same
+    // instant and from the same finished season. Titles and places are
+    // separate questions with separate machinery: resolveSeasonChampions owns
+    // rank 1 of every division, and this owns every other outcome boundary
+    // (rank 16 in tier 1; ranks 2 and 3 in each tier 2 group) plus the
+    // promotion bracket. A tier 2 group's rank 1 is BOTH its title and its
+    // automatic promotion - one tie, one fixture - which is why
+    // boundaryRanksFor never returns 1.
+    const resolutionState = await loadSeasonResolutionState(seasonId)
+    const sporting = resolutionState ? resolveSeasonSporting(resolutionState, now) : null
+
     // FAIL CLOSED. A division still level after points, goal difference,
     // goals scored and all three head-to-head criteria has no champion yet -
     // it has a fixture still to play. Phase 2B does not create or simulate
     // that decider, so the correct behaviour is to leave the season ACTIVE
     // and write nothing: no invented champion, no half-persisted season, no
     // offseason starting on top of an undecided title.
-    if (!champions.fullyResolved) {
+    if (!champions.fullyResolved || !sporting || !sporting.complete) {
       const tied = champions.needsDecider.length
-      if (tied === 0) {
+      if (tied === 0 && (!sporting || sporting.complete)) {
         return { ...base, detail: "season finished but its champions could not be resolved from the data" }
       }
 
@@ -202,7 +229,7 @@ async function runOneStep(seasonId: string, now: Date): Promise<OrchestratorStep
       const divisionContext = await loadDivisionContext(seasonId)
 
       const created = await prisma.$transaction(async (tx) => {
-        const empty = { deciders: 0, playoffFixtures: 0, drawPersisted: false }
+        const empty = { deciders: 0, playoffFixtures: 0, drawPersisted: false, boundaries: 0, promotion: 0 }
         const locked = await lockSeason(tx, seasonId)
         if (locked.status !== "ACTIVE" || locked.offseasonStage !== "NONE") return empty
         if (!(await isSeasonReadyForOffseason(seasonId, now))) return empty
@@ -210,6 +237,41 @@ async function runOneStep(seasonId: string, now: Date): Promise<OrchestratorStep
         let deciders = 0
         let playoffFixtures = 0
         let drawPersisted = false
+        let boundaries = 0
+        let promotion = 0
+
+        // --- PROMOTION AND RELEGATION'S FIXTURES --------------------------
+        // Created here, while the season is still ACTIVE, so every match that
+        // can change who goes up or down is played by the squads that earned
+        // the result - before PLAYER_LIFECYCLE ages, retires or replenishes
+        // anybody. Each one holds the season ACTIVE by itself the moment it
+        // exists, because isSeasonReadyForOffseason counts every fixture of
+        // the season with no stage filter.
+        if (resolutionState && sporting) {
+          for (const work of sporting.boundaryWork) {
+            const division = resolutionState.divisions.find((d) => d.divisionId === work.divisionId)
+            if (!division) continue
+            if (work.decision.kind === "blocked") {
+              console.error(
+                `Boundary rank ${work.boundaryRank} of division ${work.divisionId} is blocked: ${work.decision.reason}`
+              )
+              continue
+            }
+            boundaries += await createBoundaryFixtures(tx, division, work, now)
+          }
+
+          // The bracket depends on FINAL tier 2 positions, so it can only be
+          // written once every tier 2 boundary is settled. That dependency is
+          // exactly why isSportingResolutionComplete exists: there is an
+          // instant where every EXISTING fixture is finished and this has
+          // never been created.
+          if (sporting.boundaryWork.length === 0 && sporting.bracket.length > 0 && !sporting.bracketCreated) {
+            const tier1 = resolutionState.divisions.find((d) => d.tier === 1)
+            if (tier1) {
+              promotion += await createPromotionBracket(tx, { tier1, bracket: sporting.bracket, now })
+            }
+          }
+        }
 
         for (const division of champions.needsDecider) {
           const tiedTeamIds = champions.tiedTeamIdsByDivision.get(division.divisionId)
@@ -282,22 +344,28 @@ async function runOneStep(seasonId: string, now: Date): Promise<OrchestratorStep
           // the season ACTIVE and is reported rather than guessed at - an
           // infrastructure failure, never a sporting one.
         }
-        return { deciders, playoffFixtures, drawPersisted }
+        return { deciders, playoffFixtures, drawPersisted, boundaries, promotion }
       })
 
       const parts: string[] = []
       if (created.deciders > 0) parts.push(`${created.deciders} title decider(s) scheduled`)
       if (created.playoffFixtures > 0) parts.push(`${created.playoffFixtures} playoff fixture(s) scheduled`)
       if (created.drawPersisted) parts.push("championship draw made")
+      if (created.boundaries > 0) parts.push(`${created.boundaries} boundary decider(s) scheduled`)
+      if (created.promotion > 0) parts.push(`${created.promotion} promotion playoff fixture(s) scheduled`)
+
+      const pending = sporting && !sporting.complete ? sporting.detail : `${tied} division(s) still level`
 
       return {
         ...base,
         detail:
           parts.length > 0
-            ? `season finished but ${tied} division(s) still level - ${parts.join(", ")}; season stays ACTIVE until they are played`
-            : `season finished but ${tied} division(s) still level - waiting on their championship fixtures`,
+            ? `season finished but not settled (${pending}) - ${parts.join(", ")}; season stays ACTIVE until they are played`
+            : `season finished but not settled - ${pending}`,
         divisionsAwaitingDecider: tied,
         decidersCreated: created.deciders,
+        boundaryFixturesCreated: created.boundaries,
+        promotionFixturesCreated: created.promotion,
         playoffFixturesCreated: created.playoffFixtures,
         knockoutDrawPersisted: created.drawPersisted,
       }
@@ -314,6 +382,17 @@ async function runOneStep(seasonId: string, now: Date): Promise<OrchestratorStep
       const locked = await lockSeason(tx, seasonId)
       if (locked.status !== "ACTIVE" || locked.offseasonStage !== "NONE") return null
       if (!(await isSeasonReadyForOffseason(seasonId, now))) return null
+      // THE EXISTENCE GATE, and it is load-bearing.
+      //
+      // isSeasonReadyForOffseason asks "is every fixture that EXISTS
+      // finished". That is necessary and not sufficient: the promotion
+      // bracket cannot be created until the tier 2 boundary ties are
+      // finished, so there is an instant at which every existing fixture is
+      // finished and the bracket has never been written. Transitioning there
+      // would skip promotion entirely - no exception, no log line, just a
+      // league that did not change. This asks the other half: does every
+      // fixture that MUST exist exist, and has it publicly finished.
+      if (!(await isSportingResolutionComplete(seasonId, now))) return null
       const persisted = await persistSeasonChampions(tx, champions)
       await tx.season.update({
         where: { id: seasonId },
@@ -487,11 +566,11 @@ async function runOneStep(seasonId: string, now: Date): Promise<OrchestratorStep
     const advanced = await advanceStage(
       seasonId,
       { status: "OFFSEASON", stage: "SQUAD_REPLENISHMENT" },
-      { stage: "CREATE_NEXT" }
+      { stage: "PROMOTION_RELEGATION" }
     )
     return {
       ...base,
-      toStage: advanced ? "CREATE_NEXT" : base.toStage,
+      toStage: advanced ? "PROMOTION_RELEGATION" : base.toStage,
       advanced,
       detail: advanced
         ? `every club satisfies the roster floor (${invariant.teamsChecked} checked)`
@@ -502,13 +581,82 @@ async function runOneStep(seasonId: string, now: Date): Promise<OrchestratorStep
     }
   }
 
-  // --- CREATE_NEXT --------------------------------------------------------
-  if (season.offseasonStage === "CREATE_NEXT") {
-    const structure = await ensureNextSeasonStructure(seasonId, now)
-    if (!(await isNextSeasonStructureComplete(structure.nextSeasonId, structure.divisions))) {
+  // --- PROMOTION_RELEGATION -----------------------------------------------
+  // Creates NO sporting fixture. Every match that could change who goes up or
+  // down was played while season N was still ACTIVE, on the squads that
+  // earned the result, so by the time this runs the answer is a pure function
+  // of facts that cannot change again - which is what makes a retry recompute
+  // the identical membership rather than move anybody twice.
+  if (season.offseasonStage === "PROMOTION_RELEGATION") {
+    const state = await loadSeasonResolutionState(seasonId)
+    const sporting = state ? resolveSeasonSporting(state, now) : null
+    if (!state || !sporting || !sporting.complete) {
+      // Unreachable in a healthy roll - the season could not have left ACTIVE
+      // without this being true - so it is reported rather than retried into.
+      return { ...base, detail: `cannot materialise membership: ${sporting?.detail ?? "no resolution state"}` }
+    }
+
+    const membership = await materialiseNextSeasonMembership({
+      oldSeasonId: seasonId,
+      finalDivisions: sporting.finalDivisions,
+      playoffResults: sporting.playoffResults,
+    })
+
+    const verdict = await verifyNextSeasonMembership(seasonId, membership.nextSeasonId)
+    if (!verdict.ok) {
+      for (const failure of verdict.failures) {
+        console.error(`Season ${seasonId} membership invariant failed: ${failure}`)
+      }
       return {
         ...base,
-        detail: "next season structure still incomplete",
+        detail: `${verdict.failures.length} membership invariant(s) failed`,
+        nextSeasonId: membership.nextSeasonId,
+        membershipsWritten: membership.created,
+      }
+    }
+
+    const advanced = await advanceStage(
+      seasonId,
+      { status: "OFFSEASON", stage: "PROMOTION_RELEGATION" },
+      { stage: "CREATE_NEXT" }
+    )
+    return {
+      ...base,
+      toStage: advanced ? "CREATE_NEXT" : base.toStage,
+      advanced,
+      detail: advanced
+        ? `${membership.promoted.length} promoted, ${membership.relegated.length} relegated; ` +
+          `${verdict.clubs} clubs placed (${membership.attested ? "attested an earlier run" : "written"})`
+        : "another run already advanced this stage",
+      nextSeasonId: membership.nextSeasonId,
+      membershipsWritten: membership.created,
+      promotedTeamIds: membership.promoted,
+      relegatedTeamIds: membership.relegated,
+    }
+  }
+
+  // --- CREATE_NEXT --------------------------------------------------------
+  // Fixtures and activation ONLY. It has no membership authority of any kind:
+  // ensureNextSeasonFixtures refuses outright if any division is empty, and
+  // the completeness gate below re-derives every structural invariant from the
+  // database before the season may be switched on.
+  if (season.offseasonStage === "CREATE_NEXT") {
+    const nextSeason = await prisma.season.findFirst({
+      where: { countryCode: season.countryCode, number: season.number + 1 },
+      select: { id: true, number: true },
+    })
+    if (!nextSeason) {
+      return { ...base, detail: "next season row does not exist - PROMOTION_RELEGATION has not run" }
+    }
+    const structure = await ensureNextSeasonFixtures(nextSeason.id, now)
+    const complete = await isNextSeasonStructureComplete(seasonId, structure.nextSeasonId)
+    if (!complete.ok) {
+      for (const failure of complete.failures) {
+        console.error(`Next season ${structure.nextSeasonId} not activatable: ${failure}`)
+      }
+      return {
+        ...base,
+        detail: `next season structure still incomplete (${complete.failures.length} failure(s))`,
         nextSeasonId: structure.nextSeasonId,
         fixturesCreated: structure.fixturesCreated,
       }
@@ -543,10 +691,12 @@ export interface OrchestratorRunSummary {
   nextSeasonId: string | null
 }
 
-// A full transition is 7 stage advances (squad replenishment sits between
-// WAITING_HUMANS and CREATE_NEXT); the cap is only a guard against a bug
-// turning this into an unbounded loop, never something a healthy run reaches.
-const MAX_STEPS_PER_RUN = 14
+// A full transition is 8 stage advances: ACTIVE -> PLAYER_LIFECYCLE ->
+// YOUTH_GENERATION -> BOT_PROMOTION -> WAITING_HUMANS -> SQUAD_REPLENISHMENT
+// -> PROMOTION_RELEGATION -> CREATE_NEXT -> DONE. The cap is only a guard
+// against a bug turning this into an unbounded loop, never something a
+// healthy run reaches.
+const MAX_STEPS_PER_RUN = 16
 
 /**
  * Drives a season as far through the end-of-season machine as it can get
