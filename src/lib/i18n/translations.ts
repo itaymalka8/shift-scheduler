@@ -1050,6 +1050,10 @@ const he = {
   "transfers.subtitle": "שחקנים המוצעים למכירה על ידי מועדונים אחרים",
   "transfers.emptyTitle": "אין כרגע שחקנים פעילים בשוק ההעברות",
   "transfers.errorTitle": "לא הצלחנו לטעון את שוק ההעברות כרגע",
+  "transfers.errorSquadFloorReached":
+    "אי אפשר לשחרר או למכור את השחקן הזה: הסגל יירד מתחת למינימום הנדרש לעונה (16 שחקנים, ובהם 2 שוערים, 4 מגנים, 4 קשרים ו-2 חלוצים).",
+  "youth.promoteErrorSquadFloor":
+    "אי אפשר לקדם את השחקן הזה כרגע: הסגל צריך את המקומות שנותרו לעמידה במינימום העונתי (2 שוערים, 4 מגנים, 4 קשרים, 2 חלוצים).",
   "transfers.retry": "נסה שוב",
   "transfers.loadMore": "טען עוד שחקנים",
   "transfers.loadingMore": "טוען...",
@@ -2180,6 +2184,10 @@ const en: LocaleDictionary = {
   "transfers.subtitle": "Players listed for sale by other clubs",
   "transfers.emptyTitle": "There are no active players in the transfer market right now",
   "transfers.errorTitle": "We couldn't load the transfer market right now",
+  "transfers.errorSquadFloorReached":
+    "This player cannot be released or sold: the squad would drop below the season minimum (16 players, including 2 goalkeepers, 4 defenders, 4 midfielders and 2 forwards).",
+  "youth.promoteErrorSquadFloor":
+    "This prospect cannot be promoted right now: the squad needs its remaining slots to meet the season minimum (2 goalkeepers, 4 defenders, 4 midfielders, 2 forwards).",
   "transfers.retry": "Try again",
   "transfers.loadMore": "Load more players",
   "transfers.loadingMore": "Loading...",
@@ -3322,6 +3330,10 @@ const ar: LocaleDictionary = {
   "transfers.subtitle": "لاعبون معروضون للبيع من أندية أخرى",
   "transfers.emptyTitle": "لا يوجد حاليًا لاعبون نشطون في سوق الانتقالات",
   "transfers.errorTitle": "تعذر تحميل سوق الانتقالات الآن",
+  "transfers.errorSquadFloorReached":
+    "لا يمكن إطلاق سراح هذا اللاعب أو بيعه: سينخفض الفريق إلى ما دون الحد الأدنى للموسم (16 لاعبًا، منهم حارسا مرمى و4 مدافعين و4 لاعبي وسط ومهاجمان).",
+  "youth.promoteErrorSquadFloor":
+    "لا يمكن ترقية هذا اللاعب الآن: يحتاج الفريق إلى المقاعد المتبقية لتلبية الحد الأدنى للموسم (حارسا مرمى، 4 مدافعين، 4 لاعبي وسط، مهاجمان).",
   "transfers.retry": "حاول مرة أخرى",
   "transfers.loadMore": "تحميل المزيد من اللاعبين",
   "transfers.loadingMore": "جارٍ التحميل...",

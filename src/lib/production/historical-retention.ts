@@ -43,6 +43,18 @@ export const ACCOUNT_PROTECTION_FOREIGN_KEYS = [
   { constraint: "TeamEra_teamId_fkey", table: "TeamEra", column: "teamId", target: "Team", onDelete: "RESTRICT" },
 ] as const
 
+/**
+ * Phase 3N's ledger, held to the same standard as everything else above: a
+ * season or a club that has been replenished cannot be deleted out from under
+ * its own audit row. Re-asserted here, in the retention contract, rather than
+ * only in the replenishment contract - because "what may never be deleted" is
+ * one question, and it should have one answer in one place.
+ */
+export const REPLENISHMENT_PROTECTION_FOREIGN_KEYS = [
+  { constraint: "SquadReplenishment_seasonId_fkey", table: "SquadReplenishment", column: "seasonId", target: "Season", onDelete: "RESTRICT" },
+  { constraint: "SquadReplenishment_teamId_fkey", table: "SquadReplenishment", column: "teamId", target: "Team", onDelete: "RESTRICT" },
+] as const
+
 export const FIXTURE_RETENTION_TRIGGER = {
   name: "Fixture_played_no_delete",
   table: "Fixture",
@@ -131,6 +143,7 @@ export function evaluateRetention(readings: RetentionReadings): RetentionCheck[]
     ...compareForeignKeys(RETENTION_FOREIGN_KEYS, readings.foreignKeys, "FK"),
     ...compareForeignKeys(DELIBERATE_CASCADES, readings.foreignKeys, "deliberate CASCADE"),
     ...compareForeignKeys(ACCOUNT_PROTECTION_FOREIGN_KEYS, readings.foreignKeys, "account protection"),
+    ...compareForeignKeys(REPLENISHMENT_PROTECTION_FOREIGN_KEYS, readings.foreignKeys, "replenishment protection"),
     ...checkTrigger(readings.trigger),
   ]
 }

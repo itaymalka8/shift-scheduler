@@ -4,6 +4,11 @@ import { isMatchFinished } from "@/lib/match/timing"
 import { generateSeasonYouthIntakes } from "@/lib/youth/intake"
 import { processBotYouthIntake } from "@/lib/youth/promote"
 import { lockYouthIntake, settleIntakeDeadline } from "@/lib/youth/deadline"
+import {
+  DEFAULT_REPLENISHMENT_BATCH,
+  replenishSeasonSquads,
+  verifySeasonRosterInvariant,
+} from "./squad-replenishment"
 import { SeasonLifecycleError } from "./errors"
 import { countRemainingSeasonLifecyclePlayers, processSeasonPlayerLifecycle } from "./player-lifecycle"
 import { activateNextSeason, ensureNextSeasonStructure, isNextSeasonStructureComplete, rescheduleIfStale } from "./next-season"
@@ -115,6 +120,11 @@ export interface OrchestratorStepSummary {
   botIntakesRemaining?: number
   humanIntakesSettled?: number
   humanIntakesOpen?: number
+  /** Clubs this step actually replenished (a club that needed nothing still counts). */
+  teamsReplenished?: number
+  teamsAwaitingReplenishment?: number
+  /** Fallback players created this step, across every club in the batch. */
+  fallbackPlayersGenerated?: number
   nextSeasonId?: string
   fixturesCreated?: number
   /** Champion rows written by this step. Present only on the ACTIVE -> OFFSEASON transition. */
@@ -420,14 +430,75 @@ async function runOneStep(seasonId: string, now: Date): Promise<OrchestratorStep
     if (stillOpen > 0) {
       return { ...base, detail: `${stillOpen} managers still deciding`, humanIntakesSettled: settled, humanIntakesOpen: stillOpen }
     }
-    const advanced = await advanceStage(seasonId, { status: "OFFSEASON", stage: "WAITING_HUMANS" }, { stage: "CREATE_NEXT" })
+    const advanced = await advanceStage(seasonId, { status: "OFFSEASON", stage: "WAITING_HUMANS" }, { stage: "SQUAD_REPLENISHMENT" })
     return {
       ...base,
-      toStage: advanced ? "CREATE_NEXT" : base.toStage,
+      toStage: advanced ? "SQUAD_REPLENISHMENT" : base.toStage,
       advanced,
       detail: advanced ? "every intake is closed" : "another run already advanced this stage",
       humanIntakesSettled: settled,
       humanIntakesOpen: 0,
+    }
+  }
+
+  // --- SQUAD_REPLENISHMENT ------------------------------------------------
+  // Runs only once EVERY intake is closed, so it sees the final post-youth
+  // roster. Nothing here promotes a prospect on anybody's behalf: a human who
+  // let their window expire has already lost those five, and what they get
+  // instead is the worst players in the game, and only as many as the floor
+  // arithmetic demands.
+  if (season.offseasonStage === "SQUAD_REPLENISHMENT") {
+    const summary = await replenishSeasonSquads(seasonId, DEFAULT_REPLENISHMENT_BATCH, now)
+    for (const failure of summary.failures) {
+      console.error(`Squad replenishment failed for team ${failure.teamId}:`, failure.error)
+    }
+    if (summary.remaining > 0 || summary.failures.length > 0) {
+      return {
+        ...base,
+        detail:
+          summary.failures.length > 0
+            ? `${summary.failures.length} club(s) could not be replenished`
+            : `${summary.remaining} clubs still to replenish`,
+        teamsReplenished: summary.teamsProcessed,
+        teamsAwaitingReplenishment: summary.remaining,
+        fallbackPlayersGenerated: summary.playersGenerated,
+      }
+    }
+
+    // THE LEAGUE GATE. Re-derived from the database, never inferred from the
+    // ledger count: transfers run on the calendar Thursday window regardless
+    // of season state, so a club replenished an hour ago could have been sold
+    // from since. The voluntary floor guard should have refused that sale;
+    // this is where we find out.
+    const invariant = await verifySeasonRosterInvariant(seasonId)
+    if (!invariant.ok) {
+      for (const failure of invariant.failures) {
+        console.error(`Season roll blocked - team ${failure.teamId}: ${failure.reason}`)
+      }
+      return {
+        ...base,
+        detail: `${invariant.failures.length} club(s) fail the roster invariant`,
+        teamsReplenished: summary.teamsProcessed,
+        teamsAwaitingReplenishment: 0,
+        fallbackPlayersGenerated: summary.playersGenerated,
+      }
+    }
+
+    const advanced = await advanceStage(
+      seasonId,
+      { status: "OFFSEASON", stage: "SQUAD_REPLENISHMENT" },
+      { stage: "CREATE_NEXT" }
+    )
+    return {
+      ...base,
+      toStage: advanced ? "CREATE_NEXT" : base.toStage,
+      advanced,
+      detail: advanced
+        ? `every club satisfies the roster floor (${invariant.teamsChecked} checked)`
+        : "another run already advanced this stage",
+      teamsReplenished: summary.teamsProcessed,
+      teamsAwaitingReplenishment: 0,
+      fallbackPlayersGenerated: summary.playersGenerated,
     }
   }
 
@@ -472,10 +543,10 @@ export interface OrchestratorRunSummary {
   nextSeasonId: string | null
 }
 
-// A full transition is 6 stage advances; the cap is only a guard against a
-// bug turning this into an unbounded loop, never something a healthy run
-// reaches.
-const MAX_STEPS_PER_RUN = 12
+// A full transition is 7 stage advances (squad replenishment sits between
+// WAITING_HUMANS and CREATE_NEXT); the cap is only a guard against a bug
+// turning this into an unbounded loop, never something a healthy run reaches.
+const MAX_STEPS_PER_RUN = 14
 
 /**
  * Drives a season as far through the end-of-season machine as it can get

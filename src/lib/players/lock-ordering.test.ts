@@ -66,6 +66,19 @@ function makeListing() {
   }
 }
 
+/**
+ * A squad that clears every roster floor with room to spare - 2 GK, 8
+ * defenders, 8 midfielders, 4 attackers, 22 in total. The lock-order suites
+ * need the guard to PASS so the transaction proceeds; what the guard decides
+ * is roster-floor.test.ts's subject, not this file's.
+ */
+const ROSTER_ABOVE_FLOOR = [
+  ...Array(2).fill({ primaryPosition: "GK" }),
+  ...Array(8).fill({ primaryPosition: "CB" }),
+  ...Array(8).fill({ primaryPosition: "CM" }),
+  ...Array(4).fill({ primaryPosition: "ST" }),
+]
+
 const teamRoles = { balance: 100_000_000, captainId: null, penaltyTakerId: null, freeKickTakerId: null, cornerTakerId: null }
 
 function makeTx(): Prisma.TransactionClient {
@@ -86,12 +99,16 @@ function makeTx(): Prisma.TransactionClient {
     },
     player: {
       findUnique: () => record("player.findUnique", makePlayer()),
-      // The canonical lineup repair now runs inside removePlayerFromSquad, so
-      // the stub has to answer the reads it makes. Returning an empty squad
-      // is the right shape here: this suite is about LOCK ORDER, not about
-      // which eleven the repair picks, and an empty pool makes the repair a
-      // no-op that cannot reorder anything.
-      findMany: () => record("player.findMany", []),
+      // Two different readers now call this: the canonical lineup repair
+      // inside removePlayerFromSquad, and the roster-floor guard that asks
+      // whether the club could still carry a season without this player.
+      //
+      // The answer has to be a squad comfortably ABOVE the floor, or the
+      // guard rejects the release before the ordering this suite exists to
+      // measure ever happens. It is deliberately a flat list of positions
+      // with no ids: the repair finds nothing it recognises and stays a
+      // no-op, so the pool still cannot reorder anything.
+      findMany: () => record("player.findMany", ROSTER_ABOVE_FLOOR),
       update: () => record("player.update", makePlayer()),
       count: () => record("player.count", 0),
     },

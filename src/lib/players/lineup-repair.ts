@@ -64,6 +64,23 @@ function formationSlotsFor(team: { formation: string | null; customFormation: un
   return [...FORMATIONS[isFormationId(team.formation) ? team.formation : DEFAULT_FORMATION]]
 }
 
+export interface LineupRepairOptions {
+  /**
+   * Players who are LEAVING this club in the very transaction that is calling
+   * the repair, but whose Player row has not been written yet.
+   *
+   * Purchase, Release and Retirement all clear the departing player's slot
+   * before they persist the departure, so at repair time the database still
+   * says the club owns them. Without this, the repair asks "who does this
+   * club own?", gets the leaver back, and - if he is the best candidate for
+   * the slot he has just vacated - puts him straight back into it. The club
+   * then either fields a player it no longer owns, or loses the slot again
+   * when the buying club's own repair claims him (LineupSlot.playerId is
+   * unique) and walks into the next match with ten.
+   */
+  departing?: readonly string[]
+}
+
 /**
  * Repairs one club's lineup against an open transaction.
  *
@@ -71,7 +88,12 @@ function formationSlotsFor(team: { formation: string | null; customFormation: un
  * a retirement, a sale, a release - and a rolled-back removal can never leave
  * a lineup rebuilt around a player who is still there.
  */
-export async function repairTeamLineup(tx: Prisma.TransactionClient, teamId: string): Promise<LineupRepairResult> {
+export async function repairTeamLineup(
+  tx: Prisma.TransactionClient,
+  teamId: string,
+  options: LineupRepairOptions = {}
+): Promise<LineupRepairResult> {
+  const departing = new Set(options.departing ?? [])
   const team = await tx.team.findUniqueOrThrow({
     where: { id: teamId },
     select: { id: true, formation: true, customFormation: true },
@@ -80,7 +102,9 @@ export async function repairTeamLineup(tx: Prisma.TransactionClient, teamId: str
   const slotCount = slots.length
 
   const players = await tx.player.findMany({ where: { teamId }, select: REPAIR_PLAYER_SELECT })
-  const eligible = players.filter(isSelectable)
+  // A player on his way out is not a candidate, whatever the Player row still
+  // says about who owns him.
+  const eligible = players.filter((player) => !departing.has(player.id) && isSelectable(player))
   const existing = await tx.lineupSlot.findMany({ where: { teamId }, select: { playerId: true, slotIndex: true } })
 
   const byId = new Map(players.map((p) => [p.id, p]))
@@ -94,6 +118,7 @@ export async function repairTeamLineup(tx: Prisma.TransactionClient, teamId: str
   for (const slot of [...existing].sort((a, b) => a.slotIndex - b.slotIndex)) {
     if (slot.slotIndex < 0 || slot.slotIndex >= slotCount) continue
     if (keptBySlot.has(slot.slotIndex)) continue
+    if (departing.has(slot.playerId)) continue
     const player = byId.get(slot.playerId)
     if (!player || player.teamId !== teamId || !isSelectable(player)) continue
     if (claimed.has(slot.playerId)) continue

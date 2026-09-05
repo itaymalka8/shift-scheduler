@@ -1,11 +1,10 @@
 import { SeededRandom } from "@/lib/match/engine/rng"
 import { generateAttributesForTargetOverall } from "@/lib/players/attribute-generation"
-import { calculatePositionOverall } from "@/lib/players/overall"
-import { POSITION_ATTRIBUTE_WEIGHTS } from "@/lib/players/position-weights"
+import { convergeToTargetOverall } from "@/lib/players/overall-converge"
 import { SECONDARY_POSITIONS, type PlayerPosition } from "@/lib/players/positions"
 import { generatePlayerName } from "@/lib/players/names"
 import { DEFAULT_NATIONALITY_POOL, PREFERRED_FOOT_WEIGHTS } from "@/lib/players/config"
-import type { AttributeKey, PlayerAttributes } from "@/lib/players/attributes"
+import type { PlayerAttributes } from "@/lib/players/attributes"
 import { YouthError } from "./errors"
 import {
   YOUTH_AGE_MAX,
@@ -70,45 +69,6 @@ function streamFor(seed: string, purpose: string): SeededRandom {
 function rollBand(bands: WeightedBand[], rng: SeededRandom): number {
   const band = rng.pickWeighted(bands, (b) => b.weight)
   return rng.int(band.min, band.max)
-}
-
-/**
- * Walks attribute points until the DERIVED Overall lands exactly on
- * `target`. generateAttributesForTargetOverall gets close but can miss by
- * several points either way, and for youth that matters: a miss upward would
- * put a prospect above the 70 ceiling. Overall is never written to - only
- * position-relevant attributes move, ±1 at a time, exactly as squad
- * generation's own nudge pass does, so the attributes and the Overall they
- * grade out at stay consistent by construction.
- */
-function convergeToTargetOverall(
-  attributes: PlayerAttributes,
-  position: PlayerPosition,
-  target: number
-): number {
-  const weights = POSITION_ATTRIBUTE_WEIGHTS[position]
-  // Deterministic, weight-descending round-robin: the attributes that move
-  // Overall most are adjusted first, so convergence is quick and repeatable.
-  const keys = (Object.keys(weights) as AttributeKey[]).sort(
-    (a, b) => (weights[b] ?? 0) - (weights[a] ?? 0) || a.localeCompare(b)
-  )
-
-  let overall = calculatePositionOverall(attributes, position)
-  const maxSteps = keys.length * 40
-  let steps = 0
-
-  while (overall !== target && steps < maxSteps) {
-    const key = keys[steps % keys.length]
-    const value = attributes[key]
-    steps++
-    if (typeof value !== "number") continue
-    if (overall < target && value < 100) attributes[key] = value + 1
-    else if (overall > target && value > 1) attributes[key] = value - 1
-    else continue
-    overall = calculatePositionOverall(attributes, position)
-  }
-
-  return overall
 }
 
 /**

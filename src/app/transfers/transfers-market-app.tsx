@@ -99,6 +99,10 @@ const PURCHASE_ERROR_INFO: Record<string, { messageKey: TranslationKey; removesC
   LISTING_NOT_FOUND: { messageKey: "transfers.purchaseErrorNoLongerAvailable", removesCard: true },
   PLAYER_NOT_OWNED: { messageKey: "transfers.purchaseErrorNoLongerAvailable", removesCard: true },
   ROSTER_FULL: { messageKey: "transfers.purchaseErrorRosterFull", removesCard: false },
+  // The seller's squad would fall below the season floor. Nothing about the
+  // listing changed, and the seller may yet sign or promote somebody, so the
+  // card stays on the market.
+  SQUAD_FLOOR_REACHED: { messageKey: "transfers.errorSquadFloorReached", removesCard: false },
   INSUFFICIENT_FUNDS: { messageKey: "transfers.purchaseErrorInsufficientFunds", removesCard: false },
   TRANSFER_WINDOW_CLOSED: { messageKey: "transfers.purchaseErrorWindowClosed", removesCard: false },
   TRANSFER_CONFLICT: { messageKey: "transfers.purchaseErrorConflict", removesCard: false },

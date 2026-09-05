@@ -5,6 +5,7 @@ import { calculatePlayerMarketValue } from "@/lib/players/market-value"
 import { calculatePlayerSalary } from "@/lib/economy/salary"
 import { extractPlayerAttributes } from "@/lib/players/attributes"
 import { getAvailableRosterSlots, lockTeamRoster, pickAvailableShirtNumber } from "@/lib/players/roster"
+import { countRoster, countsAfterAdditions, isResolvableWithinCap, rosterGroupOf } from "@/lib/players/roster-floor"
 import { YouthError } from "./errors"
 import { MAX_PROMOTIONS_PER_INTAKE } from "./config"
 import { lockYouthIntake, settleIntakeDeadline } from "./deadline"
@@ -80,6 +81,33 @@ export async function runPromoteYouthProspect(
   const availableSlots = await getAvailableRosterSlots(tx, intake.teamId)
   if (availableSlots <= 0) {
     throw new YouthError("ROSTER_FULL", `Team ${intake.teamId} has no free roster slot`)
+  }
+
+  // 2b. HEADROOM A HARD INVARIANT NEEDS IS NOT SPENDABLE ON A PROMOTION.
+  //
+  // A free slot is not the whole question. A club sitting at 21 with no
+  // goalkeeper has one slot and needs two keepers: promoting an outfielder
+  // into it leaves 22 players, still no goalkeeper, and a roster that cannot
+  // be repaired without breaking the cap - the season roll then fails closed
+  // for the whole league. This is the mirror of the voluntary-departure
+  // guard: a discretionary ADDITION may not make the floor unreachable, just
+  // as a discretionary departure may not break it.
+  //
+  // It is not a positional preference. A promotion that helps - the keeper
+  // this club is missing - always passes; only one that would strand the
+  // squad is refused, and the same rule applies to bots and humans alike.
+  const roster = await tx.player.findMany({
+    where: { teamId: intake.teamId, careerStatus: "ACTIVE" },
+    select: { primaryPosition: true },
+  })
+  const afterPromotion = countsAfterAdditions(countRoster(roster), [rosterGroupOf(prospect.primaryPosition)])
+  if (!isResolvableWithinCap(afterPromotion)) {
+    throw new YouthError(
+      "SQUAD_FLOOR_UNREACHABLE",
+      `Promoting ${prospect.primaryPosition} would leave team ${intake.teamId} unable to reach the season roster floor ` +
+        `within the cap (after: total=${afterPromotion.total} GK=${afterPromotion.GK} DEF=${afterPromotion.DF} ` +
+        `MID=${afterPromotion.MF} ATT=${afterPromotion.FW})`
+    )
   }
 
   // 3. The snapshot must still grade out at the Overall it was stored with.
@@ -236,7 +264,10 @@ export async function processBotYouthIntake(intakeId: string): Promise<ProcessBo
       // below, which is the whole point of a bot intake never idling.
       if (
         error instanceof YouthError &&
-        (error.code === "ROSTER_FULL" || error.code === "PROMOTION_LIMIT_REACHED" || error.code === "INTAKE_CLOSED")
+        (error.code === "ROSTER_FULL" ||
+          error.code === "SQUAD_FLOOR_UNREACHABLE" ||
+          error.code === "PROMOTION_LIMIT_REACHED" ||
+          error.code === "INTAKE_CLOSED")
       ) {
         break
       }

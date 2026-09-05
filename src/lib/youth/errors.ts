@@ -15,6 +15,11 @@ export const YOUTH_ERROR_CODES = [
   "PROSPECT_NOT_PENDING",
   "PROMOTION_LIMIT_REACHED",
   "ROSTER_FULL",
+  // The club has a free slot but spending it here would make the season's
+  // roster invariant unreachable - a squad one short of the cap with no
+  // goalkeeper cannot be given two. A discretionary promotion may not
+  // consume headroom a hard invariant needs. See youth/promote.ts.
+  "SQUAD_FLOOR_UNREACHABLE",
   "PROSPECT_INTEGRITY",
   "TEAM_NOT_BOT",
   "TEAM_IS_BOT",

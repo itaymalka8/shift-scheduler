@@ -3,6 +3,7 @@ import { InsufficientFundsError } from "@/lib/finance/balance"
 import { TransferError } from "./errors"
 import { runSerializableTransaction } from "./retry"
 import { removePlayerFromSquad } from "./squad-cleanup"
+import { assertDepartureKeepsRosterLegal } from "./roster-guard"
 import { lockPlayerRow } from "@/lib/players/locks"
 
 export interface ReleasePlayerInput {
@@ -97,6 +98,18 @@ export async function releasePlayer(input: ReleasePlayerInput): Promise<ReleaseP
       where: { id: input.teamId },
       select: { balance: true, captainId: true, penaltyTakerId: true, freeKickTakerId: true, cornerTakerId: true },
     })
+
+    // 3b. THE ROSTER FLOOR. Before any mutation at all, ask whether this club
+    // could still carry a season without this player - in total AND in his
+    // position group. A release that would leave 15 players, or a single
+    // goalkeeper, or three defenders, is refused here, and because nothing
+    // has been written yet the rejection costs the caller nothing: no lineup
+    // change, no listing change, no ownership change, no financial row.
+    //
+    // The player row lock is already held (step 0) and the count runs inside
+    // this transaction, so the number cannot go stale between the check and
+    // the departure it authorises.
+    await assertDepartureKeepsRosterLegal(tx, input.teamId, player)
 
     // 4. Balance check - fail fast, before touching listings/lineup/roles,
     // and before ever attempting the charge itself.

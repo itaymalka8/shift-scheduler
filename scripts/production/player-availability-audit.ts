@@ -23,6 +23,7 @@ import { createProductionClient } from "../../src/lib/production/client"
 import { printProductionBanner } from "../../src/lib/production/report"
 import { ProductionSafetyError } from "../../src/lib/production/env-guard"
 import { derivePlayerStatus } from "../../src/lib/players/availability"
+import { summariseAges, summariseRosterShape } from "../../src/lib/players/roster-report"
 
 function histogram(label: string, values: number[]): void {
   if (values.length === 0) {
@@ -68,9 +69,21 @@ async function main() {
     // Raw, so the generated client's expectation of the new column cannot
     // fail the whole read on a database that predates it.
     const rows = await prisma.$queryRawUnsafe<
-      { id: string; teamId: string | null; fitness: number; status: string; injuryStatus: string | null; suspensionMatches: number; careerStatus: string; injuryMatchesRemaining: number }[]
+      {
+        id: string
+        teamId: string | null
+        fitness: number
+        status: string
+        injuryStatus: string | null
+        suspensionMatches: number
+        careerStatus: string
+        injuryMatchesRemaining: number
+        age: number
+        primaryPosition: string
+      }[]
     >(
       `SELECT "id", "teamId", "fitness", "status", "injuryStatus", "suspensionMatches", "careerStatus",
+              "age", "primaryPosition",
               ${hasInjuryMatches ? '"injuryMatchesRemaining"' : "0 AS \"injuryMatchesRemaining\""}
        FROM "Player"`
     )
@@ -163,6 +176,50 @@ async function main() {
       `
       console.info(`  consequences applied: ${applied}`)
       console.info(`  outstanding (played, not yet applied): ${outstanding}`)
+    }
+
+    // ------------------------------------------------------------------
+    // 9. AGE - the input to next season's retirement wave.
+    //
+    // Retirement is what empties squads, and squad size is what the roster
+    // floor has to put back. How much replenishment the first season roll
+    // will have to do is decided almost entirely by the numbers below, so
+    // they are read BEFORE the deploy rather than discovered during it.
+    // ------------------------------------------------------------------
+    console.info("\n--- 9. AGE DISTRIBUTION (owned, career-ACTIVE) ---")
+    const owned = players.filter((p) => p.teamId !== null && p.careerStatus === "ACTIVE")
+    const ages = summariseAges(owned.map((p) => p.age))
+    console.info(
+      `  age: n=${ages.count} min=${ages.min} p25=${ages.p25} median=${ages.median} p75=${ages.p75} p90=${ages.p90} max=${ages.max}`
+    )
+    for (const row of ages.atOrAbove) {
+      console.info(`  age >= ${String(row.age).padStart(2)}: ${String(row.players).padStart(5)}  (${row.share}%)`)
+    }
+
+    // ------------------------------------------------------------------
+    // 10. TODAY'S ROSTER SHAPE against the floor the season roll will apply.
+    //
+    // Read-only, and deliberately not a verdict: it reports how many clubs
+    // the floor would add to and how many players it would generate if the
+    // roll ran right now. Nothing here writes, and nothing here gates.
+    // ------------------------------------------------------------------
+    console.info("\n--- 10. ROSTER SHAPE vs THE FLOOR (arithmetic only, no writes) ---")
+    const shape = summariseRosterShape(
+      teams.map((team) => ({
+        teamId: team.id,
+        label: `${team.name} (${team.id}${team.isBot ? ", BOT" : ", HUMAN"})`,
+        squad: (byTeam.get(team.id) ?? []).filter((p) => p.careerStatus === "ACTIVE"),
+      }))
+    )
+    histogram("ACTIVE owned players per club", shape.clubs.map((c) => c.counts.total))
+    histogram("goalkeepers per club", shape.clubs.map((c) => c.counts.GK))
+    console.info(`  clubs already at or above the floor: ${shape.clubsAtOrAboveFloor} of ${shape.clubs.length}`)
+    console.info(`  clubs the floor would add to today:  ${shape.clubsBelowFloor}`)
+    console.info(`  players the floor would generate:    ${shape.playersThatWouldBeGenerated}`)
+    console.info(`  clubs that could NOT reach the floor within the ${shape.cap} cap: ${shape.unresolvable.length}`)
+    for (const club of shape.unresolvable.slice(0, 10)) {
+      const c = club.counts
+      console.info(`    ${club.label} total=${c.total} GK=${c.GK} DEF=${c.DF} MID=${c.MF} ATT=${c.FW} needs=${club.needed}`)
     }
 
     console.info("\nPLAYER AVAILABILITY AUDIT: REPORTED")

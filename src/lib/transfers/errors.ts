@@ -17,6 +17,11 @@ export const TRANSFER_ERROR_CODES = [
   "LISTING_EXPIRED",
   "CANNOT_BUY_OWN_LISTING",
   "ROSTER_FULL",
+  // The mirror of ROSTER_FULL on the other side of the squad. ROSTER_FULL
+  // stops a club growing past the cap; this stops one shrinking below the
+  // floor it needs to carry a season - in total OR in any position group.
+  // See transfers/roster-guard.ts.
+  "SQUAD_FLOOR_REACHED",
   // Not in the requested list - added because step 7 of Purchase explicitly
   // requires a clear domain error (never a raw Prisma error) when the
   // buying team doesn't exist, and none of the other codes fit that case.

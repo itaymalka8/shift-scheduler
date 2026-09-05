@@ -348,6 +348,7 @@ const RELEASE_ERROR_KEYS: Record<string, TranslationKey> = {
   PLAYER_NOT_ACTIVE: "transfers.releaseErrorPlayerNotActive",
   INSUFFICIENT_FUNDS: "transfers.releaseErrorInsufficientFunds",
   TRANSFER_CONFLICT: "transfers.releaseErrorConflict",
+  SQUAD_FLOOR_REACHED: "transfers.errorSquadFloorReached",
 }
 
 interface CancelListingOutcome {
@@ -424,6 +425,7 @@ const YOUTH_PROMOTE_ERROR_KEYS: Record<string, TranslationKey> = {
   PROSPECT_NOT_PENDING: "youth.promoteErrorAlreadyPromoted",
   PROMOTION_LIMIT_REACHED: "youth.promoteErrorLimitReached",
   ROSTER_FULL: "youth.promoteErrorRosterFull",
+  SQUAD_FLOOR_UNREACHABLE: "youth.promoteErrorSquadFloor",
   PROSPECT_NOT_FOUND: "youth.promoteErrorNotFound",
 }
 

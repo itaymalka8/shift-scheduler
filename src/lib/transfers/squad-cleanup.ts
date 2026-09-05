@@ -40,5 +40,13 @@ export async function removePlayerFromSquad(
 
   // ONE canonical repair, called from the one place every departure already
   // funnels through - rather than a copy of the same logic at each call site.
-  await repairTeamLineup(tx, teamId)
+  //
+  // AND IT IS TOLD WHO IS LEAVING. Every caller clears the slot before it
+  // writes the departure to the Player row, so at this moment the database
+  // still says this club owns the leaver - and the repair, left to read the
+  // database alone, would hand him the very slot it just cleared. Naming him
+  // here is what stops a sold player being re-selected for the club selling
+  // him, a released player holding a slot at a club he no longer plays for,
+  // and a retiring player being picked to start one more match.
+  await repairTeamLineup(tx, teamId, { departing: [playerId] })
 }

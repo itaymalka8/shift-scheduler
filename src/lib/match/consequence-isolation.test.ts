@@ -174,7 +174,10 @@ describe("ONE availability rule, ONE fatigue model, ONE repair", () => {
 
   it("every squad departure repairs through the one service", () => {
     const source = readCode(...CLEANUP)
-    expect(source).toContain("repairTeamLineup(tx, teamId)")
+    // The departing player is named so the repair cannot re-select the man it
+    // is repairing around - see lineup-repair.test.ts.
+    expect(source).toContain("repairTeamLineup(tx, teamId, { departing: [playerId] })")
+    expect(source.match(/repairTeamLineup\(/g) ?? []).toHaveLength(1)
   })
 })
 

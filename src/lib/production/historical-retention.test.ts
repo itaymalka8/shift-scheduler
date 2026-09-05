@@ -4,6 +4,7 @@ import {
   ACCOUNT_PROTECTION_FOREIGN_KEYS,
   DELIBERATE_CASCADES,
   FIXTURE_RETENTION_TRIGGER,
+  REPLENISHMENT_PROTECTION_FOREIGN_KEYS,
   RETENTION_FOREIGN_KEYS,
   evaluateRetention,
   retentionPasses,
@@ -166,10 +167,32 @@ describe("the retention contract", () => {
 // THE EVALUATOR - it must FAIL on every way the database could be wrong
 // ---------------------------------------------------------------------------
 
-const GOOD_FKS: ForeignKeyReading[] = [...RETENTION_FOREIGN_KEYS, ...DELIBERATE_CASCADES, ...ACCOUNT_PROTECTION_FOREIGN_KEYS]
+const GOOD_FKS: ForeignKeyReading[] = [
+  ...RETENTION_FOREIGN_KEYS,
+  ...DELIBERATE_CASCADES,
+  ...ACCOUNT_PROTECTION_FOREIGN_KEYS,
+  ...REPLENISHMENT_PROTECTION_FOREIGN_KEYS,
+]
 const GOOD_TRIGGER: TriggerReading = { ...FIXTURE_RETENTION_TRIGGER, enabled: "O" }
 
 describe("evaluateRetention fails closed", () => {
+  it.each(REPLENISHMENT_PROTECTION_FOREIGN_KEYS.map((fk) => fk.constraint))(
+    "fails when the replenishment ledger's %s is not RESTRICT",
+    (constraint) => {
+      const fks = GOOD_FKS.map((fk) => (fk.constraint === constraint ? { ...fk, onDelete: "CASCADE" } : fk))
+      const checks = evaluateRetention({ foreignKeys: fks, trigger: GOOD_TRIGGER })
+      expect(retentionPasses(checks)).toBe(false)
+      expect(checks.find((c) => c.label.includes(constraint))!.detail).toContain("CASCADE != RESTRICT")
+    }
+  )
+
+  it("fails when the replenishment ledger has no foreign keys at all", () => {
+    const fks = GOOD_FKS.filter((fk) => !fk.constraint.startsWith("SquadReplenishment_"))
+    const checks = evaluateRetention({ foreignKeys: fks, trigger: GOOD_TRIGGER })
+    expect(retentionPasses(checks)).toBe(false)
+    expect(checks.filter((c) => c.detail.includes("CONSTRAINT MISSING"))).toHaveLength(2)
+  })
+
   it("passes on a fully correct database", () => {
     expect(retentionPasses(evaluateRetention({ foreignKeys: GOOD_FKS, trigger: GOOD_TRIGGER }))).toBe(true)
   })

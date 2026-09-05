@@ -29,6 +29,8 @@ on:
           - prod:players:samples
           - prod:players:directory-audit
           - prod:players:availability-audit
+          - prod:replenishment:verify
+          - prod:season:next-verify
           - prod:render:autodeploy:off
           - prod:backup:create
           - prod:backup:prune:execute

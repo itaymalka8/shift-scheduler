@@ -112,6 +112,7 @@ model Team {
   kits                  TeamKit[]
   transferListings      TransferListing[]
   seasonChampionships   SeasonChampion[]
+  replenishments        SquadReplenishment[]
   youthIntakes          YouthIntake[]
   eras                  TeamEra[]
 }
@@ -376,6 +377,7 @@ enum SeasonOffseasonStage {
   YOUTH_GENERATION
   BOT_PROMOTION
   WAITING_HUMANS
+  SQUAD_REPLENISHMENT
   CREATE_NEXT
   DONE
 }
@@ -412,6 +414,7 @@ model Season {
   teamErasEnded    TeamEra[]               @relation("TeamEraEnded")
   champions        SeasonChampion[]
   playoffs         ChampionshipPlayoff[]
+  replenishments   SquadReplenishment[]
 
   @@unique([countryCode, number])
 }
@@ -1236,4 +1239,53 @@ model ChampionshipPlayoff {
   fixtures Fixture[]
 
   @@index([seasonId])
+}
+
+/**
+ * PROOF THAT ONE CLUB'S SEASON-BOUNDARY REPLENISHMENT DECISION WAS MADE.
+ * Written LAST inside the same transaction that generated the players, so
+ * "a row exists" is equivalent to "all of that club's work committed". It is
+ * the exactly-once authority for the SQUAD_REPLENISHMENT stage: a resumed run
+ * skips every club that has one and reprocesses every club that does not.
+ * IT IS NOT ROSTER TRUTH. Roster truth is Player.teamId + Player.careerStatus,
+ * always. This row records a decision, not a squad, which is why it stores
+ * counts rather than player ids and is never read to answer "who plays for
+ * this club".
+ * Every continuing club gets a row, including clubs that needed nothing
+ * (generated = 0) - that is what makes "was every club considered before the
+ * season rolled" an answerable question.
+ * RESTRICT on both relations, deliberately. This records an IRREVERSIBLE act:
+ * real Player rows were created and given to a club. Cascading it away with a
+ * season or a club would erase the only record that the grant ever happened,
+ * which is exactly the silent history loss Phase 3F exists to prevent. It
+ * forbids nothing that was previously possible - Fixture already RESTRICTs on
+ * Team and Division, so any club with played history is already undeletable.
+ */
+model SquadReplenishment {
+  id          String   @id @default(cuid())
+  seasonId    String
+  season      Season   @relation(fields: [seasonId], references: [id], onDelete: Restrict)
+  teamId      String
+  team        Team     @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  /**
+   * ACTIVE owned players read under the club's roster lock, before any generation.
+   */
+  ownedBefore Int
+  /**
+   * How many fallback players this club was given. Zero for a club that needed none.
+   */
+  generated   Int
+  /**
+   * ACTIVE owned players after. ownedBefore + generated = ownedAfter is a DB CHECK.
+   */
+  ownedAfter  Int
+  /**
+   * MIN_ACTIVE_ROSTER as it stood that season - the floor is tunable, so the row says what it was.
+   */
+  floorAtRun  Int
+  completedAt DateTime @default(now())
+
+  // The exactly-once key. One decision per club per season, enforced by the
+  // database rather than by a count that two workers could both read.
+  @@unique([seasonId, teamId])
 }

@@ -36,6 +36,19 @@ function makeIntake(overrides: Record<string, unknown> = {}) {
   return { id: INTAKE_ID, teamId: TEAM_ID, status: "OPEN" as string, promotedCount: 0, ...overrides }
 }
 
+/**
+ * A squad of `size` players whose shape clears every positional floor once it
+ * is big enough to. Two goalkeepers first, then defenders, midfielders and
+ * attackers in a 4-4-2-ish rotation, so the headroom guard sees a club that
+ * only ever needs generic depth - never one stranded without a keeper.
+ */
+function validRosterOf(size: number): { primaryPosition: string }[] {
+  const positions: string[] = []
+  const order = ["GK", "GK", "CB", "CB", "CB", "CB", "CM", "CM", "CM", "CM", "ST", "ST"]
+  for (let i = 0; i < size; i++) positions.push(order[i] ?? ["CB", "CM", "CB", "CM", "ST"][(i - order.length) % 5])
+  return positions.map((primaryPosition) => ({ primaryPosition }))
+}
+
 function makeTx(options: { intake?: Record<string, unknown>; prospect?: Record<string, unknown>; rosterCount?: number; intakeMissing?: boolean } = {}) {
   const intake = makeIntake(options.intake)
   const prospect = makeProspect(options.prospect)
@@ -66,7 +79,16 @@ function makeTx(options: { intake?: Record<string, unknown>; prospect?: Record<s
     },
     player: {
       count: () => record("player.count", options.rosterCount ?? 0),
-      findMany: () => record("player.findMany", [{ shirtNumber: 1 }]),
+      // Two callers, two shapes. pickAvailableShirtNumber asks for shirt
+      // numbers; the headroom guard asks for primary positions to work out
+      // whether this club could still reach the season roster floor within
+      // the cap after one more player. The stub answers whichever was asked
+      // for - a squad shaped so the guard PASSES, since what it decides is
+      // roster-floor.test.ts's subject rather than this file's.
+      findMany: (args?: { select?: Record<string, unknown> }) =>
+        args?.select?.primaryPosition
+          ? record("player.findMany", validRosterOf(options.rosterCount ?? 0))
+          : record("player.findMany", [{ shirtNumber: 1 }]),
       create: (args: { data: Record<string, unknown> }) => {
         trace.push("player.create")
         return Promise.resolve({ id: "new-player", ...args.data })

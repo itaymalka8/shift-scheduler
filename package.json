@@ -42,7 +42,9 @@
     "prod:players:directory-audit": "tsx scripts/production/player-directory-audit.ts",
     "prod:players:samples": "tsx scripts/production/player-profile-samples.ts",
     "prod:players:distribution": "tsx scripts/production/player-stats-distribution.ts",
-    "prod:players:availability-audit": "tsx scripts/production/player-availability-audit.ts"
+    "prod:players:availability-audit": "tsx scripts/production/player-availability-audit.ts",
+    "prod:replenishment:verify": "tsx scripts/production/verify-squad-replenishment.ts",
+    "prod:season:next-verify": "tsx scripts/production/verify-next-season.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.10.0",

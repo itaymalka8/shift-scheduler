@@ -3,6 +3,7 @@ import { InsufficientFundsError } from "@/lib/finance/balance"
 import { TransferError } from "./errors"
 import { runSerializableTransaction } from "./retry"
 import { removePlayerFromSquad } from "./squad-cleanup"
+import { assertDepartureKeepsRosterLegal } from "./roster-guard"
 import { repairTeamLineup } from "@/lib/players/lineup-repair"
 import { ensureTransferWindowExists, getTransferWindowDefinition, isWithinTransferWindow } from "./window"
 import { lockPlayerRow } from "@/lib/players/locks"
@@ -160,6 +161,18 @@ export async function purchaseTransferListing(input: PurchaseTransferListingInpu
     if (!buyingTeam) {
       throw new TransferError("BUYING_TEAM_NOT_FOUND", `No such team: ${input.buyingTeamId}`)
     }
+
+    // 7b. THE SELLING CLUB'S ROSTER FLOOR, EVALUATED NOW - NOT AT LISTING TIME.
+    // An arbitrary amount of time passes between a listing being created and
+    // somebody buying it, and in between the seller can retire players, sell
+    // others, release, promote youth or be replenished. Roster state read
+    // when the listing was written is worthless, so this asks the database
+    // what the squad is at THIS moment, under the player lock and the two
+    // club locks taken just above.
+    //
+    // The mirror of the buying side's cap check below: one stops a squad
+    // growing past 22, this stops one shrinking below what a season needs.
+    await assertDepartureKeepsRosterLegal(tx, listing.sellingTeamId, player)
 
     // 8. Roster cap - same transaction as the ownership transfer itself.
     const activeRosterCount = await getActiveRosterCount(tx, input.buyingTeamId)
