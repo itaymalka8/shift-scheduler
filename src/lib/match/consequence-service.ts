@@ -65,6 +65,36 @@ import {
 } from "@/lib/players/availability"
 import { repairTeamLineup } from "@/lib/players/lineup-repair"
 
+
+/**
+ * THE ONE TOTAL ORDER OVER FIXTURES.
+ *
+ * Sporting chronology first, then the fixture's own immutable id purely as a
+ * technical tie-break. Two fixtures kicking off at the same instant never
+ * share a club - a club plays once per matchday - so the id decides nothing
+ * sporting; it exists only so that two runs over the same backlog cannot
+ * disagree about the order, which the database's natural order absolutely
+ * does not guarantee.
+ *
+ * Because this is a TOTAL order over all fixtures, every club's own fixtures
+ * are a subsequence of one global sequence. That is what makes a single
+ * global `scheduledAt ASC, id ASC` sufficient for overlapping backlogs across
+ * many clubs: two clubs can never derive contradictory orders from one
+ * consistent ranking.
+ *
+ * The SQL orderBy below says exactly this; sorting again in JS is not
+ * distrust of Postgres, it is refusing to depend on a plan detail for a
+ * property that is load-bearing.
+ */
+export function compareFixtureChronology(
+  a: { id: string; scheduledAt: Date },
+  b: { id: string; scheduledAt: Date }
+): number {
+  const byTime = a.scheduledAt.getTime() - b.scheduledAt.getTime()
+  if (byTime !== 0) return byTime
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+}
+
 /** How many fixtures one activation run handles - keeps a tick bounded. */
 export const DEFAULT_CONSEQUENCE_BATCH = 20
 
@@ -156,14 +186,25 @@ export async function applyFixtureConsequences(fixtureId: string, now: Date = ne
     const publicCutoff = new Date(now.getTime() - MATCH_REAL_DURATION_MINUTES * 60_000)
     if (fixture.scheduledAt > publicCutoff) return empty
 
-    const teamIds = [fixture.homeTeamId, fixture.awayTeamId]
+    // ASCENDING TEAM ID, ALWAYS. Two activators working on two different
+    // fixtures that share a club would otherwise reach that club's
+    // LineupSlot rows in opposite orders and form an ABBA cycle. Sorting
+    // here is what makes the repair loop below deadlock-free.
+    const teamIds = [fixture.homeTeamId, fixture.awayTeamId].sort()
     const stats = await tx.playerMatchStats.findMany({
       where: { fixtureId },
       select: { playerId: true, minutesPlayed: true, yellowCards: true, redCards: true },
     })
     const statsByPlayer = new Map(stats.map((row) => [row.playerId, row]))
 
-    const players = await tx.player.findMany({ where: { teamId: { in: teamIds } }, select: CONSEQUENCE_PLAYER_SELECT })
+    // ASCENDING PLAYER ID for the same reason: the update below takes a row
+    // lock per player, and two activators sharing a club must take them in
+    // the same order. Natural order is whatever the plan happens to return.
+    const players = await tx.player.findMany({
+      where: { teamId: { in: teamIds } },
+      select: CONSEQUENCE_PLAYER_SELECT,
+      orderBy: { id: "asc" },
+    })
 
     // The injured, straight from the match the engine already played. No
     // second injury is rolled here - only the duration of one that happened.
@@ -307,13 +348,20 @@ export async function activateDueMatchConsequences(
       playedAt: { not: null },
       scheduledAt: { not: null, lte: publicCutoff },
     },
-    orderBy: { scheduledAt: "asc" },
+    // SPORTING CHRONOLOGY, THEN AN ARBITRARY BUT STABLE TIE-BREAK. Fixtures
+    // sharing a kickoff time never share a club, so id here decides nothing
+    // sporting - it only stops the database's natural order from making two
+    // runs over the same backlog disagree.
+    orderBy: [{ scheduledAt: "asc" }, { id: "asc" }],
     take: batchSize,
-    select: { id: true },
+    select: { id: true, scheduledAt: true },
   })
+  const ordered = due
+    .filter((row): row is { id: string; scheduledAt: Date } => row.scheduledAt !== null)
+    .sort(compareFixtureChronology)
 
   const summary: ConsequenceActivationSummary = {
-    fixturesFound: due.length,
+    fixturesFound: ordered.length,
     fixturesApplied: 0,
     playersUpdated: 0,
     injuriesStarted: 0,
@@ -321,7 +369,7 @@ export async function activateDueMatchConsequences(
     failures: [],
   }
 
-  for (const fixture of due) {
+  for (const fixture of ordered) {
     try {
       const result = await applyFixtureConsequences(fixture.id, now)
       if (result.applied) {
@@ -345,3 +393,124 @@ export function publicFinishCutoff(now: Date): Date {
 }
 
 export type { Prisma }
+
+/**
+ * ===================== THE CAUSAL PREREQUISITE =============================
+ *
+ * A fixture may only be simulated once every EARLIER fixture of either club
+ * that the public has already seen finish has had its consequences applied.
+ *
+ * Without this, one cron outage rewrites football. Match 1 kicks off and
+ * finishes; the cron dies before activation; Match 2 for the same club comes
+ * due; the cron restarts. The old order - process fixtures, then activate -
+ * simulated Match 2 from Player rows that still knew nothing about Match 1,
+ * so a player sent off on Monday played on Wednesday, an injury from Monday
+ * did not exist yet, and Monday's fatigue was never paid. The league table
+ * then recorded that result forever.
+ *
+ * Cron ordering alone cannot fix it: a backlog larger than one batch, a
+ * fixture that becomes due mid-run, or any caller that is not the cron all
+ * reopen the same hole. So the requirement lives HERE, per fixture, on the
+ * path that actually simulates - and it is satisfied by the one canonical
+ * activation service, never by a second copy of it.
+ */
+
+/** One earlier fixture of a club whose consequences have not been applied. */
+export interface OutstandingPriorFixture {
+  id: string
+  scheduledAt: Date
+  publiclyFinished: boolean
+}
+
+/**
+ * Every earlier PLAYED fixture of these clubs whose ledger is still NULL,
+ * in sporting chronology.
+ *
+ * "Earlier" is the same total order the activator uses - scheduledAt, then
+ * id purely as a stable tie-break - so a fixture is never treated as its own
+ * prerequisite and two fixtures kicking off at the same instant still have a
+ * defined direction.
+ */
+export async function findOutstandingPriorConsequences(
+  fixtureId: string,
+  teamIds: readonly string[],
+  scheduledAt: Date,
+  now: Date = new Date()
+): Promise<OutstandingPriorFixture[]> {
+  const publicCutoff = publicFinishCutoff(now)
+  const rows = await prisma.fixture.findMany({
+    where: {
+      consequencesAppliedAt: null,
+      playedAt: { not: null },
+      id: { not: fixtureId },
+      OR: [{ homeTeamId: { in: [...teamIds] } }, { awayTeamId: { in: [...teamIds] } }],
+      AND: [
+        {
+          OR: [
+            { scheduledAt: { lt: scheduledAt } },
+            { scheduledAt: scheduledAt, id: { lt: fixtureId } },
+          ],
+        },
+      ],
+    },
+    orderBy: [{ scheduledAt: "asc" }, { id: "asc" }],
+    select: { id: true, scheduledAt: true },
+  })
+  return rows
+    .filter((row): row is { id: string; scheduledAt: Date } => row.scheduledAt !== null)
+    .sort(compareFixtureChronology)
+    .map((row) => ({
+      id: row.id,
+      scheduledAt: row.scheduledAt,
+      publiclyFinished: row.scheduledAt <= publicCutoff,
+    }))
+}
+
+export interface PriorConsequenceSettlement {
+  /** Fixtures whose consequences this call applied, oldest first. */
+  applied: string[]
+  /**
+   * Prior fixtures that CANNOT be settled yet because the public has not seen
+   * them finish. Applying them would leak a live match's outcome, so the
+   * caller must refuse to simulate instead.
+   */
+  blockedByPublicFinish: string[]
+  /** Prior fixtures still outstanding after the attempt - a failure. */
+  stillOutstanding: string[]
+}
+
+/**
+ * Brings a fixture's clubs up to date, or reports why it cannot.
+ *
+ * Publicly-finished prior fixtures are applied through applyFixtureConsequences
+ * - the ONE authoritative service, each in its own transaction, oldest first -
+ * so this adds no second consequence model and no second idempotency story.
+ *
+ * A prior fixture that is played but NOT yet publicly finished is deliberately
+ * NOT applied. The anti-spoiler rule outranks convenience: a later fixture
+ * being due is not a reason to publish an earlier one's outcome early. Such a
+ * collision (two of a club's fixtures less than the public-finish window
+ * apart) fails closed and the fixture waits.
+ */
+export async function settlePriorConsequences(
+  fixtureId: string,
+  teamIds: readonly string[],
+  scheduledAt: Date,
+  now: Date = new Date()
+): Promise<PriorConsequenceSettlement> {
+  const outstanding = await findOutstandingPriorConsequences(fixtureId, teamIds, scheduledAt, now)
+  const applied: string[] = []
+
+  for (const prior of outstanding) {
+    if (!prior.publiclyFinished) continue
+    const result = await applyFixtureConsequences(prior.id, now)
+    if (result.applied || result.alreadyApplied) applied.push(prior.id)
+  }
+
+  const remaining = await findOutstandingPriorConsequences(fixtureId, teamIds, scheduledAt, now)
+  return {
+    applied,
+    blockedByPublicFinish: remaining.filter((row) => !row.publiclyFinished).map((row) => row.id),
+    stillOutstanding: remaining.filter((row) => row.publiclyFinished).map((row) => row.id),
+  }
+}

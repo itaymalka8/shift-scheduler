@@ -1,3 +1,4 @@
+import type { Prisma } from "@/generated/prisma"
 import { prisma } from "@/lib/prisma"
 import { toSeatCounts } from "@/lib/stadium/config"
 import { calculateStadiumCapacity } from "@/lib/stadium/metrics"
@@ -5,6 +6,9 @@ import { calculateMatchStadiumRevenue, calculateAttendance } from "@/lib/stadium
 import { calculateTeamTotalQuality } from "@/lib/players/quality"
 import { ensureStadiumForTeam } from "@/lib/stadium/actions"
 import { assertFixtureLineupsLegal, MatchPreflightError } from "./lineup-preflight"
+import { settlePriorConsequences } from "./consequence-service"
+import { lockTeamSquads } from "@/lib/players/locks"
+import { lockTeamRosters } from "@/lib/players/roster"
 import { calculateHomeMatchExpenses, calculateAwayTravelCost } from "@/lib/economy/match-expenses"
 import { createFinancialTransaction } from "@/lib/economy/service"
 import { simulateMatch } from "./engine/engine"
@@ -27,10 +31,16 @@ const CURRENT_COMPETITION = "league" as const
  * could make the shootout depend on anything mutable. The ids come from
  * EngineResult.finalOnPitch, so this asks about the eleven-a-side who were
  * actually on the pitch at the whistle and nobody else.
+ *
+ * Reads through the match's own transaction, like everything else the result
+ * depends on.
  */
-async function loadTakerCandidates(playerIds: string[]): Promise<TakerCandidate[]> {
+async function loadTakerCandidates(
+  db: Prisma.TransactionClient,
+  playerIds: string[]
+): Promise<TakerCandidate[]> {
   if (playerIds.length === 0) return []
-  return prisma.player.findMany({
+  return db.player.findMany({
     where: { id: { in: playerIds } },
     select: { id: true, primaryPosition: true, penalties: true, penaltySaving: true },
   }).then((rows) =>
@@ -51,19 +61,51 @@ async function loadTakerCandidates(playerIds: string[]): Promise<TakerCandidate[
  * Runs once per fixture (guarded by `playedAt`), entirely server-side, from
  * a snapshot of the real database state. The stored matchSeed makes the
  * whole thing reproducible.
+ *
+ * ==================== TWO THINGS MUST BE TRUE FIRST =======================
+ *
+ * 1. THE PAST MUST BE SETTLED. Every earlier fixture of either club that the
+ *    public has already seen finish must have had its consequences applied.
+ *    Otherwise a cron outage lets Wednesday be simulated from Monday-morning
+ *    squads: a player sent off on Monday plays, an injury does not exist yet,
+ *    Monday's fatigue is never paid, and the result is recorded forever. This
+ *    is settled through the ONE canonical activation service, before the
+ *    transaction below opens - because each prior fixture is applied in its
+ *    own transaction and must be committed, not nested.
+ *
+ * 2. THE XI THAT IS JUDGED MUST BE THE XI THAT PLAYS. Legality, the snapshot
+ *    and the simulation all happen inside ONE transaction that first locks
+ *    the fixture, then every player of both clubs, then both clubs. Every
+ *    path that can remove a player - Purchase, Release, Retirement, Listing -
+ *    takes that same Player row lock as its own first statement, so none of
+ *    them can slip a sale in between the check and the whistle. Before this,
+ *    legality was proved in a transaction that COMMITTED, and the squad was
+ *    only read afterwards.
  */
 export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
   const fixture = await prisma.fixture.findUnique({ where: { id: fixtureId } })
   if (!fixture || fixture.playedAt) return
   if (!fixture.scheduledAt || fixture.scheduledAt.getTime() > Date.now()) return
 
-  // FAIL CLOSED BEFORE ANYTHING IS SIMULATED. Both clubs are repaired through
-  // the canonical lineup service and then judged against the canonical legal
-  // XI; a club that still cannot field one throws MatchPreflightError here,
-  // which is BEFORE the snapshot, the engine, and every write below. The
-  // fixture keeps playedAt = null, so nothing partial exists and the match is
-  // still there to be played once the squad is fixed.
-  await prisma.$transaction((tx) => assertFixtureLineupsLegal(tx, fixtureId, [fixture.homeTeamId, fixture.awayTeamId]))
+  const teamIds = [fixture.homeTeamId, fixture.awayTeamId]
+
+  // 1. THE PAST, SETTLED - or an explicit refusal.
+  //
+  // Anything still outstanding after this is a prior fixture the public has
+  // NOT seen finish, which must never be activated early just because a later
+  // one is due. That is a scheduling collision, and it fails closed: the
+  // fixture keeps playedAt = null and is simply played on a later tick.
+  const settlement = await settlePriorConsequences(fixtureId, teamIds, fixture.scheduledAt)
+  const unsettled = [...settlement.blockedByPublicFinish, ...settlement.stillOutstanding]
+  if (unsettled.length > 0) {
+    throw new MatchPreflightError(
+      "PRIOR_CONSEQUENCES_PENDING",
+      fixtureId,
+      [],
+      `${unsettled.length} earlier fixture(s) of these clubs have unapplied consequences: ${unsettled.join(", ")}` +
+        (settlement.blockedByPublicFinish.length > 0 ? " (not publicly finished yet)" : "")
+    )
+  }
 
   const seed = fixture.matchSeed ?? generateMatchSeed()
   // A championship match - a two-club decider or any playoff fixture - is
@@ -76,76 +118,25 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
   // behaviour. See that module's header for why this used to be the riskiest
   // line in the feature.
   const neutralVenue = isNeutralVenue(fixture.stage)
-  const snapshot = await buildMatchSnapshot(fixtureId, seed, { neutralVenue })
-  const result = simulateMatch(snapshot)
 
-  // A decider cannot end level. If the 90 minutes did, the same seed that
-  // played the match decides the penalties - salted, exactly as the
-  // fan-incident roll is, so the shootout draws its own stream rather than
-  // continuing the match's.
-  let shootout: { home: number; away: number } | null = null
-  if (canGoToShootout(fixture.stage) && result.homeGoals === result.awayGoals) {
-    const candidates = await loadTakerCandidates([
-      ...result.finalOnPitch.home,
-      ...result.finalOnPitch.away,
-    ])
-    const byId = new Map(candidates.map((c) => [c.playerId, c]))
-    const pick = (ids: string[]) => ids.map((id) => byId.get(id)).filter((c): c is TakerCandidate => !!c)
-    const outcome = runShootout(
-      buildShootoutSide(snapshot.home.teamId, pick(result.finalOnPitch.home), snapshot.home.penaltyTakerId),
-      buildShootoutSide(snapshot.away.teamId, pick(result.finalOnPitch.away), snapshot.away.penaltyTakerId),
-      `${seed}-shootout`
-    )
-    shootout = { home: outcome.homeScore, away: outcome.awayScore }
-  }
-
-  // Gate revenue/expenses for the home side. Attendance comes from the same
-  // snapshot the engine ran on, so the crowd that affected the match is the
-  // crowd that paid to get in.
+  // Outside the transaction ON PURPOSE: this creates on miss and recovers
+  // from a unique-constraint race by re-reading, and a failed statement
+  // poisons the rest of a Postgres transaction. The stadium is not part of
+  // the XI question, so it is settled before the authority is taken.
   const homeStadium = await ensureStadiumForTeam(fixture.homeTeamId)
   const capacity = calculateStadiumCapacity(toSeatCounts(homeStadium))
-  const homePlayers = await prisma.player.findMany({ where: { teamId: fixture.homeTeamId } })
-  const attendanceDetail = calculateAttendance(
-    { isHome: true },
-    { teamTotalQuality: calculateTeamTotalQuality(homePlayers) },
-    { seats: toSeatCounts(homeStadium) }
-  )
-  // NEUTRAL VENUE MEANS NEUTRAL MONEY TOO.
-  //
-  // League economics are asymmetric by design: the home club takes the gate
-  // and pays to host, the away club pays to travel, and only the home crowd
-  // can incur a fan fine. At a neutral ground for a one-off title decider
-  // every one of those would be an arbitrary advantage handed to whichever
-  // club happened to sort first by teamId - which is explicitly a technical
-  // role with no sporting meaning.
-  //
-  // V1 therefore records ZERO club money for a decider rather than splitting
-  // a modelled gate. Splitting would require inventing a neutral-venue
-  // revenue share, a ticket split and a hosting-cost rule that no part of
-  // this game has yet - inventing an economy to avoid an asymmetry is a
-  // bigger risk than not paying anyone. The match is still played in full
-  // and still draws a crowd; the money is simply not modelled.
-  const neutralMoney = hasNeutralFinances(fixture.stage)
-  const revenue = neutralMoney ? { total: 0 } : calculateMatchStadiumRevenue(attendanceDetail.bySeatType)
-  const expenses = neutralMoney
-    ? { total: 0 }
-    : calculateHomeMatchExpenses({ capacity }, snapshot.attendance, CURRENT_COMPETITION)
-  const awayTravelCost = neutralMoney ? 0 : calculateAwayTravelCost(CURRENT_COMPETITION)
-
-  // Fan incidents are rolled from the same seed, so they're reproducible
-  // alongside the match itself.
-  const incidentRng = new SeededRandom(`${seed}-fans`)
-  const homeLost = result.homeGoals < result.awayGoals
-  const fanIncident = rollFanIncident(
-    snapshot.fanType,
-    { lost: homeLost, cardsAgainst: result.homeStats.yellowCards + result.homeStats.redCards, important: false },
-    DEFAULT_GAME_BALANCE_CONFIG,
-    incidentRng.next()
-  )
-  // No home crowd at a neutral venue, so no home-crowd fine either.
-  const fine = fanIncident && !neutralMoney ? fanIncidentFine(DEFAULT_GAME_BALANCE_CONFIG, incidentRng.next()) : 0
 
   await prisma.$transaction(async (tx) => {
+    // ---- AUTHORITY, IN THE PROJECT'S DOCUMENTED LOCK ORDER ----------------
+    //
+    //   Fixture -> Player -> Team -> LineupSlot -> financial
+    //
+    // Player before Team before LineupSlot is exactly the order Transfer
+    // Purchase uses (see lockPlayerRow and lockTeamRosters); taking the Team
+    // rows here, before the repair inside the preflight writes any
+    // LineupSlot, is what stops this transaction and a purchase from forming
+    // an ABBA cycle over those two tables.
+
     // SELECT ... FOR UPDATE, not a plain findUnique: this actually locks the
     // row at the database level. Two processes racing on the same fixture
     // (two scheduler ticks overlapping, a retry racing the original run)
@@ -160,6 +151,88 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
       SELECT "id", "playedAt" FROM "Fixture" WHERE "id" = ${fixtureId} FOR UPDATE
     `
     if (!fresh || fresh.playedAt) return
+
+    // THE SQUADS ARE NOW FROZEN. Nothing can sell, release or retire a player
+    // of either club until this transaction ends.
+    await lockTeamSquads(tx, teamIds)
+    await lockTeamRosters(tx, teamIds)
+
+    // FAIL CLOSED BEFORE ANYTHING IS SIMULATED. Both clubs are repaired
+    // through the canonical lineup service and then judged against the
+    // canonical legal XI; a club that still cannot field one throws
+    // MatchPreflightError here, which rolls this whole transaction back. The
+    // fixture keeps playedAt = null, so nothing partial exists and the match
+    // is still there to be played once the squad is fixed.
+    await assertFixtureLineupsLegal(tx, fixtureId, teamIds)
+
+    // Read through `tx`, so the eleven the engine gets are the eleven that
+    // were just judged legal, under the locks taken above.
+    const snapshot = await buildMatchSnapshot(fixtureId, seed, { neutralVenue }, tx)
+    const result = simulateMatch(snapshot)
+
+    // A decider cannot end level. If the 90 minutes did, the same seed that
+    // played the match decides the penalties - salted, exactly as the
+    // fan-incident roll is, so the shootout draws its own stream rather than
+    // continuing the match's.
+    let shootout: { home: number; away: number } | null = null
+    if (canGoToShootout(fixture.stage) && result.homeGoals === result.awayGoals) {
+      const candidates = await loadTakerCandidates(tx, [
+        ...result.finalOnPitch.home,
+        ...result.finalOnPitch.away,
+      ])
+      const byId = new Map(candidates.map((c) => [c.playerId, c]))
+      const pick = (ids: string[]) => ids.map((id) => byId.get(id)).filter((c): c is TakerCandidate => !!c)
+      const outcome = runShootout(
+        buildShootoutSide(snapshot.home.teamId, pick(result.finalOnPitch.home), snapshot.home.penaltyTakerId),
+        buildShootoutSide(snapshot.away.teamId, pick(result.finalOnPitch.away), snapshot.away.penaltyTakerId),
+        `${seed}-shootout`
+      )
+      shootout = { home: outcome.homeScore, away: outcome.awayScore }
+    }
+
+    // Gate revenue/expenses for the home side. Attendance comes from the same
+    // snapshot the engine ran on, so the crowd that affected the match is the
+    // crowd that paid to get in.
+    const homePlayers = await tx.player.findMany({ where: { teamId: fixture.homeTeamId } })
+    const attendanceDetail = calculateAttendance(
+      { isHome: true },
+      { teamTotalQuality: calculateTeamTotalQuality(homePlayers) },
+      { seats: toSeatCounts(homeStadium) }
+    )
+    // NEUTRAL VENUE MEANS NEUTRAL MONEY TOO.
+    //
+    // League economics are asymmetric by design: the home club takes the gate
+    // and pays to host, the away club pays to travel, and only the home crowd
+    // can incur a fan fine. At a neutral ground for a one-off title decider
+    // every one of those would be an arbitrary advantage handed to whichever
+    // club happened to sort first by teamId - which is explicitly a technical
+    // role with no sporting meaning.
+    //
+    // V1 therefore records ZERO club money for a decider rather than splitting
+    // a modelled gate. Splitting would require inventing a neutral-venue
+    // revenue share, a ticket split and a hosting-cost rule that no part of
+    // this game has yet - inventing an economy to avoid an asymmetry is a
+    // bigger risk than not paying anyone. The match is still played in full
+    // and still draws a crowd; the money is simply not modelled.
+    const neutralMoney = hasNeutralFinances(fixture.stage)
+    const revenue = neutralMoney ? { total: 0 } : calculateMatchStadiumRevenue(attendanceDetail.bySeatType)
+    const expenses = neutralMoney
+      ? { total: 0 }
+      : calculateHomeMatchExpenses({ capacity }, snapshot.attendance, CURRENT_COMPETITION)
+    const awayTravelCost = neutralMoney ? 0 : calculateAwayTravelCost(CURRENT_COMPETITION)
+
+    // Fan incidents are rolled from the same seed, so they're reproducible
+    // alongside the match itself.
+    const incidentRng = new SeededRandom(`${seed}-fans`)
+    const homeLost = result.homeGoals < result.awayGoals
+    const fanIncident = rollFanIncident(
+      snapshot.fanType,
+      { lost: homeLost, cardsAgainst: result.homeStats.yellowCards + result.homeStats.redCards, important: false },
+      DEFAULT_GAME_BALANCE_CONFIG,
+      incidentRng.next()
+    )
+    // No home crowd at a neutral venue, so no home-crowd fine either.
+    const fine = fanIncident && !neutralMoney ? fanIncidentFine(DEFAULT_GAME_BALANCE_CONFIG, incidentRng.next()) : 0
 
     await tx.matchEvent.createMany({
       data: result.events.map((e) => ({
@@ -261,7 +334,12 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
         referenceId: `MATCH_${fixtureId}_FAN_INCIDENT`,
       })
     }
-  })
+  },
+  // The whole match now lives in here - legality, snapshot, engine, writes -
+  // so it gets more than Prisma's 5s default. It is normally tens of
+  // milliseconds; the headroom is for a tick that has to queue behind
+  // another run holding the same squads.
+  { timeout: 30_000, maxWait: 15_000 })
 }
 
 /**
@@ -282,8 +360,14 @@ export async function processDueFixtures(): Promise<{
   fixtureIds: string[]
   blocked: { fixtureId: string; code: string; detail: string }[]
 }> {
+  // SPORTING CHRONOLOGY. A backlog must be played in the order the matches
+  // were scheduled, not in whatever order the database happens to return -
+  // otherwise Wednesday can be simulated before Monday and Monday's
+  // consequences arrive after the match they should have shaped. id is a
+  // stable tie-break only; fixtures sharing a kickoff never share a club.
   const due = await prisma.fixture.findMany({
     where: { playedAt: null, scheduledAt: { lte: new Date() } },
+    orderBy: [{ scheduledAt: "asc" }, { id: "asc" }],
     select: { id: true },
   })
   const blocked: { fixtureId: string; code: string; detail: string }[] = []

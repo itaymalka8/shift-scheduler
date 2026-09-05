@@ -17,18 +17,33 @@
 import type { Prisma } from "@/generated/prisma"
 import { repairTeamLineup, checkTeamLineup, type LineupCheck } from "@/lib/players/lineup-repair"
 
-export type MatchPreflightCode = "OK" | "INSUFFICIENT_ELIGIBLE_PLAYERS" | "ILLEGAL_LINEUP"
+export type MatchPreflightCode =
+  | "OK"
+  | "INSUFFICIENT_ELIGIBLE_PLAYERS"
+  | "ILLEGAL_LINEUP"
+  /**
+   * An earlier fixture of one of these clubs has finished in public but its
+   * consequences have not been applied, and could not be applied now. The
+   * only way this survives a settlement attempt is a fixture the public has
+   * NOT seen finish yet, which must never be activated early - so the later
+   * fixture waits rather than simulating from stale squads.
+   */
+  | "PRIOR_CONSEQUENCES_PENDING"
 
 export class MatchPreflightError extends Error {
   constructor(
     readonly code: Exclude<MatchPreflightCode, "OK">,
     readonly fixtureId: string,
-    readonly teams: LineupCheck[]
+    readonly teams: LineupCheck[] = [],
+    /** Used by codes that are not about a squad's shape, so they can say what is wrong in their own words. */
+    explicitDetail?: string
   ) {
-    const detail = teams
-      .filter((team) => !team.legal)
-      .map((team) => `${team.teamId}: ${team.starters}/${team.slotCount} starters, ${team.eligible} eligible [${team.problems.join(",")}]`)
-      .join("; ")
+    const detail =
+      explicitDetail ??
+      teams
+        .filter((team) => !team.legal)
+        .map((team) => `${team.teamId}: ${team.starters}/${team.slotCount} starters, ${team.eligible} eligible [${team.problems.join(",")}]`)
+        .join("; ")
     super(`${code} on fixture ${fixtureId} - ${detail}`)
     this.name = "MatchPreflightError"
   }
@@ -54,11 +69,16 @@ export async function preflightFixtureLineups(
   fixtureId: string,
   teamIds: readonly string[]
 ): Promise<MatchPreflightResult> {
-  for (const teamId of teamIds) {
+  // ASCENDING TEAM ID. repairTeamLineup writes LineupSlot rows, so two
+  // transactions touching the same two clubs must reach them in the same
+  // order or they can deadlock on each other. The clubs' sporting roles
+  // (home, away) are irrelevant to a repair, so sorting costs nothing.
+  const ordered = [...new Set(teamIds)].sort()
+  for (const teamId of ordered) {
     await repairTeamLineup(tx, teamId)
   }
   const teams: LineupCheck[] = []
-  for (const teamId of teamIds) {
+  for (const teamId of ordered) {
     teams.push(await checkTeamLineup(tx, teamId))
   }
 

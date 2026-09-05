@@ -71,7 +71,10 @@ describe("neutral venue is decided by stage, not by anything mutable", () => {
   })
 
   it("is handed to the snapshot rather than re-derived inside the engine", () => {
-    expect(simulate).toContain("buildMatchSnapshot(fixtureId, seed, { neutralVenue })")
+    // The fourth argument is the match's own transaction - the snapshot is
+    // read under the same locks its legality was judged under. neutralVenue
+    // is still handed in, still from the stage, still not re-derived.
+    expect(simulate).toContain("buildMatchSnapshot(fixtureId, seed, { neutralVenue }, tx)")
   })
 
   it("the helper is CLOSED BY CONSTRUCTION - a future stage is neutral by default", () => {

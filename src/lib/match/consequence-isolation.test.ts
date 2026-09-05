@@ -47,7 +47,12 @@ describe("ANTI SPOILER: a live match cannot leak through Player state", () => {
     expect(source).not.toMatch(/data:\s*\{[^}]*\bfitness\b/)
     expect(source).not.toContain("injuryMatchesRemaining")
     expect(source).not.toContain("suspensionMatches")
-    expect(source).not.toContain("consequences")
+    // simulate.ts DOES now know about consequences - it must settle a
+    // fixture's prerequisites before playing it (see the causal-order tests).
+    // What it must never do is apply a fixture's OWN consequences, which is
+    // what would put them on screen during the live broadcast.
+    expect(source).not.toContain("applyFixtureConsequences")
+    expect(source).not.toContain("consequencesAppliedAt")
   })
 
   it("activation is gated on the PUBLIC finish, not on playedAt", () => {

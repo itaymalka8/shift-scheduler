@@ -11,13 +11,31 @@
  * runSeasonEndOrchestratorForAllSeasons), which stay the single source of
  * truth for what each task actually does.
  *
- * ORDER MATTERS in exactly one place: season lifecycle runs AFTER fixture
- * processing, because fixture processing is what plays the last match of a
- * season - running the orchestrator first would always see that match as
- * still unplayed and defer the whole offseason by a full cron tick. Transfer
- * expiration sits between them only because it is the cheapest and touches
- * neither: it reads and writes TransferListing rows alone, so it is
- * genuinely order-independent with respect to the other two.
+ * ORDER MATTERS TWICE.
+ *
+ * 1. CONSEQUENCES BRACKET THE MATCHDAY. Activation runs BEFORE fixtures are
+ *    processed and again AFTER. Before, because a backlog left by a cron
+ *    outage must be settled before any club takes the field again - a match
+ *    simulated from squads that have not yet paid for the last one is a
+ *    wrong result written permanently into a league table. After, because
+ *    the matches this very tick played may already be publicly finished (a
+ *    late cron plays fixtures whose kickoff was hours ago, and the public
+ *    window is measured from kickoff), so their consequences are due
+ *    immediately rather than a tick later.
+ *
+ *    Neither pass is what makes the ordering CORRECT - correctness lives in
+ *    ensureFixtureSimulated, which settles a fixture's own prerequisites
+ *    itself and refuses to simulate otherwise, so a backlog bigger than one
+ *    activation batch is still safe. These two passes make it EFFICIENT:
+ *    they drain a backlog in bulk instead of one fixture at a time.
+ *
+ * 2. Season lifecycle runs AFTER fixture processing, because fixture
+ *    processing is what plays the last match of a season - running the
+ *    orchestrator first would always see that match as still unplayed and
+ *    defer the whole offseason by a full cron tick. Transfer expiration sits
+ *    between them only because it is the cheapest and touches neither: it
+ *    reads and writes TransferListing rows alone, so it is genuinely
+ *    order-independent with respect to the other two.
  *
  * The tasks are isolated from each other: a failure in one is logged clearly
  * and does not stop the others from getting their own chance to run, so a
@@ -42,11 +60,34 @@ async function main() {
 
   let fixturesObserved: number | null = null
   let fixturesBlocked = 0
-  let consequencesApplied: number | null = null
+  let consequencesAppliedBefore: number | null = null
+  let consequencesAppliedAfter: number | null = null
   let listingsExpired: number | null = null
   let seasonsChecked: number | null = null
   let seasonTransitions: number | null = null
   let seasonErrors = 0
+
+  // --- A1. Match consequence activation (BACKLOG FIRST) -------------------
+  // Everything a club already owes from matches the public has seen finish is
+  // settled before a single new fixture is played. This is the cron doing in
+  // bulk what ensureFixtureSimulated would otherwise have to do one fixture
+  // at a time.
+  try {
+    const consequences = await activateDueMatchConsequences()
+    consequencesAppliedBefore = consequences.fixturesApplied
+    console.info(
+      `Match consequences activated (backlog): ${consequences.fixturesApplied}/${consequences.fixturesFound} fixture(s), ` +
+        `${consequences.playersUpdated} player(s), ${consequences.injuriesStarted} injury(ies), ` +
+        `${consequences.suspensionsAdded} suspension(s)`
+    )
+    for (const failure of consequences.failures) {
+      console.error(`Consequence activation failed for fixture ${failure.fixtureId}:`, failure.error)
+    }
+    if (consequences.failures.length > 0) failedSubsystems.push("consequences")
+  } catch (error) {
+    failedSubsystems.push("consequences")
+    console.error("Match consequence activation (backlog) failed:", error)
+  }
 
   // --- A. Fixture processing ----------------------------------------------
   try {
@@ -75,21 +116,24 @@ async function main() {
     console.error("Fixture processing failed:", error)
   }
 
-  // --- A2. Match consequence activation -----------------------------------
+  // --- A2. Match consequence activation (WHAT THIS TICK JUST PLAYED) ------
   // Runs AFTER fixture processing and BEFORE everything else, because a match
   // played earlier in this same tick may already be publicly finished (the
-  // cron can be late), and a ban served here must be served before the
+  // cron can be late, and the public window runs from kickoff, not from the
+  // moment the engine ran), and a ban served here must be served before the
   // season orchestrator looks at anything.
   //
   // Fixture-driven and idempotent: it selects only fixtures that are played,
   // publicly finished and not yet applied, and each one is applied under its
   // own row lock behind Fixture.consequencesAppliedAt. Running this twice in
-  // a row deducts no fitness twice and serves no ban twice.
+  // a row deducts no fitness twice and serves no ban twice - which is exactly
+  // why running it both before and after A costs nothing when there is
+  // nothing to do.
   try {
     const consequences = await activateDueMatchConsequences()
-    consequencesApplied = consequences.fixturesApplied
+    consequencesAppliedAfter = consequences.fixturesApplied
     console.info(
-      `Match consequences activated: ${consequences.fixturesApplied}/${consequences.fixturesFound} fixture(s), ` +
+      `Match consequences activated (post-matchday): ${consequences.fixturesApplied}/${consequences.fixturesFound} fixture(s), ` +
         `${consequences.playersUpdated} player(s), ${consequences.injuriesStarted} injury(ies), ` +
         `${consequences.suspensionsAdded} suspension(s)`
     )
@@ -146,9 +190,10 @@ async function main() {
   console.info(
     [
       "Scheduled run summary:",
+      `  Consequences (backlog):    ${na(consequencesAppliedBefore)}`,
       `  Fixtures processed:        ${na(fixturesObserved)}`,
       `  Fixtures blocked (XI):     ${fixturesBlocked}`,
-      `  Consequences activated:    ${na(consequencesApplied)}`,
+      `  Consequences (post-match): ${na(consequencesAppliedAfter)}`,
       `  Transfer listings expired: ${na(listingsExpired)}`,
       `  Active seasons checked:    ${na(seasonsChecked)}`,
       `  Season transitions:        ${na(seasonTransitions)}`,

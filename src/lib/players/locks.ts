@@ -1,3 +1,4 @@
+import { Prisma as PrismaRuntime } from "@/generated/prisma"
 import type { Prisma } from "@/generated/prisma"
 
 /**
@@ -36,4 +37,38 @@ import type { Prisma } from "@/generated/prisma"
 export async function lockPlayerRow(tx: Prisma.TransactionClient, playerId: string): Promise<boolean> {
   const rows = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "Player" WHERE id = ${playerId} FOR UPDATE`
   return rows.length > 0
+}
+
+/**
+ * Takes the Postgres row lock on EVERY player owned by the given clubs, in
+ * ascending player id, and nothing else.
+ *
+ * This is the multi-row extension of lockPlayerRow above, and it exists for
+ * exactly one caller: the match. A fixture's legality is judged against the
+ * squads, and the engine then simulates those same squads - so between the
+ * judgement and the simulation, no player may leave. Every path that can
+ * remove one (Purchase, Release, Retirement, Listing) already takes
+ * lockPlayerRow on that player as its FIRST statement, so holding the whole
+ * squad here means each of them blocks at its own statement zero rather than
+ * halfway through. That is what makes "the XI that was validated is the XI
+ * that was simulated" a database guarantee rather than a hope.
+ *
+ * It keeps the documented order intact: Player is still first, and the match
+ * takes its Team locks after these and before touching LineupSlot, exactly as
+ * Transfer Purchase does.
+ *
+ * ORDER BY id inside one statement gives both a deterministic lock order and
+ * a single round trip. Two matches can only contend if a club has two
+ * fixtures in flight at once; sorting by the same key in both means they can
+ * never take the same two rows in opposite orders.
+ *
+ * Returns how many rows were locked.
+ */
+export async function lockTeamSquads(tx: Prisma.TransactionClient, teamIds: readonly string[]): Promise<number> {
+  const ordered = [...new Set(teamIds)].sort()
+  if (ordered.length === 0) return 0
+  const rows = await tx.$queryRaw<{ id: string }[]>`
+    SELECT "id" FROM "Player" WHERE "teamId" IN (${PrismaRuntime.join(ordered)}) ORDER BY "id" FOR UPDATE
+  `
+  return rows.length
 }
