@@ -78,6 +78,15 @@ async function main() {
       { label: "Hall of Fame", path: "/hall-of-fame" },
       { label: "Manager Profile", path: `/managers/${humanEra.userId}` },
       { label: "Club Trophy Cabinet", path: `/clubs/${anyTeam.id}` },
+      { label: "Player Directory", path: "/players" },
+      // A search term with a LIKE metacharacter in it: proves escapeLikeTerm
+      // reached Production, since an unescaped "%" would return every player.
+      { label: "Player Directory (search)", path: "/players?q=a" },
+      { label: "Player Directory (literal % search)", path: "/players?q=%25" },
+      // Deliberately malformed: a page route cannot answer 400, so these must
+      // be ignored and still render, never 500.
+      { label: "Player Directory (garbage filters -> ignored, not 500)", path: "/players?page=abc&position=WIZARD&club=nope&status=banned" },
+      { label: "Player Directory (page past the end -> empty, not 404)", path: "/players?page=99999" },
       { label: "Player Profile", path: `/players/${playedStat.playerId}` },
       { label: "Manager Profile (unknown id -> 404, not 500)", path: "/managers/not-a-real-user-id", expect: 404 },
       { label: "Player Profile (unknown id -> 404, not 500)", path: "/players/not-a-real-player-id", expect: 404 },
