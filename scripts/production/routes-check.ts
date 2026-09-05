@@ -62,8 +62,19 @@ async function main() {
       select: { playerId: true },
       orderBy: { playerId: "asc" },
     })
+    // A SECOND, DIFFERENT player with history - a comparison of one player
+    // against themselves is a state the page deliberately refuses, so it
+    // would not exercise the comparison at all.
+    const otherStat = await prisma.playerMatchStats.findFirst({
+      where: {
+        fixture: { playedAt: { not: null }, scheduledAt: { not: null, lte: cutoff } },
+        playerId: { not: playedStat?.playerId ?? "" },
+      },
+      select: { playerId: true },
+      orderBy: { playerId: "desc" },
+    })
 
-    if (!humanEra?.userId || !anyTeam || !playedStat) {
+    if (!humanEra?.userId || !anyTeam || !playedStat || !otherStat) {
       console.error("REFUSED: could not find an open HUMAN era, a club and a played-in player to check against.")
       process.exitCode = 1
       return
@@ -71,7 +82,8 @@ async function main() {
 
     console.info(`Manager under test: userId=${humanEra.userId} (open HUMAN era on team ${humanEra.teamId})`)
     console.info(`Club under test:    teamId=${anyTeam.id}`)
-    console.info(`Player under test:  playerId=${playedStat.playerId} (has publicly finished history)\n`)
+    console.info(`Player under test:  playerId=${playedStat.playerId} (has publicly finished history)`)
+    console.info(`Second player:      playerId=${otherStat.playerId} (the other side of the comparison)\n`)
 
     const targets = [
       { label: "Landing page (control)", path: "/" },
@@ -88,6 +100,20 @@ async function main() {
       { label: "Player Directory (garbage filters -> ignored, not 500)", path: "/players?page=abc&position=WIZARD&club=nope&status=banned" },
       { label: "Player Directory (page past the end -> empty, not 404)", path: "/players?page=99999" },
       { label: "Player Profile", path: `/players/${playedStat.playerId}` },
+      // PLAYER COMPARISON. Every state of it is a URL, so every state of it
+      // is checkable - including the ones designed to break it. None of them
+      // may 500: a page route cannot answer 400, so a bad id is a page that
+      // asks for a player, never an error.
+      { label: "Player Comparison (nothing selected)", path: "/players/compare" },
+      { label: "Player Comparison (empty a)", path: "/players/compare?a=" },
+      { label: "Player Comparison (empty a and b)", path: "/players/compare?a=&b=" },
+      { label: "Player Comparison (A only)", path: `/players/compare?a=${playedStat.playerId}` },
+      { label: "Player Comparison (both)", path: `/players/compare?a=${playedStat.playerId}&b=${otherStat.playerId}` },
+      { label: "Player Comparison (same player twice -> asks for two, not 500)", path: `/players/compare?a=${playedStat.playerId}&b=${playedStat.playerId}` },
+      { label: "Player Comparison (unknown b -> safe state, not 404)", path: `/players/compare?a=${playedStat.playerId}&b=not-a-real-player-id` },
+      { label: "Player Comparison (unknown a -> safe state, not 404)", path: `/players/compare?a=not-a-real-player-id&b=${otherStat.playerId}` },
+      { label: "Player Comparison (selector search)", path: "/players/compare?qa=a" },
+      { label: "Player Comparison (injection-shaped id -> dropped, not 500)", path: "/players/compare?a=%27%20OR%201%3D1%20--&b=..%2F..%2Fetc%2Fpasswd" },
       { label: "Manager Profile (unknown id -> 404, not 500)", path: "/managers/not-a-real-user-id", expect: 404 },
       { label: "Player Profile (unknown id -> 404, not 500)", path: "/players/not-a-real-player-id", expect: 404 },
     ]
