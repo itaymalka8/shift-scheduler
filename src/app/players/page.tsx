@@ -81,9 +81,22 @@ export default async function PlayersDirectoryPage({
             </h1>
             <p className="mt-1 text-xs text-muted-foreground sm:text-sm">{t("players.subtitle")}</p>
           </div>
-          <Link href="/hall-of-fame" className="shrink-0 text-sm text-primary hover:underline">
-            {t("nav.hallOfFame")}
-          </Link>
+          {/* A TOP-LEVEL COMPARE ACTION, and deliberately not one per row.
+              Each row here is a single full-row link to the profile, so a
+              second control inside it would be an interactive element nested
+              in an anchor - invalid, and it would need a client component on a
+              page that currently needs no JavaScript at all. On a phone it
+              would also add a button to every one of three lines. The
+              comparison page carries its own search, and every profile has a
+              Compare link that arrives with that player already selected. */}
+          <div className="flex shrink-0 flex-col items-end gap-1">
+            <Link href="/players/compare" className="text-sm text-primary hover:underline">
+              {t("compare.action")}
+            </Link>
+            <Link href="/hall-of-fame" className="text-sm text-primary hover:underline">
+              {t("nav.hallOfFame")}
+            </Link>
+          </div>
         </div>
 
         {/* A plain GET form: every view is a URL, and it works without JS.

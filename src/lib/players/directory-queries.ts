@@ -269,3 +269,65 @@ export async function loadPlayerDirectory(
     positions: facets.positions,
   }
 }
+
+/**
+ * How many players a SELECTOR offers for one search.
+ *
+ * Small on purpose. This is not a directory page - it is a "which of these
+ * did you mean" list, and the directory itself is one link away for anyone
+ * who needs to narrow it properly. Bounding it here is also what keeps §15
+ * true: no caller can ask this for all 1320 players.
+ */
+export const SELECTION_SEARCH_LIMIT = 10
+
+/**
+ * A bounded name search, for the Player Comparison selectors.
+ *
+ * REUSES THE DIRECTORY'S OWN SEARCH: the same escaped ILIKE clause, the same
+ * alphabetical order, the same select. It exists as its own function rather
+ * than as a call to loadPlayerDirectory because a selector needs neither the
+ * total count nor the facets (a whole club list and two groupBys), and paying
+ * for them to render ten links would be waste, not reuse.
+ *
+ * AN EMPTY TERM RETURNS NOTHING. It deliberately does not fall back to
+ * "everyone": a selector that lists the first 10 players alphabetically the
+ * moment it is opened invites picking a stranger, and the empty state asks a
+ * question instead.
+ *
+ * TWO STATEMENTS, ALWAYS: the page of players, then the clubs those players
+ * name. The club read is an `id IN (...)` over at most SELECTION_SEARCH_LIMIT
+ * ids - never one lookup per row - and the club matters because Production's
+ * names repeat heavily, so "David Cohen" is only tellable from "David Cohen"
+ * by where they play.
+ */
+export async function searchPlayersForSelection(
+  q: string,
+  limit: number = SELECTION_SEARCH_LIMIT
+): Promise<DirectoryPlayer[]> {
+  if (q.trim() === "") return []
+
+  const rows = await prisma.player.findMany({
+    where: searchWhere(q.trim()),
+    orderBy: DIRECTORY_ORDER,
+    take: limit,
+    select: DIRECTORY_SELECT,
+  })
+  if (rows.length === 0) return []
+
+  const clubIds = [...new Set(rows.map((r) => r.teamId).filter((id): id is string => id !== null))]
+  const clubs = clubIds.length > 0 ? await prisma.team.findMany({ where: { id: { in: clubIds } }, select: CLUB_SELECT }) : []
+  const clubsById = new Map<string, DirectoryClub>(clubs.map((c) => [c.id, c]))
+
+  return rows.map((row) => ({
+    id: row.id,
+    firstName: row.firstName,
+    lastName: row.lastName,
+    primaryPosition: row.primaryPosition,
+    nationality: row.nationality,
+    age: row.age,
+    shirtNumber: row.shirtNumber,
+    overall: row.overall,
+    careerStatus: row.careerStatus,
+    club: row.teamId ? (clubsById.get(row.teamId) ?? null) : null,
+  }))
+}

@@ -62,9 +62,17 @@ export default async function PlayerProfilePage({ params }: { params: Promise<{ 
       <main className="mx-auto max-w-3xl space-y-6 px-4 py-8 sm:px-6 sm:py-12">
         <div className="flex items-center justify-between gap-3">
           <h1 className="text-lg font-semibold sm:text-2xl">{t("playerProfile.title")}</h1>
-          <Link href="/players" className="shrink-0 text-sm text-primary hover:underline">
-            {t("players.backToDirectory")}
-          </Link>
+          <div className="flex shrink-0 items-center gap-3">
+            {/* COMPARE, PREFILLED WITH THIS PLAYER as side A. The link carries
+                their id, so the comparison page opens already holding the
+                player whose profile it was reached from. */}
+            <Link href={`/players/compare?a=${current.playerId}`} className="text-sm text-primary hover:underline">
+              {t("compare.compareThisPlayer")}
+            </Link>
+            <Link href="/players" className="text-sm text-primary hover:underline">
+              {t("players.backToDirectory")}
+            </Link>
+          </div>
         </div>
 
         {/* HEADER - identity is playerId; the name shown is the CURRENT one. */}

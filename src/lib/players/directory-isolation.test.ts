@@ -21,6 +21,23 @@ function readCode(...parts: string[]): string {
     .replace(/(^|[^:])\/\/.*$/gm, "$1")
 }
 
+/**
+ * One exported function's own body.
+ *
+ * These guards are about the shape of ONE reader's queries, not about what
+ * else happens to live in the file - directory-queries.ts also holds the
+ * Player Comparison's bounded selector search, which has its own reads and
+ * its own guards. Slicing to the function keeps each guard asking the
+ * question it actually means.
+ */
+function functionBody(source: string, name: string): string {
+  const start = source.indexOf(`export async function ${name}`)
+  expect(start).toBeGreaterThanOrEqual(0)
+  const rest = source.slice(start + 1)
+  const end = rest.indexOf("\nexport ")
+  return end === -1 ? rest : rest.slice(0, end)
+}
+
 const PARAMS = ["lib", "players", "directory.ts"]
 const READER = ["lib", "players", "directory-queries.ts"]
 const PAGE = ["app", "players", "page.tsx"]
@@ -50,10 +67,11 @@ describe("search happens in the database, never in the browser", () => {
   })
 
   it("the one player read is bounded by take and skip", () => {
-    const source = readCode(...READER)
-    // Exactly one row-returning read of Player exists, and it is paged.
-    expect(source.match(/prisma\.player\.findMany/g)).toHaveLength(1)
-    const read = source.slice(source.indexOf("prisma.player.findMany"))
+    const page = functionBody(readCode(...READER), "loadPlayerDirectory")
+    // Exactly one row-returning read of Player in the directory reader, and
+    // it is paged.
+    expect(page.match(/prisma\.player\.findMany/g)).toHaveLength(1)
+    const read = page.slice(page.indexOf("prisma.player.findMany"))
     expect(read.slice(0, 400)).toContain("take: pageSize")
     expect(read.slice(0, 400)).toContain("skip: skipFor(")
   })
@@ -124,9 +142,13 @@ describe("no query per row", () => {
   const source = () => readCode(...READER)
 
   it("clubs are read ONCE, bounded by club count and not by player count", () => {
-    expect(source().match(/prisma\.team\.findMany/g)).toHaveLength(1)
-    // and resolved from memory per row
-    expect(source()).toContain("clubsById.get(row.teamId)")
+    const facets = functionBody(source(), "loadDirectoryFacets")
+    expect(facets.match(/prisma\.team\.findMany/g)).toHaveLength(1)
+    // The directory page itself reads no club at all - it resolves every row
+    // from the facet list already in memory.
+    const page = functionBody(source(), "loadPlayerDirectory")
+    expect(page).not.toContain("prisma.team.")
+    expect(page).toContain("clubsById.get(row.teamId)")
   })
 
   it("the row select takes teamId, never a nested team relation", () => {
@@ -138,6 +160,7 @@ describe("no query per row", () => {
   })
 
   it("every query sits at a function body's top level, never inside a loop", () => {
+    // Whole file: no reader in it may query from inside a loop.
     const lines = source().split("\n").filter((l) => l.includes("prisma."))
     expect(lines.length).toBeGreaterThan(0)
     for (const line of lines) {
@@ -148,8 +171,7 @@ describe("no query per row", () => {
   })
 
   it("the facets are loaded once and passed in, never re-queried per page", () => {
-    const source_ = source()
-    const loadPage = source_.slice(source_.indexOf("export async function loadPlayerDirectory"))
+    const loadPage = functionBody(source(), "loadPlayerDirectory")
     expect(loadPage).toContain("facets: DirectoryFacets")
     expect(loadPage).not.toContain("groupBy")
     expect(loadPage).not.toContain("prisma.team.")
