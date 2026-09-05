@@ -1,4 +1,4 @@
-// This is your Prisma schema file,
+// Prisma schema for Goalx Manager
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
 generator client {
@@ -7,6 +7,1355 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  passwordHash  String?
+  name          String?
+  createdAt     DateTime  @default(now())
+  accounts      Account[]
+  sessions      Session[]
+  team          Team?
+  teamEras      TeamEra[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model Team {
+  id                    String                 @id @default(cuid())
+  name                  String
+  crestShape            String?
+  crestPattern          String?
+  crestIcon             String?
+  crestColor            String?
+  crestSecondaryColor   String?
+  crestBorderColor      String?
+  crestImageUrl         String?
+  countryCode           String?
+  stadiumStyle          String?
+  crowdStyle            String?
+  balance               Int                    @default(5000000)
+  isBot                 Boolean                @default(false)
+  formation             String?
+  // Custom formation slots (JSON array of {role,x,y}) - only read when
+  // formation == "custom"; the named formations live in code.
+  customFormation       Json?
+  mentality             String?
+  tempo                 String?
+  pressing              String?
+  width                 String?
+  attackingStyle        String?
+  defensiveLine         String?
+  offsideTrap           Boolean                @default(false)
+  creativeFreedom       String?
+  dribbleFrequency      String?
+  passingType           String?
+  attackDirection       String?
+  fullbackOverlaps      String?
+  createdAt             DateTime               @default(now())
+  user                  User?                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId                String?                @unique
+  divisionMemberships   DivisionTeam[]
+  homeFixtures          Fixture[]              @relation("HomeFixtures")
+  awayFixtures          Fixture[]              @relation("AwayFixtures")
+  players               Player[]
+  lineupSlots           LineupSlot[]
+  matchEvents           MatchEvent[]
+  stadium               Stadium?
+  financialTransactions FinancialTransaction[]
+  captainId             String?                @unique
+  captain               Player?                @relation("TeamCaptain", fields: [captainId], references: [id], onDelete: SetNull)
+  penaltyTakerId        String?                @unique
+  penaltyTaker          Player?                @relation("TeamPenaltyTaker", fields: [penaltyTakerId], references: [id], onDelete: SetNull)
+  freeKickTakerId       String?                @unique
+  freeKickTaker         Player?                @relation("TeamFreeKickTaker", fields: [freeKickTakerId], references: [id], onDelete: SetNull)
+  cornerTakerId         String?                @unique
+  cornerTaker           Player?                @relation("TeamCornerTaker", fields: [cornerTakerId], references: [id], onDelete: SetNull)
+  kits                  TeamKit[]
+  transferListings      TransferListing[]
+  seasonChampionships   SeasonChampion[]
+  replenishments        SquadReplenishment[]
+  youthIntakes          YouthIntake[]
+  eras                  TeamEra[]
+}
+
+enum KitType {
+  HOME
+  AWAY
+  THIRD
+}
+
+// One row per kit a team has actually saved - not one row per team. Only
+// HOME is used by the UI right now; AWAY/THIRD exist so a future away/third
+// kit phase is an insert, not a schema change. template stays a plain
+// String (validated in code against the approved template list) rather
+// than an enum, so a new template can ship without a migration.
+model TeamKit {
+  id             String   @id @default(cuid())
+  teamId         String
+  team           Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  type           KitType
+  template       String
+  primaryColor   String
+  secondaryColor String
+  accentColor    String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // A club can have at most one kit of a given type - this is what makes
+  // saveHomeKit's upsert well-defined (first save creates the HOME row,
+  // every save after that updates the same one).
+  @@unique([teamId, type])
+}
+
+enum PlayerCareerStatus {
+  ACTIVE
+  RETIRED
+}
+
+model Player {
+  id                     String             @id @default(cuid())
+  // Current ownership only - null means Free Agent (released) or Retired.
+  // No history is kept here; a past-teams record would be a separate model
+  // if ever needed.
+  teamId                 String?
+  team                   Team?              @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  // Career lifecycle, independent of ownership (teamId) and of match-day
+  // availability (the existing `status` field below, e.g. injured/suspended).
+  careerStatus           PlayerCareerStatus @default(ACTIVE)
+  // Counts ownership episodes - increments only when the player enters a
+  // new team's ownership (Purchase, or a future signing path). Release does
+  // NOT increment it: it stays the same stint the player was released from,
+  // so RELEASE_<playerId>_<stintNumber> always names the stint that ended.
+  stintNumber            Int                @default(1)
+  firstName              String
+  lastName               String
+  age                    Int
+  overall                Int
+  potential              Int
+  primaryPosition        String
+  secondaryPositions     String[]           @default([])
+  // MATCH-DAY CONDITION, 1-100. Moved only by the match-consequence
+  // activation step (src/lib/match/consequence-service.ts): every player of a
+  // club recovers when that club's fixture becomes publicly finished, and
+  // everyone who actually appeared pays a cost on top. Never touched by a
+  // page load, and never by the simulation itself.
+  fitness                Int                @default(100)
+  // DERIVED, SYNCHRONISED PRESENTATION STATE - never the authority.
+  // The authority is (careerStatus, injuryMatchesRemaining,
+  // suspensionMatches); this column is what derivePlayerStatus() makes of
+  // them, written in the same statement that moves a counter so the two can
+  // never disagree. See src/lib/players/availability.ts.
+  status                 String             @default("available")
+  marketValue            Int
+  weeklySalary           Int                @default(0)
+  // Free-text colour for the CURRENT injury, for display only. It has never
+  // carried a duration and still does not: injuryMatchesRemaining does.
+  injuryStatus           String?
+  // HOW MANY MORE OF THEIR CLUB'S OFFICIAL FIXTURES THIS PLAYER MUST SIT OUT.
+  // Counted in matches rather than days on purpose - a postponed fixture must
+  // not serve a ban merely because time passed - which is exactly the model
+  // suspensionMatches below already uses. Decremented by the same activation
+  // step, once per club fixture the player did not appear in.
+  injuryMatchesRemaining Int                @default(0)
+  suspensionMatches      Int                @default(0)
+  preferredFoot          String
+  nationality            String
+  shirtNumber            Int
+  createdAt              DateTime           @default(now())
+
+  // Attributes (1-100). Overall is never set directly - it's always
+  // calculatePlayerOverall(this) run at generation time and cached, per the
+  // explicit product requirement that Overall be a derived result of these,
+  // never an independently-editable number. Nullable because a goalkeeper's
+  // outfield-specific attributes (shooting, tackling, ...) and an outfield
+  // player's goalkeeping attributes are both genuinely not applicable, not
+  // just unset - see src/lib/players/attributes.ts for which position gets
+  // which fields.
+
+  // Attacking
+  shooting             Int?
+  finishing            Int?
+  longShots            Int?
+  heading              Int?
+  attackingPositioning Int?
+
+  // Technical
+  passing     Int?
+  longPassing Int?
+  vision      Int?
+  technique   Int?
+  creativity  Int?
+  dribbling   Int?
+  ballControl Int?
+  crossing    Int?
+  freeKicks   Int?
+  penalties   Int?
+  corners     Int?
+
+  // Defensive
+  tackling             Int?
+  marking              Int?
+  defensivePositioning Int?
+  interceptions        Int?
+  aerialDuels          Int?
+
+  // Physical
+  pace         Int?
+  acceleration Int?
+  strength     Int?
+  stamina      Int?
+  agility      Int?
+  balance      Int?
+  jumping      Int?
+
+  // Mental
+  leadership          Int?
+  composure           Int?
+  decisions           Int?
+  anticipation        Int?
+  teamwork            Int?
+  workRate            Int?
+  concentration       Int?
+  aggression          Int?
+  experience          Int?
+  secondBallAwareness Int?
+
+  // Goalkeeping (goalkeepers only)
+  goalkeeping           Int?
+  reflexes              Int?
+  handling              Int?
+  diving                Int?
+  oneOnOne              Int?
+  aerialAbility         Int?
+  goalkeeperPositioning Int?
+  distribution          Int?
+  penaltySaving         Int?
+  lineupSlot            LineupSlot?
+  matchStats            PlayerMatchStats[]
+  captainOfTeam         Team?                   @relation("TeamCaptain")
+  penaltyTakerOfTeam    Team?                   @relation("TeamPenaltyTaker")
+  freeKickTakerOfTeam   Team?                   @relation("TeamFreeKickTaker")
+  cornerTakerOfTeam     Team?                   @relation("TeamCornerTaker")
+  transferListings      TransferListing[]
+  lifecycleRecords      PlayerSeasonLifecycle[]
+  // Virtual back-relation only - Prisma requires it for the YouthProspect
+  // side's real FK (promotedPlayerId), but it adds no column to Player.
+  // Mirrors captainOfTeam/penaltyTakerOfTeam/etc. immediately above, which
+  // are the exact same "named 1-1 relation, owning FK lives on the other
+  // model" shape already established in this schema.
+  promotedFromProspect  YouthProspect?          @relation("YouthProspectPromotedPlayer")
+
+  @@index([teamId, careerStatus])
+}
+
+// A club's stadium - its own entity (not just fields on Team) since it has
+// a real internal structure (four seat types) and its own lifecycle
+// (construction jobs). totalCapacity/stadiumValue/weeklyMaintenance are
+// deliberately NOT stored here - they're always derived from the seat
+// counts below (see src/lib/stadium/metrics.ts), the same way a squad's
+// Total Quality is derived from its players rather than cached and risking
+// going stale.
+model Stadium {
+  id               String                   @id @default(cuid())
+  teamId           String                   @unique
+  team             Team                     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  name             String
+  regularSeats     Int
+  coveredSeats     Int
+  premiumSeats     Int
+  vipSeats         Int
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+  constructionJobs StadiumConstructionJob[]
+}
+
+// One in-progress or finished expansion. At most one pending/active job per
+// stadium at a time - enforced in code (startStadiumConstruction checks
+// before creating one), not just relied on here.
+model StadiumConstructionJob {
+  id                String    @id @default(cuid())
+  stadiumId         String
+  stadium           Stadium   @relation(fields: [stadiumId], references: [id], onDelete: Cascade)
+  regularSeatsAdded Int       @default(0)
+  coveredSeatsAdded Int       @default(0)
+  premiumSeatsAdded Int       @default(0)
+  vipSeatsAdded     Int       @default(0)
+  totalCost         Int
+  status            String    @default("active")
+  startedAt         DateTime  @default(now())
+  endsAt            DateTime
+  completedAt       DateTime?
+}
+
+// The club's financial journal - every balance change, ever, with no
+// deletions. type is one of the FinancialTransactionType values (see
+// src/lib/economy/service.ts); amount is signed (positive = income,
+// negative = expense) so it can be summed directly. referenceId is the
+// idempotency key for whatever caused this transaction (a specific match,
+// a specific payroll week, a specific construction job) - the unique
+// constraint below is what actually stops a double-charge, not just an
+// application-level check.
+model FinancialTransaction {
+  id          String   @id @default(cuid())
+  teamId      String
+  team        Team     @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  type        String
+  amount      Int
+  description String
+  referenceId String
+  createdAt   DateTime @default(now())
+
+  @@unique([teamId, referenceId])
+}
+
+// A player's spot in their team's current starting XI. slotIndex points at
+// FORMATIONS[team.formation][slotIndex] for that slot's role/x/y - position
+// comes from the formation, not stored per-player, so switching formation
+// can never leave a slot's coordinates stale.
+model LineupSlot {
+  id        String @id @default(cuid())
+  teamId    String
+  team      Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  playerId  String @unique
+  player    Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  slotIndex Int
+}
+
+enum SeasonStatus {
+  ACTIVE
+  OFFSEASON
+  COMPLETED
+}
+
+// Internal Season-End processing checkpoint - orthogonal to SeasonStatus.
+// A Season sits in OFFSEASON (status) for the entire span of these stages;
+// offseasonStage is what makes each stage's own short transaction resumable
+// after a crash, without ever holding a lock across all of a season's
+// players/teams at once. See the Season Lifecycle architecture doc.
+enum SeasonOffseasonStage {
+  NONE
+  PLAYER_LIFECYCLE
+  YOUTH_GENERATION
+  BOT_PROMOTION
+  WAITING_HUMANS
+  SQUAD_REPLENISHMENT
+  // Reads season N's FINAL sporting facts and writes season N+1's complete
+  // membership. Creates no fixture of any kind: every match that could
+  // change who goes up or down was played while season N was still ACTIVE,
+  // on the squads that earned the result. See src/lib/seasons/promotion/.
+  PROMOTION_RELEGATION
+  CREATE_NEXT
+  DONE
+}
+
+// A country's league pyramid is instantiated one Season at a time. Season 1
+// for a country is created (with bot teams filling every slot) the first
+// time someone registers a team there - see src/lib/leagues/seed.ts.
+//
+// isActive and status answer two different questions and are deliberately
+// both kept: isActive is "is this the season new signups/standings-lookups
+// should use right now" (unchanged from before this migration - still true
+// throughout OFFSEASON, since Season N+1 doesn't exist yet); status is
+// "what stage of its own lifecycle is this season at" (ACTIVE while fixtures
+// are being played, OFFSEASON while Season-End processing runs, COMPLETED
+// once Season N+1 has taken over). At most one Season per countryCode may
+// have isActive=true - Prisma's schema DSL cannot express a partial/filtered
+// unique index (same limitation already documented on TransferListing
+// above), so that invariant is enforced by a hand-written
+// `CREATE UNIQUE INDEX ... WHERE "isActive" = true` statement added directly
+// to this feature's migration.sql - it has no schema.prisma representation,
+// and a future `prisma migrate dev` diff must not be allowed to drop it.
+model Season {
+  id               String                  @id @default(cuid())
+  countryCode      String
+  number           Int
+  isActive         Boolean                 @default(true)
+  status           SeasonStatus            @default(ACTIVE)
+  offseasonStage   SeasonOffseasonStage    @default(NONE)
+  createdAt        DateTime                @default(now())
+  divisions        Division[]
+  divisionTeams    DivisionTeam[]
+  youthIntakes     YouthIntake[]
+  playerLifecycles PlayerSeasonLifecycle[]
+  teamErasStarted  TeamEra[]               @relation("TeamEraStarted")
+  teamErasEnded    TeamEra[]               @relation("TeamEraEnded")
+  champions        SeasonChampion[]
+  playoffs         ChampionshipPlayoff[]
+  replenishments   SquadReplenishment[]
+
+  @@unique([countryCode, number])
+}
+
+// One table/group within a tier for a given season - e.g. tier 1 has a
+// single division, tier 2 has two parallel divisions ("A"/"B").
+model Division {
+  id        String               @id @default(cuid())
+  seasonId  String
+  season    Season               @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  tier      Int
+  group     String?
+  name      String
+  createdAt DateTime             @default(now())
+  teams     DivisionTeam[]
+  fixtures  Fixture[]
+  // At most one - a division has one champion, ever. Enforced by
+  // SeasonChampion.divisionId being @unique, which is also what makes the
+  // season-end write idempotent.
+  champion  SeasonChampion?
+  // At most one - a division runs one championship playoff, ever. Same
+  // reasoning, same enforcement (ChampionshipPlayoff.divisionId @unique).
+  playoff   ChampionshipPlayoff?
+
+  @@unique([seasonId, tier, group])
+}
+
+model DivisionTeam {
+  id         String   @id @default(cuid())
+  divisionId String
+  division   Division @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+  // DENORMALISED FROM Division, and the reason is a constraint that cannot
+  // be expressed without it.
+  //
+  // @@unique([divisionId, teamId]) forbids a club appearing twice in ONE
+  // division. It does not forbid a club appearing in TWO divisions of the
+  // same season - those are different divisionIds, so the index is satisfied
+  // by a row that says a club is in both Ligat Ha'al and Liga Shniya A at
+  // once. Until promotion existed the only writer copied a partition, so the
+  // state was unreachable; a movement stage that can be retried makes it
+  // reachable, and the symptom would be a 21-club division discovered one
+  // stage too late.
+  //
+  // RESTRICT, deliberately stronger than the path it shadows: Division ->
+  // Season is Cascade and DivisionTeam -> Division is Cascade, so deleting a
+  // Season would otherwise take the league's whole membership history with
+  // it. That is blocked today only INCIDENTALLY, by Fixture_divisionId_fkey
+  // being RESTRICT - which protects nothing for a division with no fixtures.
+  // This states the rule directly.
+  seasonId   String
+  season     Season   @relation(fields: [seasonId], references: [id], onDelete: Restrict)
+  teamId     String
+  team       Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  joinedAt   DateTime @default(now())
+
+  @@unique([divisionId, teamId])
+  // ONE DIVISION PER CLUB PER SEASON. Kept alongside the unique above rather
+  // than replacing it: that one is the conflict target
+  // createMany({ skipDuplicates }) resolves against on the divisionId path,
+  // and it indexes (divisionId, teamId) leftmost-by-division, which this
+  // cannot serve. The two forbid different things.
+  @@unique([seasonId, teamId])
+  // The reverse direction of the unique above, which only indexes
+  // divisionId as its leftmost column. "Which division is this club in"
+  // runs on every dashboard load today, and "which divisions has this club
+  // ever been in" is what a season filter over a club's history will need -
+  // both start from teamId, which that unique cannot serve.
+  @@index([teamId])
+}
+
+enum YouthIntakeStatus {
+  OPEN
+  CLOSED
+}
+
+// One club's youth intake for one Season - exactly one per (team, season),
+// enforced by the unique constraint below, never reused or reopened once
+// CLOSED. Human intakes close either by their own 48h closesAt deadline or
+// by an explicit Finalize action; Bot intakes close immediately after
+// generation. Neither path is implemented yet - this migration is schema
+// only.
+model YouthIntake {
+  id            String            @id @default(cuid())
+  teamId        String
+  team          Team              @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  seasonId      String
+  season        Season            @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  status        YouthIntakeStatus @default(OPEN)
+  openedAt      DateTime          @default(now())
+  closesAt      DateTime
+  closedAt      DateTime?
+  // Bounded 0-3 by the CHECK constraint added directly in this feature's
+  // migration.sql (Prisma's schema DSL has no @check attribute as of this
+  // Prisma version) - see the migration for the exact statement.
+  promotedCount Int               @default(0)
+  prospects     YouthProspect[]
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@unique([teamId, seasonId])
+  // Composite only - a standalone @@index([status]) or @@index([closesAt])
+  // would be redundant: this index already serves a status-only filter via
+  // the leftmost-prefix rule, and nothing in this design ever queries
+  // closesAt without also filtering by status. A standalone @@index([teamId])
+  // would likewise be redundant given @@unique([teamId, seasonId]) above,
+  // which already indexes teamId as its own leftmost column.
+  @@index([status, closesAt])
+}
+
+enum YouthProspectStatus {
+  PENDING
+  PROMOTED
+  EXPIRED
+}
+
+// A candidate player generated for one YouthIntake - never a Player row
+// itself. Every field a Promotion will eventually need is snapshotted here
+// at generation time (see the attribute block below) so that promoting a
+// prospect is a pure column-to-column copy onto a new Player row, never a
+// re-roll. Attributes mirror Player's own field-for-field, including
+// nullability: a goalkeeper prospect and an outfield prospect intentionally
+// populate different, non-overlapping subsets of these 47 columns, exactly
+// as generateAttributesForTargetOverall already does for Player - see
+// src/lib/players/attribute-generation.ts.
+model YouthProspect {
+  id            String      @id @default(cuid())
+  youthIntakeId String
+  youthIntake   YouthIntake @relation(fields: [youthIntakeId], references: [id], onDelete: Cascade)
+
+  firstName          String
+  lastName           String
+  age                Int
+  nationality        String
+  primaryPosition    String
+  secondaryPositions String[] @default([])
+  preferredFoot      String
+  overall            Int
+  potential          Int
+
+  // Attacking
+  shooting             Int?
+  finishing            Int?
+  longShots            Int?
+  heading              Int?
+  attackingPositioning Int?
+
+  // Technical
+  passing     Int?
+  longPassing Int?
+  vision      Int?
+  technique   Int?
+  creativity  Int?
+  dribbling   Int?
+  ballControl Int?
+  crossing    Int?
+  freeKicks   Int?
+  penalties   Int?
+  corners     Int?
+
+  // Defensive
+  tackling             Int?
+  marking              Int?
+  defensivePositioning Int?
+  interceptions        Int?
+  aerialDuels          Int?
+
+  // Physical
+  pace         Int?
+  acceleration Int?
+  strength     Int?
+  stamina      Int?
+  agility      Int?
+  balance      Int?
+  jumping      Int?
+
+  // Mental
+  leadership          Int?
+  composure           Int?
+  decisions           Int?
+  anticipation        Int?
+  teamwork            Int?
+  workRate            Int?
+  concentration       Int?
+  aggression          Int?
+  experience          Int?
+  secondBallAwareness Int?
+
+  // Goalkeeping (goalkeepers only)
+  goalkeeping           Int?
+  reflexes              Int?
+  handling              Int?
+  diving                Int?
+  oneOnOne              Int?
+  aerialAbility         Int?
+  goalkeeperPositioning Int?
+  distribution          Int?
+  penaltySaving         Int?
+
+  status           YouthProspectStatus @default(PENDING)
+  // Real FK to Player, onDelete: SetNull - mirrors Team.captainId/captain's
+  // exact shape (owning column + relation live here, a virtual back-relation
+  // lives on Player - see Player.promotedFromProspect above). SetNull rather
+  // than Cascade/Restrict: Player rows are never deleted by any code path in
+  // this app, so this is defense-in-depth, not a path expected to fire - if
+  // it ever did, the prospect record should survive as history with its
+  // pointer cleared, not be deleted itself.
+  promotedPlayerId String?             @unique
+  promotedPlayer   Player?             @relation("YouthProspectPromotedPlayer", fields: [promotedPlayerId], references: [id], onDelete: SetNull)
+  createdAt        DateTime            @default(now())
+  promotedAt       DateTime?
+
+  @@index([youthIntakeId, status])
+}
+
+// One row per (season, player) once that player's Development/Aging/
+// Retirement pass has committed for that season - a pure existence marker,
+// never read for its own data, only for whether a row exists at all. This is
+// what makes the eventual Season-End player-lifecycle pass resumable after a
+// crash: a batch driven by "ACTIVE players with no row here yet for this
+// season" picks up exactly where a previous run stopped, without ever
+// holding a lock across more than one player at a time. Not populated by
+// this migration - schema only.
+model PlayerSeasonLifecycle {
+  id          String   @id @default(cuid())
+  seasonId    String
+  season      Season   @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  playerId    String
+  player      Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  processedAt DateTime @default(now())
+
+  // No standalone @@index([seasonId]): the composite unique below already
+  // uses seasonId as its leftmost column, so it serves a season-only filter
+  // (e.g. "how many players processed so far this season") via the same
+  // leftmost-prefix reasoning as YouthIntake's indexes above - a separate
+  // single-column index here would only duplicate it.
+  @@unique([seasonId, playerId])
+}
+
+// WHICH COMPETITION A FIXTURE BELONGS TO.
+//
+// The league table is not "every fixture in the division" - it is every
+// fixture of the LEAGUE itself. Until now those were the same set, so
+// nothing had to say so. A championship decider is played by two clubs of
+// the division, in the division, and must not touch a single number in the
+// table it exists to settle.
+//
+// An enum rather than an `isDecider` boolean because the same distinction
+// is already needed for more than one thing: the promotion playoff between
+// tier 1 and tier 2 is written down in src/lib/leagues/config.ts and will
+// need its own value here. Anything that means "the league" filters on
+// `stage = LEAGUE`, so a value added later is excluded from the table on
+// the day it is added, without a single call site being edited.
+enum FixtureStage {
+  LEAGUE
+  // Played only when a division's title is still level after every
+  // head-to-head criterion, and only when EXACTLY TWO clubs are level. At
+  // most one per division, enforced by a partial unique index. Unchanged
+  // from Phase 2C: it never carries a playoffId.
+  TITLE_DECIDER
+  // Three or more clubs level. A whole competition rather than one match -
+  // up to three neutral round-robin rounds, then a knockout - so unlike
+  // TITLE_DECIDER there are MANY of these per division, and each belongs to
+  // a ChampionshipPlayoff that says which round of which phase it is.
+  TITLE_PLAYOFF
+  // A place, not a title. Played when a tie survives every statistical
+  // criterion AND its clubs would otherwise receive DIFFERENT sporting
+  // outcomes - promotion versus a playoff place, safety versus relegation.
+  // A tie inside one outcome class is a genuine tie that changes nothing,
+  // and gets no fixture: this game never manufactures a full table order it
+  // has no use for.
+  //
+  // boundaryRank says WHICH boundary is being settled (the last rank of the
+  // upper outcome class) and boundaryRound which round of the mechanism it
+  // is. Both are required here and forbidden everywhere else - CHECK
+  // constraints enforce both directions.
+  BOUNDARY_DECIDER
+  // The two-fixture bracket that fills tier 1's last two promotion places:
+  // A2 v B3 and B2 v A3, winners promoted.
+  //
+  // ITS CLUBS ARE NOT MEMBERS OF THE DIVISION IT IS FILED UNDER. The bracket
+  // is stored on season N's tier 1 Division because a Fixture must belong to
+  // a competition of its season and this IS the promotion playoff to tier 1 -
+  // but the four clubs remain tier 2 members for the whole of season N, and
+  // their DivisionTeam rows are never touched. FixtureStage, not divisionId,
+  // is what says which competition a match belongs to; the "both clubs are
+  // members of their own division" rule is a LEAGUE rule and this is
+  // explicitly not the league.
+  PROMOTION_PLAYOFF
+}
+
+// WHICH PART OF A CHAMPIONSHIP PLAYOFF A FIXTURE BELONGS TO.
+//
+// Explicit rather than inferred from the round number. Numbering the
+// knockout 4, 5, 6... after round-robin 1, 2, 3 would make "round > 3 means
+// knockout" a magic number, and the two phases have genuinely different
+// rules: the round robin is capped at three rounds and ranks a table, the
+// knockout eliminates and cannot be capped.
+enum PlayoffPhase {
+  ROUND_ROBIN
+  KNOCKOUT
+}
+
+model Fixture {
+  id                    String               @id @default(cuid())
+  divisionId            String
+  division              Division             @relation(fields: [divisionId], references: [id], onDelete: Restrict)
+  matchday              Int
+  homeTeamId            String
+  homeTeam              Team                 @relation("HomeFixtures", fields: [homeTeamId], references: [id], onDelete: Restrict)
+  awayTeamId            String
+  awayTeam              Team                 @relation("AwayFixtures", fields: [awayTeamId], references: [id], onDelete: Restrict)
+  // NOT NULL with a constant default, so every fixture that already exists
+  // is a league fixture by definition and the migration rewrites no rows.
+  stage                 FixtureStage         @default(LEAGUE)
+  // Set on TITLE_PLAYOFF fixtures and on nothing else - CHECK constraints
+  // enforce both directions. A two-club TITLE_DECIDER deliberately has no
+  // playoff: it is one match, not a competition.
+  playoffId             String?
+  playoff               ChampionshipPlayoff? @relation(fields: [playoffId], references: [id], onDelete: Restrict)
+  playoffPhase          PlayoffPhase?
+  // The round WITHIN its phase: 1..3 for ROUND_ROBIN (capped by a CHECK, so
+  // a fourth round-robin round is unstorable), 1..ceil(log2(n)) for KNOCKOUT.
+  //
+  // Deliberately NOT matchday. matchday keeps its own meaning - the index of
+  // a slot in the Mon/Wed/Sat calendar, which computeMatchdayDate is defined
+  // on - and one playoff round can span several matchdays.
+  playoffRound          Int?
+  // WHICH SPORTING BOUNDARY THIS MATCH SETTLES - the last rank of the upper
+  // outcome class, so 16 for tier 1's safe|relegated line and 2 or 3 for a
+  // tier 2 promotion-playoff seeding line. Set on BOUNDARY_DECIDER and on
+  // nothing else, in both directions, by CHECK constraint.
+  //
+  // Deliberately a RANK rather than a named boundary: the rank is what the
+  // rules are written in, it sorts, and it does not need a new enum value
+  // every time a competition's shape changes.
+  boundaryRank          Int?
+  // The round WITHIN that boundary's mechanism. 1..3 are neutral round-robin
+  // rounds over the clubs still level; anything beyond that is the terminal
+  // ladder, which fixes exactly one position per match and therefore
+  // terminates. Not matchday, for the same reason playoffRound is not.
+  boundaryRound         Int?
+  homeScore             Int?
+  // PENALTY SHOOTOUT, and only that.
+  //
+  // Both null for every league match, and for a decider settled inside the
+  // 90 minutes - the shootout did not happen, so there is no score to
+  // record, and a 0-0 would be a lie about a match that never went to
+  // penalties. Both set, and never equal, when it did: the whole reason a
+  // shootout exists is that it cannot end level.
+  //
+  // Three database CHECK constraints enforce exactly that (see the
+  // migration): both-or-neither, TITLE_DECIDER only, and never equal. They
+  // are constraints rather than application rules because a wrong value
+  // here would silently name the wrong champion.
+  homeShootoutScore     Int?
+  awayShootoutScore     Int?
+  awayScore             Int?
+  attendance            Int?
+  homeRevenue           Int?
+  homeMatchExpense      Int?
+  // Seeds the match engine's RNG, so re-running a fixture's simulation
+  // from the same snapshot always produces the identical match.
+  matchSeed             String?
+  // Team-level match statistics, as produced by the engine (possession,
+  // shots, corners, ...). Stored as JSON since it's a read-only result
+  // blob the engine defines, never queried field-by-field.
+  homeStats             Json?
+  awayStats             Json?
+  scheduledAt           DateTime?
+  playedAt              DateTime?
+  // WHEN THIS FIXTURE'S PLAYER CONSEQUENCES WERE APPLIED - the exactly-once
+  // ledger for fitness, injuries and suspensions, and the reason they cannot
+  // spoil a live match.
+  //
+  // playedAt is set at KICKOFF (the engine writes the whole match at once),
+  // so it cannot gate anything a viewer must not see yet. This column is set
+  // only once the fixture is PUBLICLY finished - the same
+  // `scheduledAt <= now - MATCH_REAL_DURATION_MINUTES` rule the Player
+  // Profile already uses - so no Player row moves while the match is still
+  // on screen. A NULL here on a played, publicly-finished fixture is work
+  // still to do; the conditional UPDATE that sets it is what makes a retried
+  // cron run a no-op rather than a second deduction.
+  consequencesAppliedAt DateTime?
+  createdAt             DateTime             @default(now())
+  events                MatchEvent[]
+  playerStats           PlayerMatchStats[]
+  // Set only on a TITLE_DECIDER that actually settled a title.
+  decidedChampion       SeasonChampion?
+
+  // Postgres does not index a foreign key on its own, so until now this
+  // table had no index at all beyond its primary key and every read below
+  // was a sequential scan of every fixture of every season ever played.
+  //
+  // One club's calendar - "my upcoming matches" and "my results" - filters
+  // on one side's team id and orders/ranges on kickoff time. Two separate
+  // indexes rather than one, because the query is an OR across the two
+  // columns (a club plays home OR away): Postgres can satisfy that with a
+  // bitmap OR of these two, which a single composite could not serve.
+  @@index([homeTeamId, scheduledAt])
+  @@index([awayTeamId, scheduledAt])
+  // Everything that reads a whole division: computeStandings (filters
+  // divisionId), the dashboard's next-five (divisionId + orderBy matchday),
+  // and isSeasonReadyForOffseason (a season's divisions). divisionId leads
+  // as the equality column; matchday follows so the ordering comes free.
+  @@index([divisionId, matchday])
+  // processDueFixtures' exact predicate: `playedAt IS NULL AND scheduledAt
+  // <= now` (src/lib/match/simulate.ts). playedAt leads deliberately - IS
+  // NULL is an equality-shaped predicate a btree can seek straight to,
+  // which then leaves scheduledAt ordered inside that group for the range
+  // half. The reverse order ([scheduledAt, playedAt]) would make the range
+  // the leading column and force a scan of every past fixture - and that
+  // set only grows, since almost every fixture is eventually in the past
+  // and played. A partial index (WHERE "playedAt" IS NULL) would be
+  // smaller still, but it buys nothing this seek does not already give and
+  // it would have to be hand-written outside schema.prisma, adding another
+  // piece of invisible drift like the two partial UNIQUE indexes already
+  // documented above - not worth it for a table this size.
+  @@index([playedAt, scheduledAt])
+  // The consequence activator's exact predicate: `consequencesAppliedAt IS
+  // NULL AND scheduledAt <= cutoff`. The NULL leads, for the same reason
+  // playedAt leads above - IS NULL is equality-shaped and seeks straight to
+  // the outstanding set, which stays small, while every already-activated
+  // fixture (eventually almost all of them) is skipped without being read.
+  @@index([consequencesAppliedAt, scheduledAt])
+}
+
+// One row per player per match they appeared in - the raw record every
+// post-match rating, form calculation, and future award/scouting feature
+// reads from. Ratings come from these actions, never from Overall.
+model PlayerMatchStats {
+  id                String   @id @default(cuid())
+  fixtureId         String
+  fixture           Fixture  @relation(fields: [fixtureId], references: [id], onDelete: Cascade)
+  playerId          String
+  player            Player   @relation(fields: [playerId], references: [id], onDelete: Restrict)
+  teamId            String
+  minutesPlayed     Int      @default(0)
+  goals             Int      @default(0)
+  assists           Int      @default(0)
+  shots             Int      @default(0)
+  shotsOnTarget     Int      @default(0)
+  passesAttempted   Int      @default(0)
+  passesCompleted   Int      @default(0)
+  keyPasses         Int      @default(0)
+  dribblesAttempted Int      @default(0)
+  dribblesCompleted Int      @default(0)
+  tackles           Int      @default(0)
+  interceptions     Int      @default(0)
+  aerialDuelsWon    Int      @default(0)
+  fouls             Int      @default(0)
+  yellowCards       Int      @default(0)
+  redCards          Int      @default(0)
+  saves             Int      @default(0)
+  rating            Float    @default(6)
+  createdAt         DateTime @default(now())
+
+  @@unique([fixtureId, playerId])
+}
+
+// A single goal within a fixture's simulated 90 minutes - computed all at
+// once the first time anyone views the match after kickoff (see
+// src/lib/match/simulate.ts), then revealed progressively on the live match
+// page based on elapsed real time.
+model MatchEvent {
+  id                String   @id @default(cuid())
+  fixtureId         String
+  fixture           Fixture  @relation(fields: [fixtureId], references: [id], onDelete: Cascade)
+  minute            Int
+  teamId            String
+  team              Team     @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  type              String   @default("goal")
+  playerId          String?
+  secondaryPlayerId String?
+  outcome           String?
+  context           Json?
+  createdAt         DateTime @default(now())
+
+  // The single hottest read in the game: every live-match poll runs
+  // `WHERE fixtureId = ? AND minute <= ?` (see the spoiler gate in
+  // src/app/api/matches/[fixtureId]/route.ts), and an archived match runs the
+  // identical query with minute <= 90. fixtureId is the equality column and
+  // therefore leads; minute follows as the range, so one index serves both
+  // the filter and the `ORDER BY minute` that follows it. Postgres does not
+  // index foreign keys on its own, so before this there was no index on this
+  // table at all and both paths were sequential scans of every event ever
+  // simulated.
+  @@index([fixtureId, minute])
+}
+
+// One recurring weekly transfer window. weekKey is the same stable,
+// sortable "<year>_W<week>" shape already used for payroll references (see
+// payrollWeekKey in src/lib/economy/payroll.ts) - reused here as this
+// window's natural idempotency key (never create a second window for the
+// same week).
+model TransferWindow {
+  id        String            @id @default(cuid())
+  weekKey   String            @unique
+  opensAt   DateTime
+  closesAt  DateTime
+  createdAt DateTime          @default(now())
+  listings  TransferListing[]
+}
+
+enum TransferListingStatus {
+  OPEN
+  SOLD
+  CANCELLED
+  EXPIRED
+}
+
+// A club offering one of its players for transfer. askingPrice is frozen at
+// creation - there is no price-edit path; changing the price means
+// cancelling this listing and creating a new one. Status only ever moves
+// OPEN -> {SOLD, CANCELLED, EXPIRED} - never out of a terminal state - and
+// every transition is a conditional `UPDATE ... WHERE status = 'OPEN'`, so
+// a stale reader can never turn a decided listing back into a live one.
+//
+// IMPORTANT: at most one OPEN listing may exist per playerId. This can't be
+// expressed in Prisma's schema DSL as a partial/filtered unique index (not
+// supported as of Prisma 6.19.3), so it is enforced by a hand-written
+// `CREATE UNIQUE INDEX ... WHERE status = 'OPEN'` statement added directly
+// to this feature's migration.sql. That index exists in the database but
+// has no schema.prisma representation - `prisma migrate dev` in the future
+// must not be allowed to "fix" this apparent drift by dropping it; always
+// review a generated migration diff before applying it.
+model TransferListing {
+  id            String                @id @default(cuid())
+  playerId      String
+  player        Player                @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  sellingTeamId String
+  sellingTeam   Team                  @relation(fields: [sellingTeamId], references: [id], onDelete: Cascade)
+  askingPrice   Int
+  status        TransferListingStatus @default(OPEN)
+  windowId      String
+  window        TransferWindow        @relation(fields: [windowId], references: [id], onDelete: Cascade)
+  expiresAt     DateTime
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  @@index([status, expiresAt])
+  @@index([sellingTeamId, status])
+}
+
+enum TeamEraType {
+  BOT
+  HUMAN
+}
+
+// WHO WAS MANAGING THIS CLUB, AND WHEN.
+//
+// A club outlives its managers. When a human takes over a bot club, the club
+// keeps everything it has earned - fixtures, league points, squad, stadium,
+// finances, and its place in the record books - but the person now holding
+// it did not earn any of that, and their managerial record must start at
+// zero. TeamEra is the seam between those two facts: it is ATTRIBUTION
+// METADATA laid over history that is never rewritten. No fixture, event,
+// player stat, standing or season result is modified, moved or deleted when
+// an era changes; the club's own history is continuous, and only the
+// question "which manager does this match count for" has a new answer.
+//
+// Each row is one continuous stretch of ownership: [startedAt, endedAt),
+// half-open so that a match kicking off at the exact instant of a takeover
+// belongs to the NEW manager and never to both. The open era (endedAt =
+// null) is the current one.
+//
+// A BOT era has userId = null; a HUMAN era always names its user. That is
+// enforced in the database by a CHECK constraint, not by hope - see the
+// migration.
+//
+// WHAT THE DATABASE GUARANTEES, AND WHAT IT DOES NOT.
+//
+// The partial unique index below enforces AT MOST ONE open era per team. It
+// does NOT enforce AT LEAST ONE: a club with zero eras violates nothing, and
+// SQL has no way to require a row in another table to exist. Saying "the
+// database guarantees exactly one open era" would be wrong, and the
+// difference matters - a club with no era is a club whose matches belong to
+// nobody.
+//
+// AT LEAST ONE is an application guarantee, established at every point a
+// club can come into existence or change hands:
+//
+//   1. Initial migration     - 20260903174500_add_team_era backfills every
+//                              pre-existing club in the same transaction
+//                              that creates this table, so the new code
+//                              never sees a club without a history.
+//   2. Bot seeding           - seedDivision opens a BOT era for every club
+//                              it creates (src/lib/leagues/seed.ts).
+//   3. Credential signup     - the takeover branch closes the bot era and
+//                              opens a HUMAN one; the no-bot-slot branch
+//                              opens a HUMAN era for the new club
+//                              (src/app/api/register/route.ts).
+//   4. OAuth signup          - ensureTeamForUser opens a HUMAN era
+//                              (src/lib/team-setup.ts).
+//   5. Future transitions    - closeEraAndOpenNext always opens the next era
+//                              in the same transaction as it closes the
+//                              previous one (src/lib/teams/eras.ts), so a
+//                              club cannot be left era-less by a handover.
+//
+// The one deliberate exception is a club whose ownership CANNOT be derived
+// (a bot that is somehow owned, an unowned non-bot). Those are left with no
+// era rather than a guessed one - reported by prod:eras:classify and
+// prod:eras:backfill. Readers must therefore tolerate a club with no open
+// era instead of assuming one exists.
+//
+// IMPORTANT: at most one OPEN era may exist per team. Prisma's schema DSL
+// cannot express a partial/filtered unique index (the same limitation
+// already documented on TransferListing and Season above), so it is
+// enforced by a hand-written
+// `CREATE UNIQUE INDEX "TeamEra_teamId_open_key" ON "TeamEra"("teamId") WHERE "endedAt" IS NULL`
+// added directly to this feature's migration.sql. That index exists in the
+// database but has no schema.prisma representation - a future
+// `prisma migrate dev` must not be allowed to "fix" this apparent drift by
+// dropping it; always review a generated migration diff before applying it.
+//
+// Full non-overlap (not just "one open era") would be an EXCLUDE USING gist
+// constraint over tstzrange, which needs the btree_gist extension to also
+// match teamId with =. That extension's availability on this Neon project
+// has NOT been verified, and putting an unverifiable CREATE EXTENSION into
+// a production migration is a worse risk than the gap it closes: overlap is
+// already impossible by construction, because the only writer
+// (closeEraAndOpenNext) closes the open era at exactly the instant the next
+// one starts, inside one transaction, holding the Team row lock. If eras
+// ever gain a second writer, verify btree_gist and add the exclusion
+// constraint then.
+model TeamEra {
+  id     String      @id @default(cuid())
+  teamId String
+  // RESTRICT, not Cascade. An era IS the historical record of who managed
+  // this club, so a Team row must not be able to take its own ownership
+  // history with it. Nothing in this codebase deletes a Team - verified
+  // across the whole tree and its history - so this blocks no existing
+  // behaviour; it makes the absence of that behaviour enforced rather than
+  // incidental.
+  team   Team        @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  // Null for a BOT era, always set for a HUMAN one.
+  //
+  // RESTRICT, and deliberately NOT SetNull. SetNull was the original choice
+  // and it was wrong twice over. First, it is incoherent with
+  // TeamEra_user_matches_type_check: nulling the userId of a HUMAN era
+  // produces a row the CHECK rejects, so the delete failed anyway - but as
+  // an opaque constraint violation rather than a decision. Second, had the
+  // CHECK not existed, SetNull would have done exactly the damage the CHECK
+  // accidentally prevented: silently detaching a person from every match
+  // they managed, leaving a stretch of history belonging to nobody.
+  //
+  // RESTRICT states the rule outright: a person who has managed a club
+  // cannot be deleted while that record stands. The CHECK is NOT weakened to
+  // permit deletion - the FK is corrected so the two agree.
+  //
+  // This does mean account deletion is currently impossible for anyone who
+  // has managed a club. That is the correct default until deletion is
+  // designed properly: anonymisation, or a soft delete that keeps the era
+  // and its attribution intact - chosen explicitly, rather than arrived at
+  // by a cascade nobody reviewed.
+  userId String?
+  user   User?       @relation(fields: [userId], references: [id], onDelete: Restrict)
+  type   TeamEraType
+
+  startedAt DateTime
+  endedAt   DateTime?
+
+  // Which season the club changed hands in. SetNull is correct here and
+  // RESTRICT would be wrong: these are ANNOTATIONS, not the boundary. The
+  // era window is startedAt/endedAt and survives a season disappearing
+  // intact - only a convenience label is lost, so the era row and every
+  // attribution depending on it are preserved either way. Nothing in this
+  // codebase deletes a Season, and if one ever were, its Divisions and
+  // Fixtures would cascade away with it - a far larger problem than a null
+  // label here.
+  //
+  // Recorded when known, purely so
+  // a later "manager profile" screen can say "took over in Season 3"
+  // without re-deriving it from timestamps. Never used to decide whether a
+  // match belongs to an era - that is always the startedAt/endedAt window
+  // (see src/lib/teams/era.ts), because a season is not a point in time.
+  startedSeasonId String?
+  startedSeason   Season? @relation("TeamEraStarted", fields: [startedSeasonId], references: [id], onDelete: SetNull)
+  endedSeasonId   String?
+  endedSeason     Season? @relation("TeamEraEnded", fields: [endedSeasonId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  // Titles won while this era held the club. A HUMAN era's titles are that
+  // manager's; a BOT era's titles belong to the club and to nobody else.
+  seasonChampionships SeasonChampion[]
+
+  // "Which era owned this club at time T" - the single hottest read, and
+  // the one the era-boundary rule runs on. teamId leads as the equality
+  // column, startedAt follows for the range half and gives the ordering
+  // free.
+  @@index([teamId, startedAt])
+  // "Every club this person has ever managed" - the manager profile's
+  // starting point. Ordered by startedAt so a career reads chronologically.
+  @@index([userId, startedAt])
+}
+
+// WHO WON A DIVISION, DECIDED ONCE AND NEVER RECOMPUTED.
+//
+// A title is a permanent historical fact, and re-deriving one from the
+// standings later is not safe: computeStandings' display ordering falls
+// through to the club's CURRENT name, and a name changes - a human takeover
+// rewrites Team.name (src/app/api/register/route.ts) and the bot renamer
+// rewrites it again (src/lib/leagues/seed.ts). Recomputing a historical
+// table after a takeover can therefore return a different answer than the
+// one that was actually true. So the answer is written down at the moment
+// it is decided, and read back forever after.
+//
+// GLOBAL CLUB HISTORY AND MANAGER PERSONAL HISTORY ARE DIFFERENT THINGS,
+// and this one row carries both without letting either contaminate the
+// other:
+//
+//   teamId    - the club. Never changes when the club changes hands, so a
+//               title won under a bot stays in the club's honours list
+//               forever, exactly as it should.
+//   teamEraId - the era that HELD the club at decidedAt. A snapshot, taken
+//               once. A takeover three seasons later cannot reach back and
+//               change it, so a human never inherits a bot's trophies.
+//
+// Team.userId is never consulted for attribution - it is current ownership,
+// which is precisely the wrong question.
+model SeasonChampion {
+  id String @id @default(cuid())
+
+  // Denormalised from Division. Every consumer query starts from a season
+  // ("season N's champions", "this club's titles, by season"), and going
+  // through Division would put a join on every one of them.
+  //
+  // RESTRICT: a title is history. Note Division.seasonId is Cascade, so
+  // deleting a Season would otherwise cascade its Divisions away and take
+  // every title with them; this states the rule at the season level too,
+  // rather than relying on the divisionId RESTRICT to catch it by accident.
+  seasonId String
+  season   Season @relation(fields: [seasonId], references: [id], onDelete: Restrict)
+
+  // The scope of the title AND the idempotency authority: one champion per
+  // division, ever, enforced by the database rather than by the caller
+  // remembering. `tier` is deliberately NOT copied here - it lives on
+  // Division and would only drift once promotion/relegation exists.
+  divisionId String   @unique
+  division   Division @relation(fields: [divisionId], references: [id], onDelete: Restrict)
+
+  // RESTRICT, matching TeamEra exactly. Team.userId is onDelete: Cascade,
+  // so deleting a User deletes the Team - and TeamEra already blocks that
+  // for any club with a human era. This extends the same protection to a
+  // club whose only title was won as a bot.
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Restrict)
+
+  // The manager snapshot. Deliberately an era reference, not a userId: a
+  // userId column would be a second copy of TeamEra.userId that can drift,
+  // and it could not express "this title belongs to a BOT era, and so to no
+  // manager at all".
+  //
+  // Nullable ONLY so that a club with no era row can never BLOCK a season
+  // from completing - a null here is a data defect for the verification
+  // script to catch, whereas a blocked season transition is an outage.
+  // In practice ensureBotEra and the backfill guarantee every club has an
+  // open era, and Production reports zero clubs without one.
+  //
+  // RESTRICT, and explicitly NOT SetNull: nulling this would silently
+  // detach a manager from a title they won, which is the exact damage the
+  // TeamEra FK review already rejected for TeamEra.userId. Contrast with
+  // TeamEra.startedSeasonId/endedSeasonId, which are correctly SetNull
+  // because they are annotations - this is not an annotation, it IS the
+  // attribution.
+  teamEraId String?
+  teamEra   TeamEra? @relation(fields: [teamEraId], references: [id], onDelete: Restrict)
+
+  // The canonical attribution instant: MAX(scheduledAt) over the division's
+  // LEAGUE fixtures, or the TITLE_DECIDER's scheduledAt when one was played.
+  //
+  // Kickoff, never playedAt - the same rule src/lib/teams/era.ts already
+  // applies to every individual match, applied once more to the match that
+  // settled the title. Stored rather than re-derived because
+  // rescheduleIfStale (src/lib/seasons/next-season.ts) rewrites
+  // Fixture.scheduledAt, so a stored value is the only way the attribution
+  // actually used can never be retro-changed underneath the row.
+  decidedAt DateTime
+
+  // Null when the title was settled by the table. Set when it needed a
+  // decider, so a trophy cabinet can say "won it in a decider" without
+  // recomputing anything. Unique: one decider settles exactly one title.
+  //
+  // RESTRICT for the same reason as every other FK here - a title's
+  // evidence must not be able to disappear.
+  decidedByFixtureId String?  @unique
+  decidedByFixture   Fixture? @relation(fields: [decidedByFixtureId], references: [id], onDelete: Restrict)
+
+  // THE CLUB'S NAME AT THE INSTANT THE TITLE WAS DECIDED.
+  //
+  // A DISPLAY SNAPSHOT AND NOTHING ELSE. The canonical identity of the
+  // champion is teamId, and stays teamId: never join on this column, never
+  // group by it, never use it to find a club.
+  //
+  // It exists because Team.name is mutable and the takeover flow rewrites
+  // it (src/app/api/register/route.ts renames a bot club to whatever the new
+  // manager typed at signup). Without the snapshot, a title won by "Hapoel
+  // Ashdod B" in season 1 would be rendered under a name a different person
+  // chose in season 4 - which is not a rebrand, it is a false statement
+  // about who won.
+  //
+  // Nullable for one reason only: a row that predates this column cannot
+  // have one, and no name can honestly be reconstructed for it. Production
+  // holds zero SeasonChampion rows, so in practice every title the game ever
+  // awards carries its name. Write-once at the database - see the migration.
+  clubNameAtDecision String?
+
+  // When the row was written, which differs from decidedAt by however long
+  // the hourly orchestrator took to notice the season had ended.
+  createdAt DateTime @default(now())
+
+  // "Season N's champions" - the global historical honours list, and the
+  // one query the denormalised seasonId above exists to serve.
+  @@index([seasonId])
+  // "This club's honours" - club history, independent of who managed it.
+  @@index([teamId])
+  // "This manager's honours" - joined from TeamEra by userId. The manager
+  // profile and trophy cabinet both start here.
+  @@index([teamEraId])
+}
+
+// THE COMPETITION THAT SETTLES A TITLE THREE OR MORE CLUBS ARE LEVEL ON.
+//
+// Deliberately NOT a copy of the matches. Fixture rows remain the canonical
+// match records and everything derivable from them is derived: which clubs
+// are involved, which round we are in, whether the playoff is finished, and
+// who is winning. This model exists for the two facts that CANNOT be derived
+// from match rows, because they are inputs to the competition rather than
+// outputs of it:
+//
+//   drawSeed      the seed of the Official Sporting Draw
+//   knockoutDraw  the realised bracket that draw produced
+//
+// Everything else was considered and rejected: `phase` is "does a KNOCKOUT
+// fixture exist", `status` is "does a SeasonChampion exist", `completedAt`
+// duplicates SeasonChampion's own timestamps, and an entrant list or a
+// standings cache would duplicate match data. A second source of truth for a
+// derivable fact can only ever disagree with the fact.
+model ChampionshipPlayoff {
+  id String @id @default(cuid())
+
+  // Denormalised from Division, for the same reason SeasonChampion.seasonId
+  // is: every consumer query starts from a season. RESTRICT because a
+  // playoff is the evidence behind a title.
+  seasonId String
+  season   Season @relation(fields: [seasonId], references: [id], onDelete: Restrict)
+
+  // THE identity and THE idempotency authority: one championship playoff per
+  // division, ever, enforced by the database rather than by a caller
+  // remembering to check.
+  divisionId String   @unique
+  division   Division @relation(fields: [divisionId], references: [id], onDelete: Restrict)
+
+  // THE OFFICIAL SPORTING DRAW'S SEED.
+  //
+  // Derived once, at creation, from the division's completed LEAGUE record -
+  // the record that produced the tie in the first place - by a COMMUTATIVE
+  // fold, so that no ordering decision of any kind enters it. See
+  // src/lib/seasons/draw.ts for the derivation and why each prohibited input
+  // (teamId order, club name, localeCompare, insertion order, current owner,
+  // runtime randomness) is absent.
+  //
+  // NOT NULL from birth rather than nullable-until-knockout: "immutable from
+  // creation" is a far stronger invariant than "immutable after a later
+  // write", and it removes a whole class of partial-write state. A playoff
+  // that never reaches the knockout simply never reads it.
+  drawSeed String
+
+  // THE REALISED BRACKET, persisted the moment the knockout is entered.
+  //
+  // The seed alone is NOT sufficient historical persistence. A future change
+  // to the RNG, the shuffle, the bye rule or the canonicalisation would
+  // silently reinterpret a bracket that was already played - so the OUTCOME
+  // of the draw is stored as the sporting fact, and the seed is kept only so
+  // that outcome can be re-verified.
+  //
+  // Null until the knockout is actually entered, written exactly once in the
+  // same transaction that creates the first knockout fixtures, and never
+  // updated. Later rounds follow this stored bracket; they never re-draw.
+  //
+  // Shape (see draw.ts): { version, entrants[], byes[], order[], rounds }
+  knockoutDraw Json?
+
+  createdAt DateTime @default(now())
+
+  fixtures Fixture[]
+
+  @@index([seasonId])
+}
+
+/**
+ * PROOF THAT ONE CLUB'S SEASON-BOUNDARY REPLENISHMENT DECISION WAS MADE.
+ * Written LAST inside the same transaction that generated the players, so
+ * "a row exists" is equivalent to "all of that club's work committed". It is
+ * the exactly-once authority for the SQUAD_REPLENISHMENT stage: a resumed run
+ * skips every club that has one and reprocesses every club that does not.
+ * IT IS NOT ROSTER TRUTH. Roster truth is Player.teamId + Player.careerStatus,
+ * always. This row records a decision, not a squad, which is why it stores
+ * counts rather than player ids and is never read to answer "who plays for
+ * this club".
+ * Every continuing club gets a row, including clubs that needed nothing
+ * (generated = 0) - that is what makes "was every club considered before the
+ * season rolled" an answerable question.
+ * RESTRICT on both relations, deliberately. This records an IRREVERSIBLE act:
+ * real Player rows were created and given to a club. Cascading it away with a
+ * season or a club would erase the only record that the grant ever happened,
+ * which is exactly the silent history loss Phase 3F exists to prevent. It
+ * forbids nothing that was previously possible - Fixture already RESTRICTs on
+ * Team and Division, so any club with played history is already undeletable.
+ */
+model SquadReplenishment {
+  id          String   @id @default(cuid())
+  seasonId    String
+  season      Season   @relation(fields: [seasonId], references: [id], onDelete: Restrict)
+  teamId      String
+  team        Team     @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  /**
+   * ACTIVE owned players read under the club's roster lock, before any generation.
+   */
+  ownedBefore Int
+  /**
+   * How many fallback players this club was given. Zero for a club that needed none.
+   */
+  generated   Int
+  /**
+   * ACTIVE owned players after. ownedBefore + generated = ownedAfter is a DB CHECK.
+   */
+  ownedAfter  Int
+  /**
+   * MIN_ACTIVE_ROSTER as it stood that season - the floor is tunable, so the row says what it was.
+   */
+  floorAtRun  Int
+  completedAt DateTime @default(now())
+
+  // The exactly-once key. One decision per club per season, enforced by the
+  // database rather than by a count that two workers could both read.
+  @@unique([seasonId, teamId])
 }

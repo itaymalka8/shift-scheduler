@@ -1,285 +1,68 @@
-# מערכת ניהול משמרות מודיעין בילוש שפט
-## Shift Scheduler - Intelligence Detective Patrol Management System
+# Goalx Manager
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Version](https://img.shields.io/badge/version-1.0.0-green.svg)
+## משחק ניהול כדורגל מקוון
+
+![Version](https://img.shields.io/badge/version-0.1.0-green.svg)
 ![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)
-![Next.js](https://img.shields.io/badge/Next.js-14.0.0-black.svg)
+![Next.js](https://img.shields.io/badge/Next.js-15.5.2-black.svg)
 
-מערכת מקיפה לניהול משמרות, תכנון עבודה וניהול עובדים עבור יחידות מודיעין בילוש שפט.
+Goalx Manager הוא משחק ניהול כדורגל בסגנון "האטריק" - נרשמים, מקימים קבוצה,
+מנהלים סגל שחקנים, קובעים טקטיקה ומתחרים בליגה חיה מול מנהלים אחרים.
 
-## ✨ תכונות עיקריות
+## ✨ מצב נוכחי
 
-### 📋 ניהול משמרות
-- לוח זמנים שבועי אינטראקטיבי
-- הקצאת עובדים למשמרות (בוקר, צהריים, ערב)
-- גרירה ושחרור (Drag & Drop) של עובדים
-- תצוגה רספונסיבית למחשב ונייד
+השלב הראשון של הפיתוח כולל:
 
-### 👥 ניהול עובדים
-- רשימת עובדים מלאה עם תפקידים
-- הוספה, עריכה ומחיקה של עובדים
-- מערכת הרשאות (מנהל, מנהל, משתמש)
-- חיפוש והצגת משמרות אישיות
+- 🎨 מיתוג מלא (לוגו, ערכת צבעים סגולה/לבנה)
+- 🔐 הרשמה והתחברות אמיתיות (NextAuth + Prisma)
+- 🏟️ הקמת קבוצה בעת ההרשמה
+- 📋 מסך בית לאחר התחברות
 
-### 📊 תכנון עבודה יומי
-- תכנון פעילויות יומיות (נשק, סמים, כספים, וכו')
-- הקצאת עובדים למשימות ספציפיות
-- תצוגת גאנט לתכנון שבועי
-- סיכום וייצוא נתונים
+שלבים הבאים (טרם נבנו): ניהול סגל שחקנים, טקטיקה ותורים, מנוע סימולציית
+משחקים, טבלת ליגה ולוח משחקים, שוק העברות וכלכלה.
 
-### 🔐 מערכת אימות ואבטחה
-- התחברות עם שם משתמש וסיסמה
-- מערכת הרשאות מתקדמת
-- ניהול משתמשים (למנהלים בלבד)
-- זכירת התחברות
+## 🚀 הרצה מקומית
 
-### 📱 תאימות פלטפורמות
-- תמיכה במחשב, אנדרואיד ו-iOS
-- ממשק מותאם לנייד
-- תצוגה אופטימלית בכל הגדלים
-
-## 🚀 התקנה מהירה
-
-### דרישות מערכת
-- **Node.js** 18.0.0 או גרסה עדכנית יותר
-- **npm** 9.0.0 או גרסה עדכנית יותר
-- **PostgreSQL** 15.0 או גרסה עדכנית יותר
-- **Docker** (אופציונלי, מומלץ לפריסה)
-
-### התקנה ב-Linux/Mac
 ```bash
-# שכפול הפרויקט
-git clone <repository-url>
-cd shift-scheduler
-
-# התקנה מהירה
-./quick-start.sh
-
-# או התקנה ידנית
-./install.sh
-./setup.sh
+npm install
+npx prisma migrate dev
+npm run dev
 ```
 
-### התקנה ב-Windows
-```cmd
-# שכפול הפרויקט
-git clone <repository-url>
-cd shift-scheduler
+האפליקציה תעלה בכתובת http://localhost:3000
 
-# התקנה מהירה
-quick-start.bat
+## ⚙️ משתני סביבה
 
-# או התקנה ידנית
-install.bat
-setup.bat
-```
+ראו `.env.example`:
 
-## 📱 הפעלת המערכת
-
-### הפעלה רגילה
 ```bash
-# Linux/Mac
-./start-all.sh
-
-# Windows
-start-all.bat
+DATABASE_URL="postgresql://user:password@host/dbname?sslmode=require"
+NEXTAUTH_SECRET="secret-אקראי"
+NEXTAUTH_URL="http://localhost:3000"
 ```
 
-### הפעלה עם Docker
-```bash
-# Linux/Mac
-./start-docker.sh
-
-# Windows
-start-docker.bat
-```
-
-### כתובות המערכת
-- **Frontend**: http://localhost:3000
-- **Backend API**: http://localhost:5000/api
-- **Health Check**: http://localhost:5000/api/health
-
-## 👤 התחברות ראשונית
-
-### מנהל ברירת מחדל
-- **שם משתמש**: `itaymalka8`
-- **סיסמה**: `1990`
-- **הרשאות**: מנהל מלא
-
-## 🛠️ פקודות ניהול
-
-### Linux/Mac
-```bash
-./status.sh          # בדיקת סטטוס
-./logs.sh            # צפייה בלוגים
-./monitor.sh         # ניטור המערכת
-./stop-all.sh        # עצירת המערכת
-./clean.sh           # ניקוי קבצים זמניים
-./backup.sh          # גיבוי נתונים
-./update.sh          # עדכון המערכת
-```
-
-### Windows
-```cmd
-status.bat          # בדיקת סטטוס
-logs.bat            # צפייה בלוגים
-monitor.bat         # ניטור המערכת
-stop-all.bat        # עצירת המערכת
-clean.bat           # ניקוי קבצים זמניים
-backup.bat          # גיבוי נתונים
-update.bat          # עדכון המערכת
-```
+מסד הנתונים הוא Postgres (לא SQLite) - כולל בפיתוח מקומי, כדי לשקף מקרוב את הפרודקשן.
+לבדיקה מהירה מקומית אפשר [Neon](https://neon.tech) (טיר חינמי, לא פג תוקף) או Postgres מקומי.
 
 ## 🏗️ ארכיטקטורה
 
-### Frontend (Next.js + TypeScript)
 ```
 src/
-├── app/                 # App Router pages
-├── components/          # React components
-├── store/              # Zustand state management
-├── lib/                # Utilities and helpers
-└── styles/             # CSS and styling
+├── app/                 # Next.js App Router (עמודים ו-API routes)
+├── components/          # רכיבי React (כולל shadcn/ui)
+├── lib/                 # Prisma client, NextAuth config, ולידציות
+└── generated/prisma/    # Prisma Client שנוצר אוטומטית
+prisma/
+└── schema.prisma        # מודלים: User, Team
 ```
 
-### Backend (Express.js + PostgreSQL)
-```
-backend/
-├── routes/             # API routes
-├── middleware/         # Authentication & validation
-├── database/           # Database connection & schema
-└── config/             # Configuration files
-```
+## 🛠️ טכנולוגיות
 
-## 🐳 פריסה עם Docker
-
-### Docker Compose
-```yaml
-# docker-compose.yml מוכן לשימוש
-services:
-  - frontend (Next.js)
-  - backend (Express.js)
-  - database (PostgreSQL)
-```
-
-### פקודות Docker
-```bash
-# בניית תמונות
-./build.sh
-
-# הפעלה עם Docker
-docker-compose up -d
-
-# עצירה
-docker-compose down
-```
-
-## 🔧 פיתוח
-
-### הפעלת סביבת פיתוח
-```bash
-# Frontend בלבד
-npm run dev
-
-# Backend בלבד
-cd backend && npm run dev
-
-# שניהם יחד
-./start-all.sh
-```
-
-### בדיקות
-```bash
-# הרצת בדיקות
-./run-tests.sh          # Linux/Mac
-run-tests.bat           # Windows
-```
-
-## 📂 מבנה הפרויקט
-
-```
-shift-scheduler/
-├── 📁 src/                    # Frontend source code
-├── 📁 backend/               # Backend source code
-├── 📁 public/                # Static assets
-├── 🐳 docker-compose.yml     # Docker configuration
-├── 🔧 next.config.ts         # Next.js configuration
-├── 📜 package.json           # Frontend dependencies
-├── 🚀 *.sh                   # Linux/Mac scripts
-├── 🚀 *.bat                  # Windows scripts
-└── 📖 README.md              # This file
-```
-
-## 🔐 מערכת ההרשאות
-
-### תפקידים
-- **admin**: גישה מלאה לכל התכונות
-- **manager**: ניהול עובדים ומשמרות
-- **user**: צפייה ועריכה בסיסית
-
-### הרשאות ספציפיות
-- `manage_users`: ניהול משתמשים
-- `manage_employees`: ניהול עובדים
-- `manage_vehicles`: ניהול כלי רכב
-- `manage_schedule`: ניהול משמרות
-- `manage_work_plan`: ניהול תכנון עבודה
-- `manage_requests`: ניהול בקשות
-
-## 🚨 פתרון בעיות
-
-### בעיות נפוצות
-
-#### המערכת לא עולה
-```bash
-# בדיקת סטטוס השירותים
-./status.sh
-
-# בדיקת לוגים
-./logs.sh
-
-# איפוס המערכת
-./reset.sh
-```
-
-#### בעיות בסיס נתונים
-```bash
-# איפוס בסיס הנתונים
-./setup-database.sh
-
-# בדיקת חיבור
-psql -h localhost -U postgres -d shift_scheduler -c "SELECT 1;"
-```
-
-#### בעיות Docker
-```bash
-# ניקוי Docker
-docker system prune -a
-
-# בניה מחדש
-./build.sh
-```
-
-## 📞 תמיכה
-
-### לקבלת עזרה
-```bash
-./help.sh           # Linux/Mac
-help.bat            # Windows
-```
-
-### מידע על המערכת
-```bash
-./info.sh           # Linux/Mac
-info.bat            # Windows
-```
+- **Next.js 15** (App Router) + **React 19** + **TypeScript**
+- **Tailwind CSS v4** + **shadcn/ui** (Radix primitives)
+- **Prisma** + **PostgreSQL**
+- **NextAuth.js** (Credentials provider) + **bcryptjs**
 
 ## 📄 רישיון
 
-כל הזכויות שמורות לאיתי מלכא - 2024
-
----
-
-**פותח בהתמחות עבור יחידות מודיעין בילוש שפט**
-
-🔒 **מערכת מאובטחת** | 📱 **תאימות מלאה** | ⚡ **ביצועים גבוהים**
+כל הזכויות שמורות לאיתי מלכא

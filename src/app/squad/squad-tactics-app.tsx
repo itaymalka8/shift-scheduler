@@ -1,0 +1,3229 @@
+"use client"
+
+import { useEffect, useMemo, useRef, useState } from "react"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
+import { Loader2, CheckCircle2, GraduationCap } from "lucide-react"
+import { useT, useLocale } from "@/lib/i18n/locale-context"
+import type { TranslationKey, Translator, Locale } from "@/lib/i18n/translations"
+import { getCountryName } from "@/lib/countries"
+import { cn } from "@/lib/utils"
+import Link from "next/link"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import {
+  FORMATION_IDS,
+  CUSTOM_FORMATION_ID,
+  CUSTOM_FORMATION_ZONES,
+  GOALKEEPER_SLOT,
+  CUSTOM_MIN_X,
+  CUSTOM_MAX_X,
+  CUSTOM_OUTFIELD_MIN_Y,
+  CUSTOM_OUTFIELD_MAX_Y,
+  deriveRoleFromPosition,
+  resolveFormationSlots,
+  type FormationSlot,
+} from "@/lib/players/formations"
+import { POSITION_GROUP, type PlayerPosition } from "@/lib/players/positions"
+import { calculatePositionSuitability, type PositionFit } from "@/lib/players/suitability"
+import { getPlayerTier, getFitnessLevel, getDisplayStatus, type PlayerStatus, type DisplayPlayerStatus } from "@/lib/players/tiers"
+import { getPlayerVisualGrade, PLAYER_VISUAL_GRADE_CONFIG } from "@/lib/players/visual-grade"
+import { formatMarketValue, formatMarketValueCompact } from "@/lib/players/currency"
+import {
+  MENTALITY_OPTIONS,
+  PRESSING_OPTIONS,
+  TEMPO_OPTIONS,
+  WIDTH_OPTIONS,
+  ATTACKING_STYLE_OPTIONS,
+  DEFENSIVE_LINE_OPTIONS,
+  CREATIVE_FREEDOM_OPTIONS,
+  DRIBBLE_FREQUENCY_OPTIONS,
+  PASSING_TYPE_OPTIONS,
+  ATTACK_DIRECTION_OPTIONS,
+  FULLBACK_OVERLAP_OPTIONS,
+} from "@/lib/players/tactics"
+import type { TacticalAssessment } from "@/lib/match/engine/coach-advice"
+import { JerseyPreview } from "@/components/kit/jersey-preview"
+import type { KitColors } from "@/lib/kits/defaults"
+import { getReadableTextColor } from "@/lib/kits/contrast"
+import {
+  ATTRIBUTE_CATEGORIES,
+  GOALKEEPER_ATTRIBUTE_CATEGORIES,
+  getAttributeScoreTier,
+  attributeLabelKey,
+  type AttributeKey,
+  type PlayerAttributes,
+} from "@/lib/players/attributes"
+import { calculatePositionOverall } from "@/lib/players/overall"
+import type { AttributeHighlight } from "@/lib/players/position-weights"
+
+// --- Youth Academy: server-shaped DTOs for GET /api/youth/intake ---------
+
+interface YouthProspectDTO {
+  id: string
+  firstName: string
+  lastName: string
+  age: number
+  nationality: string
+  primaryPosition: string
+  secondaryPositions: string[]
+  preferredFoot: "left" | "right" | "both"
+  overall: number
+  potential: number
+  status: "PENDING" | "PROMOTED" | "EXPIRED"
+  promotedPlayerId: string | null
+  attributes: AttributeHighlight[]
+}
+
+interface YouthIntakeDTO {
+  id: string
+  status: "OPEN" | "CLOSED"
+  openedAt: string
+  closesAt: string
+  closedAt: string | null
+  promotedCount: number
+}
+
+interface YouthAcademyData {
+  season: { id: string; number: number } | null
+  intake: YouthIntakeDTO | null
+  prospects: YouthProspectDTO[]
+  roster: { activeCount: number; maxSize: number; availableSlots: number }
+  serverNow: string
+}
+
+const MAX_YOUTH_PROMOTIONS_PER_INTAKE = 3
+
+interface PlayerDTO {
+  id: string
+  firstName: string
+  lastName: string
+  primaryPosition: string
+  secondaryPositions: string[]
+  age: number
+  overall: number
+  potential: number
+  fitness: number
+  status: PlayerStatus
+  /** Club fixtures still to sit out. Matches, never days - see availability.ts. */
+  injuryMatchesRemaining: number
+  suspensionMatches: number
+  marketValue: number
+  weeklySalary: number
+  preferredFoot: "left" | "right" | "both"
+  nationality: string
+  shirtNumber: number
+  attributes: PlayerAttributes
+  activeListing: { id: string; askingPrice: number; expiresAt: string } | null
+}
+
+interface Assignment {
+  slotIndex: number
+  playerId: string
+}
+
+interface Point {
+  x: number
+  y: number
+}
+
+type SortKey = "ability" | "position" | "age" | "fitness"
+
+const POSITION_ORDER: PlayerPosition[] = ["GK", "CB", "RB", "LB", "CDM", "CM", "CAM", "RM", "LM", "RW", "LW", "ST"]
+
+// How far a pointer has to move before a press-and-hold on a player card is
+// treated as a drag instead of a tap - crossing this is the only thing that
+// distinguishes "open player details" from "start a swap", on both mouse and
+// touch (see the pointer handlers in SquadTacticsApp).
+const DRAG_THRESHOLD_PX = 6
+
+/** A drag in progress, dragging one player card toward a pitch slot or the bench. */
+interface DragState {
+  playerId: string
+  // null = the player is coming from the bench (no current slot).
+  originSlotIndex: number | null
+  pointerId: number
+  originClientX: number
+  originClientY: number
+  dx: number
+  dy: number
+  width: number
+  height: number
+  overSlotIndex: number | null
+  overBench: boolean
+}
+
+// One Tailwind treatment per tier's cardStyle token (see config.ts's
+// PLAYER_TIERS) - the config stays framework-agnostic, only this map knows
+// what "premium" or "prestige" actually look like.
+const TIER_CARD_CLASSES: Record<string, string> = {
+  "plain-gray": "bg-card border-border",
+  "gray-outline": "bg-card border-muted-foreground/30",
+  "clean-light": "bg-card border-border",
+  "purple-subtle": "bg-card border-primary/30",
+  "purple-rich": "bg-primary/5 border-primary/50",
+  premium: "bg-gradient-to-br from-primary/10 to-amber-500/10 border-primary/60 shadow-sm",
+  prestige: "bg-gradient-to-br from-primary/15 via-amber-400/10 to-primary/15 border-amber-500/70 shadow-md",
+}
+
+const TIER_BADGE_CLASSES: Record<string, string> = {
+  "plain-gray": "bg-muted text-muted-foreground",
+  "gray-outline": "bg-muted text-muted-foreground",
+  "clean-light": "bg-primary/10 text-primary",
+  "purple-subtle": "bg-primary/10 text-primary",
+  "purple-rich": "bg-primary/15 text-primary",
+  premium: "bg-primary text-primary-foreground",
+  prestige: "bg-gradient-to-r from-amber-500 to-primary text-white",
+}
+
+// Small dot color per fitness level (see tiers.ts's getFitnessLevel) - used
+// as the tiny fitness indicator on a pitch mini card, never a number.
+const FITNESS_DOT_CLASSES: Record<string, string> = {
+  excellent: "bg-emerald-500",
+  good: "bg-lime-500",
+  average: "bg-amber-500",
+  low: "bg-red-500",
+}
+
+const FIT_BADGE_CLASSES: Record<string, string> = {
+  excellent: "bg-emerald-100 text-emerald-800",
+  good: "bg-primary/10 text-primary",
+  average: "bg-amber-100 text-amber-800",
+  weak: "bg-red-100 text-red-800",
+}
+
+// Same status colors PlayerCard already uses (starting/injured/suspended get
+// their own color, everything else - bench/unavailable - is neutral) - kept
+// as its own constant rather than reused from PlayerCard so that component
+// (used by the untouched Squad tab) stays exactly as it was.
+const SQUAD_ROW_STATUS_CLASSES: Record<DisplayPlayerStatus, string> = {
+  starting: "bg-emerald-100 text-emerald-800",
+  bench: "bg-muted text-muted-foreground",
+  available: "bg-muted text-muted-foreground",
+  injured: "bg-red-100 text-red-800",
+  suspended: "bg-amber-100 text-amber-800",
+  unavailable: "bg-muted text-muted-foreground",
+}
+
+type SquadPositionFilter = "ALL" | "GK" | "DF" | "MF" | "FW"
+
+const SQUAD_POSITION_FILTERS: { key: SquadPositionFilter; labelKey: TranslationKey }[] = [
+  { key: "ALL", labelKey: "squad.filter.all" },
+  { key: "GK", labelKey: "squad.filter.gk" },
+  { key: "DF", labelKey: "squad.filter.df" },
+  { key: "MF", labelKey: "squad.filter.mf" },
+  { key: "FW", labelKey: "squad.filter.fw" },
+]
+
+type SquadSortKey = "overall" | "position" | "age" | "fitness"
+
+// A sensible starting layout for a manager entering the custom builder for
+// the first time - a plain 4-4-2 shape, already legal within the custom
+// zones, that they can then drag away from.
+const DEFAULT_CUSTOM_SLOTS: Point[] = [
+  { x: 82, y: 25 },
+  { x: 62, y: 22 },
+  { x: 38, y: 22 },
+  { x: 18, y: 25 },
+  { x: 82, y: 55 },
+  { x: 60, y: 52 },
+  { x: 40, y: 52 },
+  { x: 18, y: 55 },
+  { x: 62, y: 82 },
+  { x: 38, y: 82 },
+]
+
+function fullName(p: PlayerDTO): string {
+  return `${p.firstName} ${p.lastName}`
+}
+
+/** What a mini pitch card actually has room for - last name only (see PitchPlayerCard). */
+function shortName(p: PlayerDTO): string {
+  return p.lastName || p.firstName
+}
+
+function positionLabelKey(position: string): TranslationKey {
+  return `squad.position.${position}` as TranslationKey
+}
+
+async function patchSquad(body: Record<string, unknown>) {
+  const res = await fetch("/api/squad", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) return null
+  return (await res.json()) as {
+    formation: string
+    customFormation: Point[] | null
+    assignments: Assignment[]
+    mentality: string | null
+    tempo: string | null
+    pressing: string | null
+    width: string | null
+    attackingStyle: string | null
+    defensiveLine: string | null
+    offsideTrap: boolean
+    creativeFreedom: string | null
+    dribbleFrequency: string | null
+    passingType: string | null
+    attackDirection: string | null
+    fullbackOverlaps: string | null
+    captainId: string | null
+    penaltyTakerId: string | null
+    freeKickTakerId: string | null
+    cornerTakerId: string | null
+  }
+}
+
+async function fetchAssessment(): Promise<TacticalAssessment | null> {
+  const res = await fetch("/api/squad/assessment")
+  if (!res.ok) return null
+  return (await res.json()) as TacticalAssessment
+}
+
+interface CreateListingOutcome {
+  ok: boolean
+  listing?: { id: string; askingPrice: number; expiresAt: string }
+  errorCode?: string
+}
+
+// Body is exactly {playerId, askingPrice} - the two fields
+// handleCreateListingRequest actually reads. Everything else about the
+// listing (sellingTeamId, windowId, expiresAt, status) is server-derived.
+async function createListing(playerId: string, askingPrice: number): Promise<CreateListingOutcome> {
+  const res = await fetch("/api/transfers/listings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ playerId, askingPrice }),
+  })
+  const body = await res.json().catch(() => null)
+  if (!res.ok) {
+    return { ok: false, errorCode: typeof body?.error === "string" ? body.error : "INTERNAL_ERROR" }
+  }
+  return { ok: true, listing: { id: body.listingId, askingPrice: body.askingPrice, expiresAt: body.expiresAt } }
+}
+
+interface ReleasePlayerOutcome {
+  ok: boolean
+  errorCode?: string
+}
+
+// Body is exactly {playerId} - never weeklySalary, cost, or a referenceId;
+// the release cost and idempotency key are both computed server-side only.
+async function releasePlayerRequest(playerId: string): Promise<ReleasePlayerOutcome> {
+  const res = await fetch("/api/transfers/release", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ playerId }),
+  })
+  const body = await res.json().catch(() => null)
+  if (!res.ok) {
+    return { ok: false, errorCode: typeof body?.error === "string" ? body.error : "INTERNAL_ERROR" }
+  }
+  return { ok: true }
+}
+
+// Whether a create-listing failure should keep the "list for sale" dialog
+// open (so the manager can fix asking price / wait for the window) or the
+// failure is really "someone already changed this player" and should just
+// be reported via the feedback banner after the dialog closes.
+const SELL_ERROR_KEYS: Record<string, TranslationKey> = {
+  INVALID_ASKING_PRICE: "transfers.sellErrorInvalidAskingPrice",
+  TRANSFER_WINDOW_CLOSED: "transfers.sellErrorWindowClosed",
+  PLAYER_NOT_OWNED: "transfers.sellErrorPlayerNotOwned",
+  PLAYER_NOT_ACTIVE: "transfers.sellErrorPlayerNotActive",
+  LISTING_ALREADY_EXISTS: "transfers.sellErrorAlreadyExists",
+}
+
+const RELEASE_ERROR_KEYS: Record<string, TranslationKey> = {
+  PLAYER_NOT_OWNED: "transfers.releaseErrorPlayerNotOwned",
+  PLAYER_NOT_ACTIVE: "transfers.releaseErrorPlayerNotActive",
+  INSUFFICIENT_FUNDS: "transfers.releaseErrorInsufficientFunds",
+  TRANSFER_CONFLICT: "transfers.releaseErrorConflict",
+  SQUAD_FLOOR_REACHED: "transfers.errorSquadFloorReached",
+}
+
+interface CancelListingOutcome {
+  ok: boolean
+  alreadyCancelled?: boolean
+  errorCode?: string
+}
+
+// listingId travels only in the URL - no body at all, since there is
+// nothing a request body could legitimately contribute (no playerId,
+// teamId, or askingPrice is ever read from the client for this call).
+async function cancelListingRequest(listingId: string): Promise<CancelListingOutcome> {
+  const res = await fetch(`/api/transfers/listings/${listingId}/cancel`, { method: "POST" })
+  const body = await res.json().catch(() => null)
+  if (!res.ok) {
+    return { ok: false, errorCode: typeof body?.error === "string" ? body.error : "INTERNAL_ERROR" }
+  }
+  return { ok: true, alreadyCancelled: body?.alreadyCancelled === true }
+}
+
+// LISTING_ALREADY_SOLD, LISTING_EXPIRED and LISTING_NOT_FOUND each need to
+// clear the player's local activeListing too (handled inline in
+// confirmCancelListing, since only those three imply the listing itself is
+// gone) - this map only covers the failures that leave activeListing as-is.
+const CANCEL_ERROR_KEYS: Record<string, TranslationKey> = {
+  LISTING_NOT_OWNED: "transfers.cancelErrorNotOwned",
+  TRANSFER_CONFLICT: "transfers.cancelErrorConflict",
+}
+
+// --- Youth Academy fetch helpers ------------------------------------------
+
+async function fetchYouthAcademy(): Promise<YouthAcademyData | null> {
+  const res = await fetch("/api/youth/intake")
+  if (!res.ok) return null
+  return (await res.json()) as YouthAcademyData
+}
+
+interface PromoteProspectOutcome {
+  ok: boolean
+  errorCode?: string
+  data?: {
+    promotedPlayer: { id: string; name: string; age: number; position: string; overall: number; potential: number; shirtNumber: number }
+    intake: { promotedCount: number; status: "OPEN" | "CLOSED" }
+    roster: { activeCount: number; availableSlots: number }
+  }
+}
+
+async function promoteProspectRequest(prospectId: string): Promise<PromoteProspectOutcome> {
+  const res = await fetch(`/api/youth/prospects/${prospectId}/promote`, { method: "POST" })
+  const body = await res.json().catch(() => null)
+  if (!res.ok) {
+    return { ok: false, errorCode: typeof body?.error === "string" ? body.error : "INTERNAL_ERROR" }
+  }
+  return { ok: true, data: body }
+}
+
+interface FinalizeIntakeOutcome {
+  ok: boolean
+  errorCode?: string
+}
+
+async function finalizeIntakeRequest(intakeId: string): Promise<FinalizeIntakeOutcome> {
+  const res = await fetch(`/api/youth/intakes/${intakeId}/finalize`, { method: "POST" })
+  const body = await res.json().catch(() => null)
+  if (!res.ok) {
+    return { ok: false, errorCode: typeof body?.error === "string" ? body.error : "INTERNAL_ERROR" }
+  }
+  return { ok: true }
+}
+
+const YOUTH_PROMOTE_ERROR_KEYS: Record<string, TranslationKey> = {
+  INTAKE_CLOSED: "youth.promoteErrorIntakeClosed",
+  INTAKE_EXPIRED: "youth.promoteErrorIntakeExpired",
+  PROSPECT_NOT_PENDING: "youth.promoteErrorAlreadyPromoted",
+  PROMOTION_LIMIT_REACHED: "youth.promoteErrorLimitReached",
+  ROSTER_FULL: "youth.promoteErrorRosterFull",
+  SQUAD_FLOOR_UNREACHABLE: "youth.promoteErrorSquadFloor",
+  PROSPECT_NOT_FOUND: "youth.promoteErrorNotFound",
+}
+
+/** mm:ss under an hour, hh:mm:ss once there's an hour or more left - never negative. */
+function formatCountdown(msRemaining: number): string {
+  const totalSeconds = Math.max(0, Math.floor(msRemaining / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return hours > 0 ? `${pad(hours)}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`
+}
+
+export function SquadTacticsApp({
+  players: initialPlayers,
+  initialAssignments,
+  initialFormation,
+  initialCustomFormation,
+  initialMentality,
+  initialTempo,
+  initialPressing,
+  initialWidth,
+  initialAttackingStyle,
+  initialDefensiveLine,
+  initialOffsideTrap,
+  initialCreativeFreedom,
+  initialDribbleFrequency,
+  initialPassingType,
+  initialAttackDirection,
+  initialFullbackOverlaps,
+  initialCaptainId,
+  initialPenaltyTakerId,
+  initialFreeKickTakerId,
+  initialCornerTakerId,
+  accentColor,
+  homeKit,
+  teamTotalQuality,
+  squadMarketValue,
+  totalWeeklyPlayerSalaries,
+}: {
+  players: PlayerDTO[]
+  initialAssignments: Assignment[]
+  initialFormation: string
+  initialCustomFormation: Point[] | null
+  initialMentality: string
+  initialTempo: string
+  initialPressing: string
+  initialWidth: string
+  initialAttackingStyle: string
+  initialDefensiveLine: string
+  initialOffsideTrap: boolean
+  initialCreativeFreedom: string
+  initialDribbleFrequency: string
+  initialPassingType: string
+  initialAttackDirection: string
+  initialFullbackOverlaps: string
+  initialCaptainId: string | null
+  initialPenaltyTakerId: string | null
+  initialFreeKickTakerId: string | null
+  initialCornerTakerId: string | null
+  accentColor: string
+  homeKit: KitColors
+  teamTotalQuality: number
+  squadMarketValue: number
+  totalWeeklyPlayerSalaries: number
+}) {
+  const t = useT()
+  const { locale } = useLocale()
+  const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
+  // Local, mutable mirror of the server-loaded roster - every other prop
+  // here (assignments, tactics dials, etc.) already follows this same
+  // "seed local state from the initial* prop" pattern. Only Create
+  // Listing/Release ever call setPlayers, and only to attach/clear a single
+  // player's activeListing or to remove a released player outright - no
+  // full page refresh needed for either to show up immediately.
+  const [players, setPlayers] = useState(initialPlayers)
+  const byId = useMemo(() => new Map(players.map((p) => [p.id, p])), [players])
+
+  // The URL is the single source of truth for which tab is showing (not
+  // local state) - that's what lets the shared nav bar's "Tactics" link
+  // actually land on the tactics tab: a click there only ever changes the
+  // URL, and if the tab were separate component state, this already-mounted
+  // instance would never learn about it (a prop change alone doesn't reset
+  // useState after the first render). It's also what makes a refresh and a
+  // direct link to /squad?tab=tactics land correctly.
+  const tab: "squad" | "tactics" | "youth" =
+    searchParams.get("tab") === "tactics" ? "tactics" : searchParams.get("tab") === "youth" ? "youth" : "squad"
+
+  const setTab = (next: "squad" | "tactics" | "youth") => {
+    const params = new URLSearchParams(searchParams.toString())
+    if (next !== "squad") params.set("tab", next)
+    else params.delete("tab")
+    const query = params.toString()
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false })
+  }
+  const [sortKey, setSortKey] = useState<SortKey>("ability")
+  const [expandedPlayerId, setExpandedPlayerId] = useState<string | null>(null)
+
+  const [formation, setFormation] = useState(initialFormation)
+  const [customFormation, setCustomFormation] = useState<Point[] | null>(initialCustomFormation)
+  const [assignments, setAssignments] = useState<Map<number, string>>(
+    () => new Map(initialAssignments.map((a) => [a.slotIndex, a.playerId]))
+  )
+  const [mentality, setMentality] = useState(initialMentality)
+  const [tempo, setTempo] = useState(initialTempo)
+  const [pressing, setPressing] = useState(initialPressing)
+  const [width, setWidth] = useState(initialWidth)
+  const [attackingStyle, setAttackingStyle] = useState(initialAttackingStyle)
+  const [defensiveLine, setDefensiveLine] = useState(initialDefensiveLine)
+  const [offsideTrap, setOffsideTrap] = useState(initialOffsideTrap)
+  const [creativeFreedom, setCreativeFreedom] = useState(initialCreativeFreedom)
+  const [dribbleFrequency, setDribbleFrequency] = useState(initialDribbleFrequency)
+  const [passingType, setPassingType] = useState(initialPassingType)
+  const [attackDirection, setAttackDirection] = useState(initialAttackDirection)
+  const [fullbackOverlaps, setFullbackOverlaps] = useState(initialFullbackOverlaps)
+  const [captainId, setCaptainId] = useState(initialCaptainId)
+  const [penaltyTakerId, setPenaltyTakerId] = useState(initialPenaltyTakerId)
+  const [freeKickTakerId, setFreeKickTakerId] = useState(initialFreeKickTakerId)
+  const [cornerTakerId, setCornerTakerId] = useState(initialCornerTakerId)
+
+  const [assessment, setAssessment] = useState<TacticalAssessment | null>(null)
+
+  const [pickerSlotIndex, setPickerSlotIndex] = useState<number | null>(null)
+  // The same picker dialog fills an empty slot (bench-only candidates, its
+  // original purpose) or swaps a starter with anyone (all candidates) - one
+  // dialog, two contexts, distinguished only by this flag (see pickerCandidates below).
+  const [pickerMode, setPickerMode] = useState<"empty" | "swap">("empty")
+  const [selectedSlotIndex, setSelectedSlotIndex] = useState<number | null>(null)
+  const [squadSheetOpen, setSquadSheetOpen] = useState(false)
+  const [confirmRecommend, setConfirmRecommend] = useState(false)
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saved">("idle")
+  const savedTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Seller actions (list for sale / release) - sellDialogPlayerId and
+  // releaseDialogPlayerId each drive their own confirmation Dialog;
+  // busyPlayerId names whichever single player has an in-flight POST to
+  // either endpoint right now. Sharing one flag between both actions (the
+  // same one-in-flight-mutation pattern the transfer market's own purchase
+  // flow uses) is what makes "list for sale" and "release" mutually
+  // exclusive for the same player, not just double-submit-safe within
+  // themselves.
+  const [sellDialogPlayerId, setSellDialogPlayerId] = useState<string | null>(null)
+  const [askingPriceInput, setAskingPriceInput] = useState("")
+  const [releaseDialogPlayerId, setReleaseDialogPlayerId] = useState<string | null>(null)
+  const [cancelDialogPlayerId, setCancelDialogPlayerId] = useState<string | null>(null)
+  const [busyPlayerId, setBusyPlayerId] = useState<string | null>(null)
+  const [listingFeedback, setListingFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null)
+  const listingFeedbackTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  function showListingFeedback(type: "success" | "error", message: string) {
+    setListingFeedback({ type, message })
+    if (listingFeedbackTimeout.current) clearTimeout(listingFeedbackTimeout.current)
+    listingFeedbackTimeout.current = setTimeout(() => setListingFeedback(null), 5000)
+  }
+
+  // --- Youth Academy tab state --------------------------------------------
+  // Fetched on demand when the tab first becomes active (same lazy-fetch
+  // pattern as the Tactics tab's assessment, see refreshAssessment below) -
+  // never threaded through page.tsx's initial server props, since this data
+  // is time-sensitive (a live deadline countdown, a roster that can change
+  // from a concurrent transfer) and reading it fresh on tab-open is simpler
+  // than trying to keep a server-rendered snapshot correct.
+  const [youthState, setYouthState] = useState<"idle" | "loading" | "loaded" | "error">("idle")
+  const [youthData, setYouthData] = useState<YouthAcademyData | null>(null)
+  // serverTimeOffsetMs = server's clock minus this browser's clock at fetch
+  // time - the countdown below is always `closesAt - (Date.now() +
+  // serverTimeOffsetMs)`, never a bare client `Date.now()` comparison, so a
+  // wrong local clock can't show a manager extra (or too little) time.
+  const [serverTimeOffsetMs, setServerTimeOffsetMs] = useState(0)
+  const [nowTick, setNowTick] = useState(() => Date.now())
+  const [promotingProspectId, setPromotingProspectId] = useState<string | null>(null)
+  const [finalizeDialogOpen, setFinalizeDialogOpen] = useState(false)
+  const [finalizing, setFinalizing] = useState(false)
+  // Guards the deadline-reached auto-refresh below to firing exactly once
+  // per loaded intake, not on every one-second tick after zero.
+  const deadlineRefreshedRef = useRef(false)
+
+  async function refreshYouthAcademy() {
+    setYouthState("loading")
+    const data = await fetchYouthAcademy()
+    if (!data) {
+      setYouthState("error")
+      return
+    }
+    deadlineRefreshedRef.current = false
+    setServerTimeOffsetMs(new Date(data.serverNow).getTime() - Date.now())
+    setYouthData(data)
+    setYouthState("loaded")
+  }
+
+  useEffect(() => {
+    if (tab === "youth" && youthState === "idle") refreshYouthAcademy()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab])
+
+  // Ticks once a second only while the tab is actually open - never a
+  // background timer running for a tab the manager isn't looking at.
+  useEffect(() => {
+    if (tab !== "youth") return
+    const interval = setInterval(() => setNowTick(Date.now()), 1000)
+    return () => clearInterval(interval)
+  }, [tab])
+
+  const estimatedServerNow = nowTick + serverTimeOffsetMs
+  const youthMsRemaining = youthData?.intake ? new Date(youthData.intake.closesAt).getTime() - estimatedServerNow : null
+
+  // Server is authoritative, never the client-side countdown alone: once the
+  // ticking clock says the deadline has passed on a still-OPEN intake, this
+  // re-fetches GET /api/youth/intake, whose own lazy settlement (see
+  // handleGetYouthIntake) is what actually flips it to CLOSED. Until that
+  // response comes back the UI still shows 00:00:00 briefly - it never
+  // pretends the intake is closed based on the countdown alone.
+  useEffect(() => {
+    if (!youthData?.intake || youthData.intake.status !== "OPEN") return
+    if (youthMsRemaining !== null && youthMsRemaining <= 0 && !deadlineRefreshedRef.current) {
+      deadlineRefreshedRef.current = true
+      refreshYouthAcademy()
+    }
+  }, [youthMsRemaining, youthData?.intake])
+
+  async function handlePromoteProspect(prospectId: string) {
+    if (promotingProspectId) return
+    setPromotingProspectId(prospectId)
+    try {
+      const outcome = await promoteProspectRequest(prospectId)
+      if (outcome.ok && outcome.data) {
+        const { promotedPlayer, intake: intakeUpdate, roster } = outcome.data
+        setYouthData((prev) =>
+          prev
+            ? {
+                ...prev,
+                intake: prev.intake ? { ...prev.intake, promotedCount: intakeUpdate.promotedCount, status: intakeUpdate.status } : prev.intake,
+                prospects: prev.prospects.map((p) =>
+                  p.id === prospectId ? { ...p, status: "PROMOTED", promotedPlayerId: promotedPlayer.id } : p
+                ),
+                roster: { ...prev.roster, activeCount: roster.activeCount, availableSlots: roster.availableSlots },
+              }
+            : prev
+        )
+        showListingFeedback("success", t("youth.promoteSuccess"))
+      } else {
+        const key = YOUTH_PROMOTE_ERROR_KEYS[outcome.errorCode ?? ""] ?? "error.UNKNOWN_ERROR"
+        showListingFeedback("error", t(key))
+        // These all mean this client's view of the intake is stale (closed,
+        // expired, or the prospect already resolved by another tab/request)
+        // - resync the whole tab rather than leave five cards showing a
+        // state the server no longer agrees with.
+        if (
+          outcome.errorCode === "INTAKE_CLOSED" ||
+          outcome.errorCode === "INTAKE_EXPIRED" ||
+          outcome.errorCode === "PROMOTION_LIMIT_REACHED" ||
+          outcome.errorCode === "PROSPECT_NOT_PENDING"
+        ) {
+          refreshYouthAcademy()
+        }
+      }
+    } finally {
+      setPromotingProspectId(null)
+    }
+  }
+
+  async function handleFinalizeIntake() {
+    if (!youthData?.intake || finalizing) return
+    setFinalizing(true)
+    try {
+      const outcome = await finalizeIntakeRequest(youthData.intake.id)
+      setFinalizeDialogOpen(false)
+      if (outcome.ok) {
+        showListingFeedback("success", t("youth.finalizeSuccess"))
+        await refreshYouthAcademy()
+      } else {
+        showListingFeedback("error", t("error.UNKNOWN_ERROR"))
+      }
+    } finally {
+      setFinalizing(false)
+    }
+  }
+
+  const sellDialogPlayer = sellDialogPlayerId ? (byId.get(sellDialogPlayerId) ?? null) : null
+  const releaseDialogPlayer = releaseDialogPlayerId ? (byId.get(releaseDialogPlayerId) ?? null) : null
+  const cancelDialogPlayer = cancelDialogPlayerId ? (byId.get(cancelDialogPlayerId) ?? null) : null
+
+  function openSellDialog(playerId: string) {
+    setAskingPriceInput("")
+    setSellDialogPlayerId(playerId)
+  }
+
+  async function confirmCreateListing() {
+    const player = sellDialogPlayer
+    if (!player || busyPlayerId) return
+    const askingPrice = Math.trunc(Number(askingPriceInput))
+    if (!Number.isFinite(askingPrice) || askingPrice <= 0) return
+    setBusyPlayerId(player.id)
+    try {
+      const outcome = await createListing(player.id, askingPrice)
+      setSellDialogPlayerId(null)
+      if (outcome.ok && outcome.listing) {
+        const listing = outcome.listing
+        setPlayers((prev) => prev.map((p) => (p.id === player.id ? { ...p, activeListing: listing } : p)))
+        showListingFeedback("success", t("transfers.sellSuccess"))
+      } else {
+        const key = SELL_ERROR_KEYS[outcome.errorCode ?? ""] ?? "error.UNKNOWN_ERROR"
+        showListingFeedback("error", t(key))
+      }
+    } finally {
+      setBusyPlayerId(null)
+    }
+  }
+
+  async function confirmCancelListing() {
+    const player = cancelDialogPlayer
+    if (!player || !player.activeListing || busyPlayerId) return
+    const listingId = player.activeListing.id
+    setBusyPlayerId(player.id)
+    try {
+      const outcome = await cancelListingRequest(listingId)
+      setCancelDialogPlayerId(null)
+      if (outcome.ok) {
+        // Covers alreadyCancelled:true too - treated as an ordinary success,
+        // never an error, same convention as Release's alreadyProcessed.
+        setPlayers((prev) => prev.map((p) => (p.id === player.id ? { ...p, activeListing: null } : p)))
+        showListingFeedback("success", t("transfers.cancelListingSuccess"))
+        return
+      }
+      const code = outcome.errorCode ?? ""
+      if (code === "LISTING_ALREADY_SOLD") {
+        // Ownership itself changed - a plain local activeListing clear isn't
+        // enough, the squad's whole player list may now be stale (the
+        // player could be gone). A clean server-data refresh, not a full
+        // page reload.
+        showListingFeedback("error", t("transfers.cancelErrorAlreadySold"))
+        router.refresh()
+      } else if (code === "LISTING_EXPIRED" || code === "LISTING_NOT_FOUND") {
+        setPlayers((prev) => prev.map((p) => (p.id === player.id ? { ...p, activeListing: null } : p)))
+        showListingFeedback("error", t(code === "LISTING_EXPIRED" ? "transfers.cancelErrorExpired" : "transfers.cancelErrorNotFound"))
+      } else {
+        const key = CANCEL_ERROR_KEYS[code] ?? "error.UNKNOWN_ERROR"
+        showListingFeedback("error", t(key))
+      }
+    } finally {
+      setBusyPlayerId(null)
+    }
+  }
+
+  function removePlayerLocally(playerId: string) {
+    setPlayers((prev) => prev.filter((p) => p.id !== playerId))
+    setAssignments((prev) => {
+      const next = new Map(prev)
+      for (const [slotIndex, pid] of prev) {
+        if (pid === playerId) next.delete(slotIndex)
+      }
+      return next
+    })
+    if (captainId === playerId) setCaptainId(null)
+    if (penaltyTakerId === playerId) setPenaltyTakerId(null)
+    if (freeKickTakerId === playerId) setFreeKickTakerId(null)
+    if (cornerTakerId === playerId) setCornerTakerId(null)
+    if (expandedPlayerId === playerId) setExpandedPlayerId(null)
+  }
+
+  async function confirmRelease() {
+    const player = releaseDialogPlayer
+    if (!player || busyPlayerId) return
+    setBusyPlayerId(player.id)
+    try {
+      const outcome = await releasePlayerRequest(player.id)
+      setReleaseDialogPlayerId(null)
+      if (outcome.ok) {
+        removePlayerLocally(player.id)
+        showListingFeedback("success", t("transfers.releaseSuccess"))
+      } else {
+        const key = RELEASE_ERROR_KEYS[outcome.errorCode ?? ""] ?? "error.UNKNOWN_ERROR"
+        showListingFeedback("error", t(key))
+      }
+    } finally {
+      setBusyPlayerId(null)
+    }
+  }
+
+  // Custom pointer-based drag (native HTML5 DnD doesn't work reliably on
+  // touch) - see startDrag/handlePointerMove/handlePointerUp below. `drag` is
+  // only ever set once real movement crosses DRAG_THRESHOLD_PX; a plain tap
+  // never touches this state at all and falls through to the card's own
+  // onClick, which is exactly what keeps click and drag from fighting.
+  const [drag, setDrag] = useState<DragState | null>(null)
+  const dragRef = useRef<DragState | null>(null)
+  const pendingDragRef = useRef<{
+    playerId: string
+    originSlotIndex: number | null
+    pointerId: number
+    startX: number
+    startY: number
+    width: number
+    height: number
+  } | null>(null)
+  const justDraggedRef = useRef(false)
+  const rafRef = useRef<number | null>(null)
+  const latestPointerRef = useRef<{ x: number; y: number } | null>(null)
+  const slotElsRef = useRef<Map<number, HTMLDivElement>>(new Map())
+  const benchElRef = useRef<HTMLDivElement | null>(null)
+  // Briefly highlighted right after a successful swap/move so the manager
+  // can see at a glance which two cards just traded places - cleared after
+  // a short timeout, never a full animation library.
+  const [justChangedSlots, setJustChangedSlots] = useState<Set<number>>(new Set())
+  const justChangedTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const slots = useMemo(() => resolveFormationSlots(formation, customFormation), [formation, customFormation])
+
+  const startingIds = useMemo(() => new Set(assignments.values()), [assignments])
+  const benchPlayers = players.filter((p) => !startingIds.has(p.id))
+
+  async function refreshAssessment() {
+    setAssessment(await fetchAssessment())
+  }
+
+  useEffect(() => {
+    if (tab === "tactics" && !assessment) refreshAssessment()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab])
+
+  function flashSaved() {
+    setSaveStatus("saved")
+    if (savedTimeout.current) clearTimeout(savedTimeout.current)
+    savedTimeout.current = setTimeout(() => setSaveStatus("idle"), 1800)
+  }
+
+  async function applyAndSave(body: Record<string, unknown>, optimistic: () => void) {
+    optimistic()
+    const result = await patchSquad(body)
+    if (result) {
+      setFormation(result.formation)
+      setCustomFormation(result.customFormation)
+      setAssignments(new Map(result.assignments.map((a) => [a.slotIndex, a.playerId])))
+      setMentality(result.mentality ?? "balanced")
+      setTempo(result.tempo ?? "normal")
+      setPressing(result.pressing ?? "normal")
+      setWidth(result.width ?? "balanced")
+      setAttackingStyle(result.attackingStyle ?? "shortPassing")
+      setDefensiveLine(result.defensiveLine ?? "normal")
+      setOffsideTrap(result.offsideTrap)
+      setCreativeFreedom(result.creativeFreedom ?? "balanced")
+      setDribbleFrequency(result.dribbleFrequency ?? "balanced")
+      setPassingType(result.passingType ?? "mixed")
+      setAttackDirection(result.attackDirection ?? "balanced")
+      setFullbackOverlaps(result.fullbackOverlaps ?? "normal")
+      setCaptainId(result.captainId)
+      setPenaltyTakerId(result.penaltyTakerId)
+      setFreeKickTakerId(result.freeKickTakerId)
+      setCornerTakerId(result.cornerTakerId)
+      flashSaved()
+      refreshAssessment()
+    }
+  }
+
+  function flashChanged(slots: number[]) {
+    setJustChangedSlots(new Set(slots))
+    if (justChangedTimeout.current) clearTimeout(justChangedTimeout.current)
+    justChangedTimeout.current = setTimeout(() => setJustChangedSlots(new Set()), 300)
+  }
+
+  function removeFromSlot(slotIndex: number) {
+    applyAndSave({ assignments: [{ slotIndex, playerId: null }] }, () => {
+      setAssignments((prev) => {
+        const next = new Map(prev)
+        next.delete(slotIndex)
+        return next
+      })
+    })
+    setSelectedSlotIndex(null)
+  }
+
+  /**
+   * The one place a player ever lands in a slot - covers every case the spec
+   * calls out as its own thing, because they're really the same operation:
+   *  - empty slot <- bench player: single entry, nothing displaced.
+   *  - empty slot <- starter: single entry; their old slot's entry is
+   *    deleted server-side by the `playerId` match before the new one is
+   *    created (see /api/squad's per-entry loop), so it becomes empty.
+   *  - occupied slot <- bench player: single entry; the displaced starter's
+   *    row is deleted (by slotIndex) without a replacement, so they fall
+   *    out of `assignments` - which is exactly what "now on the bench"
+   *    means here (bench is never stored, only "not assigned").
+   *  - occupied slot <- another starter: two entries, the second one
+   *    putting the displaced player exactly where the incoming one came
+   *    from - a true two-way swap, not a bench bump.
+   * All four are one optimistic local update plus one PATCH call; nothing
+   * about this depends on whether the source was a drag or a picker click.
+   */
+  function assignOrSwap(targetSlotIndex: number, incomingPlayerId: string) {
+    const displacedPlayerId = assignments.get(targetSlotIndex) ?? null
+    let incomingCurrentSlot: number | null = null
+    for (const [idx, pid] of assignments) {
+      if (pid === incomingPlayerId) {
+        incomingCurrentSlot = idx
+        break
+      }
+    }
+    if (incomingCurrentSlot === targetSlotIndex) {
+      setPickerSlotIndex(null)
+      return
+    }
+
+    const entries: { slotIndex: number; playerId: string | null }[] = [
+      { slotIndex: targetSlotIndex, playerId: incomingPlayerId },
+    ]
+    if (incomingCurrentSlot !== null) {
+      entries.push({ slotIndex: incomingCurrentSlot, playerId: displacedPlayerId })
+    }
+
+    applyAndSave({ assignments: entries }, () => {
+      setAssignments((prev) => {
+        const next = new Map(prev)
+        next.set(targetSlotIndex, incomingPlayerId)
+        if (incomingCurrentSlot !== null) {
+          if (displacedPlayerId) next.set(incomingCurrentSlot, displacedPlayerId)
+          else next.delete(incomingCurrentSlot)
+        }
+        return next
+      })
+    })
+    flashChanged(incomingCurrentSlot !== null ? [targetSlotIndex, incomingCurrentSlot] : [targetSlotIndex])
+    setPickerSlotIndex(null)
+    setSelectedSlotIndex(null)
+  }
+
+  function changeFormation(next: string) {
+    setSelectedSlotIndex(null)
+    if (next === CUSTOM_FORMATION_ID) {
+      const seed = customFormation ?? DEFAULT_CUSTOM_SLOTS
+      applyAndSave({ formation: next, customFormation: seed }, () => {
+        setFormation(next)
+        setCustomFormation(seed)
+      })
+    } else {
+      applyAndSave({ formation: next }, () => setFormation(next))
+    }
+  }
+
+  function saveCustomFormation(next: Point[]) {
+    applyAndSave({ formation: CUSTOM_FORMATION_ID, customFormation: next }, () => setCustomFormation(next))
+  }
+
+  async function applyRecommended() {
+    const res = await fetch("/api/squad/recommend", { method: "POST" })
+    if (res.ok) {
+      const body = (await res.json()) as { formation: string; assignments: Assignment[] }
+      setSelectedSlotIndex(null)
+      setFormation(body.formation)
+      setAssignments(new Map(body.assignments.map((a) => [a.slotIndex, a.playerId])))
+      flashSaved()
+      refreshAssessment()
+    }
+    setConfirmRecommend(false)
+  }
+
+  function resetTactics() {
+    const body = {
+      mentality: "balanced",
+      tempo: "normal",
+      pressing: "normal",
+      width: "balanced",
+      attackingStyle: "shortPassing",
+      defensiveLine: "normal",
+      offsideTrap: false,
+      creativeFreedom: "balanced",
+      dribbleFrequency: "balanced",
+      passingType: "mixed",
+      attackDirection: "balanced",
+      fullbackOverlaps: "normal",
+    }
+    applyAndSave(body, () => {
+      setMentality(body.mentality)
+      setTempo(body.tempo)
+      setPressing(body.pressing)
+      setWidth(body.width)
+      setAttackingStyle(body.attackingStyle)
+      setDefensiveLine(body.defensiveLine)
+      setOffsideTrap(body.offsideTrap)
+      setCreativeFreedom(body.creativeFreedom)
+      setDribbleFrequency(body.dribbleFrequency)
+      setPassingType(body.passingType)
+      setAttackDirection(body.attackDirection)
+      setFullbackOverlaps(body.fullbackOverlaps)
+    })
+  }
+
+  // --- Pointer-based drag (works for mouse, touch and pen alike; native
+  // HTML5 drag-and-drop never fires reliably from touch) ---------------
+  //
+  // A pointerdown only ever records a *pending* drag in a ref - no state,
+  // no re-render, so a plain tap costs nothing extra and the card's own
+  // onClick still fires exactly as if none of this existed. Only once the
+  // pointer has moved past DRAG_THRESHOLD_PX do we promote it to real
+  // `drag` state (one render) and start tracking movement; `justDraggedRef`
+  // is what stops that same gesture's trailing click from also opening the
+  // player-details dialog. Movement after that is throttled to one state
+  // update per animation frame - the actual hit-testing against slot/bench
+  // rects is cheap (at most ~12 elements) and runs entirely client-side, so
+  // nothing here ever calls the server mid-drag; assignOrSwap/removeFromSlot
+  // (the only place that saves) only run once, on a successful pointerup.
+  function handleCardPointerDown(
+    e: React.PointerEvent,
+    playerId: string,
+    originSlotIndex: number | null
+  ) {
+    if (e.pointerType === "mouse" && e.button !== 0) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    pendingDragRef.current = {
+      playerId,
+      originSlotIndex,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      width: rect.width,
+      height: rect.height,
+    }
+    window.addEventListener("pointermove", handleWindowPointerMove)
+    window.addEventListener("pointerup", handleWindowPointerUp)
+    window.addEventListener("pointercancel", handleWindowPointerUp)
+  }
+
+  function computeHoverTarget(clientX: number, clientY: number): { slotIndex: number | null; overBench: boolean } {
+    const bench = benchElRef.current?.getBoundingClientRect()
+    if (bench && clientX >= bench.left && clientX <= bench.right && clientY >= bench.top && clientY <= bench.bottom) {
+      return { slotIndex: null, overBench: true }
+    }
+    for (const [slotIndex, el] of slotElsRef.current) {
+      const r = el.getBoundingClientRect()
+      if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) {
+        return { slotIndex, overBench: false }
+      }
+    }
+    return { slotIndex: null, overBench: false }
+  }
+
+  function flushPointerPosition() {
+    rafRef.current = null
+    const p = latestPointerRef.current
+    const current = dragRef.current
+    if (!p || !current) return
+    const { slotIndex, overBench } = computeHoverTarget(p.x, p.y)
+    const next: DragState = {
+      ...current,
+      dx: p.x - current.originClientX,
+      dy: p.y - current.originClientY,
+      overSlotIndex: slotIndex,
+      overBench,
+    }
+    dragRef.current = next
+    setDrag(next)
+  }
+
+  function handleWindowPointerMove(e: PointerEvent) {
+    const pending = pendingDragRef.current
+    if (pending && e.pointerId === pending.pointerId && !dragRef.current) {
+      const moved = Math.hypot(e.clientX - pending.startX, e.clientY - pending.startY)
+      if (moved < DRAG_THRESHOLD_PX) return
+      const started: DragState = {
+        playerId: pending.playerId,
+        originSlotIndex: pending.originSlotIndex,
+        pointerId: pending.pointerId,
+        originClientX: pending.startX,
+        originClientY: pending.startY,
+        dx: e.clientX - pending.startX,
+        dy: e.clientY - pending.startY,
+        width: pending.width,
+        height: pending.height,
+        overSlotIndex: null,
+        overBench: false,
+      }
+      dragRef.current = started
+      setDrag(started)
+      justDraggedRef.current = true
+    }
+    const current = dragRef.current
+    if (!current || e.pointerId !== current.pointerId) return
+    e.preventDefault()
+    latestPointerRef.current = { x: e.clientX, y: e.clientY }
+    if (rafRef.current == null) rafRef.current = requestAnimationFrame(flushPointerPosition)
+  }
+
+  function handleWindowPointerUp(e: PointerEvent) {
+    const pending = pendingDragRef.current
+    const current = dragRef.current
+    if (pending && e.pointerId === pending.pointerId) pendingDragRef.current = null
+    if (current && e.pointerId === current.pointerId) {
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+      const { playerId, originSlotIndex, overSlotIndex, overBench } = current
+      dragRef.current = null
+      setDrag(null)
+      if (overBench) {
+        if (originSlotIndex !== null) removeFromSlot(originSlotIndex)
+      } else if (overSlotIndex !== null && overSlotIndex !== originSlotIndex) {
+        assignOrSwap(overSlotIndex, playerId)
+      }
+      // Any other release point (outside the pitch and the bench) cancels
+      // the drag with no change - the optimistic state was never touched.
+      setTimeout(() => {
+        justDraggedRef.current = false
+      }, 0)
+    }
+    window.removeEventListener("pointermove", handleWindowPointerMove)
+    window.removeEventListener("pointerup", handleWindowPointerUp)
+    window.removeEventListener("pointercancel", handleWindowPointerUp)
+  }
+
+  /** Suppresses the click that trails a real drag's pointerup - a plain tap never sets justDraggedRef, so it's a no-op there. */
+  function handleCardClick(e: React.MouseEvent, onTap: () => void) {
+    if (justDraggedRef.current) {
+      e.preventDefault()
+      e.stopPropagation()
+      return
+    }
+    onTap()
+  }
+
+  useEffect(() => {
+    return () => {
+      window.removeEventListener("pointermove", handleWindowPointerMove)
+      window.removeEventListener("pointerup", handleWindowPointerUp)
+      window.removeEventListener("pointercancel", handleWindowPointerUp)
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
+      if (justChangedTimeout.current) clearTimeout(justChangedTimeout.current)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const sortedSquad = useMemo(() => {
+    const arr = [...players]
+    arr.sort((a, b) => {
+      if (sortKey === "ability") return b.overall - a.overall
+      if (sortKey === "age") return a.age - b.age
+      if (sortKey === "fitness") return b.fitness - a.fitness
+      return (
+        POSITION_ORDER.indexOf(a.primaryPosition as PlayerPosition) -
+        POSITION_ORDER.indexOf(b.primaryPosition as PlayerPosition)
+      )
+    })
+    return arr
+  }, [players, sortKey])
+
+  const expandedPlayer = expandedPlayerId ? byId.get(expandedPlayerId) ?? null : null
+
+  return (
+    // pb-24 clears the fixed mobile bottom nav bar (GoalXNavigation) - its
+    // own layout-level spacer only adds space above the page's content, not
+    // after it, so without this the last ~55px of whatever this page
+    // renders last is permanently covered once scrolled to the bottom.
+    // Desktop has no fixed bottom bar, hence md:pb-0.
+    <div className="pb-24 md:pb-0">
+      <div className="mb-4 flex items-center justify-between">
+        <h1 className="text-2xl font-bold">{t("squad.title")}</h1>
+        <span
+          className={cn(
+            "text-sm text-muted-foreground transition-opacity",
+            saveStatus === "saved" ? "opacity-100" : "opacity-0"
+          )}
+        >
+          {t("squad.saved")}
+        </span>
+      </div>
+
+      {listingFeedback && (
+        <div
+          role="status"
+          className={cn(
+            "mb-4 flex items-start justify-between gap-3 rounded-lg border p-3 text-sm",
+            listingFeedback.type === "success"
+              ? "border-primary/30 bg-primary/5 text-primary"
+              : "border-destructive/30 bg-destructive/5 text-destructive"
+          )}
+        >
+          <p className="font-medium">{listingFeedback.message}</p>
+          <button
+            type="button"
+            onClick={() => setListingFeedback(null)}
+            aria-label={t("common.close")}
+            className="shrink-0 opacity-70 hover:opacity-100"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      <div className="mb-6 grid grid-cols-2 gap-2 rounded-lg border bg-card p-3 text-center sm:grid-cols-4 sm:gap-4">
+        <div>
+          <div className="text-lg font-bold text-primary">{teamTotalQuality}</div>
+          <div className="text-xs text-muted-foreground">{t("squad.summaryQuality")}</div>
+        </div>
+        <div>
+          <div className="text-lg font-bold text-primary">{formatMarketValueCompact(squadMarketValue)}</div>
+          <div className="text-xs text-muted-foreground">{t("squad.summaryValue")}</div>
+        </div>
+        <div>
+          <div className="text-lg font-bold text-primary">{formatMarketValueCompact(totalWeeklyPlayerSalaries)}</div>
+          <div className="text-xs text-muted-foreground">{t("squad.summarySalaries")}</div>
+        </div>
+        <div>
+          <div className="text-lg font-bold text-primary">{players.length}</div>
+          <div className="text-xs text-muted-foreground">{t("squad.summaryPlayers")}</div>
+        </div>
+      </div>
+
+      <div className="mb-6 flex gap-2 border-b">
+        <button
+          type="button"
+          onClick={() => setTab("squad")}
+          className={cn(
+            "px-4 py-2 text-sm font-medium border-b-2 -mb-px",
+            tab === "squad" ? "border-primary text-primary" : "border-transparent text-muted-foreground"
+          )}
+        >
+          {t("squad.tabSquad")}
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("tactics")}
+          className={cn(
+            "px-4 py-2 text-sm font-medium border-b-2 -mb-px",
+            tab === "tactics" ? "border-primary text-primary" : "border-transparent text-muted-foreground"
+          )}
+        >
+          {t("squad.tabTactics")}
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("youth")}
+          className={cn(
+            "px-4 py-2 text-sm font-medium border-b-2 -mb-px",
+            tab === "youth" ? "border-primary text-primary" : "border-transparent text-muted-foreground"
+          )}
+        >
+          {t("squad.tabYouth")}
+        </button>
+      </div>
+
+      {tab === "squad" ? (
+        <div>
+          <div className="mb-3 flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">{t("squad.sortBy")}</span>
+            {(["ability", "position", "age", "fitness"] as SortKey[]).map((key) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setSortKey(key)}
+                className={cn(
+                  "rounded-full border px-3 py-1",
+                  sortKey === key ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground"
+                )}
+              >
+                {t(`squad.sort${key[0].toUpperCase()}${key.slice(1)}` as TranslationKey)}
+              </button>
+            ))}
+          </div>
+
+          <ul className="space-y-2">
+            {sortedSquad.map((player) => (
+              <li key={player.id}>
+                <PlayerCard
+                  player={player}
+                  status={getDisplayStatus(player.status, startingIds.has(player.id))}
+                  onClick={() => setExpandedPlayerId(player.id)}
+                />
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : tab === "tactics" ? (
+        // Three grid items in this exact order (not two) so mobile - which
+        // simply stacks grid children top to bottom with no explicit
+        // template-columns below lg - reads as Pitch+bench, then the
+        // (now compact) tactics panel, then formation/fit/squad-list. On
+        // lg+, the tactics panel lands beside the pitch (row 1, col 2) and
+        // the formation/fit/squad-list block continues below the pitch
+        // (row 2, col 1), leaving the tactics column narrow instead of a
+        // full-height sidebar.
+        <div className="grid gap-6 lg:grid-cols-[1fr_328px] lg:items-start">
+          <div className="space-y-4">
+            {formation === CUSTOM_FORMATION_ID && (
+              <CustomFormationBuilder
+                slots={customFormation ?? DEFAULT_CUSTOM_SLOTS}
+                onCommit={saveCustomFormation}
+                accentColor={accentColor}
+              />
+            )}
+
+            <Pitch
+              slots={slots}
+              assignments={assignments}
+              byId={byId}
+              selectedSlotIndex={selectedSlotIndex}
+              onSelectSlot={setSelectedSlotIndex}
+              onOpenPicker={(slotIndex) => {
+                setPickerMode("empty")
+                setPickerSlotIndex(slotIndex)
+              }}
+              onOpenDetails={(playerId) => setExpandedPlayerId(playerId)}
+              homeKit={homeKit}
+              registerSlotEl={(slotIndex, el) => {
+                if (el) slotElsRef.current.set(slotIndex, el)
+                else slotElsRef.current.delete(slotIndex)
+              }}
+              onCardPointerDown={handleCardPointerDown}
+              onCardClick={handleCardClick}
+              drag={drag}
+              justChangedSlots={justChangedSlots}
+            />
+
+            {selectedSlotIndex !== null &&
+              (() => {
+                const playerId = assignments.get(selectedSlotIndex)
+                const player = playerId ? byId.get(playerId) : undefined
+                if (!player) return null
+                const slotRole = slots[selectedSlotIndex].role
+                const fit = fitOf(player, slotRole)
+                const fitScore = fit !== "natural" ? calculatePositionOverall(player.attributes, slotRole) : null
+
+                return (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card p-2 shadow-sm sm:gap-3 sm:p-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 text-xs font-semibold sm:text-sm">
+                        <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-primary">{player.overall}</span>
+                        <span className="truncate">{fullName(player)}</span>
+                      </div>
+                      <div className="truncate text-[11px] text-muted-foreground sm:text-xs">
+                        {t(positionLabelKey(player.primaryPosition))}
+                        {fitScore !== null && (
+                          <span className="ms-2 text-amber-700">
+                            {t("squad.action.outOfPosition")} · {t("squad.action.fitScore", { score: String(fitScore) })}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 sm:gap-2">
+                      <Button size="sm" variant="outline" className="h-7 px-2 text-xs sm:h-8 sm:px-3 sm:text-sm" onClick={() => setExpandedPlayerId(player.id)}>
+                        {t("squad.action.viewProfile")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2 text-xs sm:h-8 sm:px-3 sm:text-sm"
+                        onClick={() => {
+                          setPickerMode("swap")
+                          setPickerSlotIndex(selectedSlotIndex)
+                        }}
+                      >
+                        {t("squad.action.swap")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs sm:h-8 sm:px-3 sm:text-sm"
+                        onClick={() => removeFromSlot(selectedSlotIndex)}
+                      >
+                        {t("squad.action.removeFromLineup")}
+                      </Button>
+                    </div>
+                  </div>
+                )
+              })()}
+
+            <div
+              ref={benchElRef}
+              className={cn(
+                "rounded-xl transition-colors",
+                drag && drag.overBench && "bg-primary/10 ring-2 ring-primary"
+              )}
+            >
+              <h2 className="mb-2 text-sm font-medium text-muted-foreground">{t("squad.bench")}</h2>
+              <div className="flex flex-wrap gap-2">
+                {benchPlayers.map((p) => (
+                  <BenchChip
+                    key={p.id}
+                    player={p}
+                    onClick={(e) => handleCardClick(e, () => setExpandedPlayerId(p.id))}
+                    onPointerDown={(e) => handleCardPointerDown(e, p.id, null)}
+                    dragging={drag?.playerId === p.id}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="min-w-0 space-y-4 lg:sticky lg:top-4">
+            <CompactDial
+              titleKey="squad.mentality.title"
+              value={mentality}
+              options={MENTALITY_OPTIONS as readonly string[]}
+              prefix="squad.mentality"
+              onChange={(v) => applyAndSave({ mentality: v }, () => setMentality(v))}
+            />
+            <CompactDial
+              titleKey="squad.attackingStyle.title"
+              value={attackingStyle}
+              options={ATTACKING_STYLE_OPTIONS as readonly string[]}
+              prefix="squad.attackingStyle"
+              onChange={(v) => applyAndSave({ attackingStyle: v }, () => setAttackingStyle(v))}
+            />
+            <CompactDial
+              titleKey="squad.tempo.title"
+              value={tempo}
+              options={TEMPO_OPTIONS as readonly string[]}
+              prefix="squad.tempo"
+              onChange={(v) => applyAndSave({ tempo: v }, () => setTempo(v))}
+            />
+            <CompactDial
+              titleKey="squad.pressing.title"
+              value={pressing}
+              options={PRESSING_OPTIONS as readonly string[]}
+              prefix="squad.pressing"
+              onChange={(v) => applyAndSave({ pressing: v }, () => setPressing(v))}
+            />
+            <CompactDial
+              titleKey="squad.defensiveLine.title"
+              value={defensiveLine}
+              options={DEFENSIVE_LINE_OPTIONS as readonly string[]}
+              prefix="squad.defensiveLine"
+              onChange={(v) => applyAndSave({ defensiveLine: v }, () => setDefensiveLine(v))}
+            />
+
+            <CollapsibleSection title={t("squad.tactics.moreSettings")}>
+              <CompactDial
+                titleKey="squad.width.title"
+                value={width}
+                options={WIDTH_OPTIONS as readonly string[]}
+                prefix="squad.width"
+                onChange={(v) => applyAndSave({ width: v }, () => setWidth(v))}
+              />
+              <CompactDial
+                titleKey="squad.creativeFreedom.title"
+                value={creativeFreedom}
+                options={CREATIVE_FREEDOM_OPTIONS as readonly string[]}
+                prefix="squad.creativeFreedom"
+                onChange={(v) => applyAndSave({ creativeFreedom: v }, () => setCreativeFreedom(v))}
+              />
+              <CompactDial
+                titleKey="squad.dribbleFrequency.title"
+                value={dribbleFrequency}
+                options={DRIBBLE_FREQUENCY_OPTIONS as readonly string[]}
+                prefix="squad.dribbleFrequency"
+                onChange={(v) => applyAndSave({ dribbleFrequency: v }, () => setDribbleFrequency(v))}
+              />
+              <CompactDial
+                titleKey="squad.passingType.title"
+                value={passingType}
+                options={PASSING_TYPE_OPTIONS as readonly string[]}
+                prefix="squad.passingType"
+                onChange={(v) => applyAndSave({ passingType: v }, () => setPassingType(v))}
+              />
+              <CompactDial
+                titleKey="squad.attackDirection.title"
+                value={attackDirection}
+                options={ATTACK_DIRECTION_OPTIONS as readonly string[]}
+                prefix="squad.attackDirection"
+                onChange={(v) => applyAndSave({ attackDirection: v }, () => setAttackDirection(v))}
+              />
+              <CompactDial
+                titleKey="squad.fullbackOverlaps.title"
+                value={fullbackOverlaps}
+                options={FULLBACK_OVERLAP_OPTIONS as readonly string[]}
+                prefix="squad.fullbackOverlaps"
+                onChange={(v) => applyAndSave({ fullbackOverlaps: v }, () => setFullbackOverlaps(v))}
+              />
+              <CompactToggle
+                titleKey="squad.offsideTrap.title"
+                descKey="squad.offsideTrap.desc"
+                value={offsideTrap}
+                onChange={(v) => applyAndSave({ offsideTrap: v }, () => setOffsideTrap(v))}
+              />
+            </CollapsibleSection>
+
+            <CollapsibleSection title={t("squad.tactics.keyRoles")}>
+              <RoleSelect
+                label={t("squad.captain")}
+                players={players}
+                value={captainId}
+                onChange={(v) => applyAndSave({ captainId: v }, () => setCaptainId(v))}
+              />
+              <RoleSelect
+                label={t("squad.penaltyTaker")}
+                players={players}
+                value={penaltyTakerId}
+                onChange={(v) => applyAndSave({ penaltyTakerId: v }, () => setPenaltyTakerId(v))}
+              />
+              <RoleSelect
+                label={t("squad.freeKickTaker")}
+                players={players}
+                value={freeKickTakerId}
+                onChange={(v) => applyAndSave({ freeKickTakerId: v }, () => setFreeKickTakerId(v))}
+              />
+              <RoleSelect
+                label={t("squad.cornerTaker")}
+                players={players}
+                value={cornerTakerId}
+                onChange={(v) => applyAndSave({ cornerTakerId: v }, () => setCornerTakerId(v))}
+              />
+            </CollapsibleSection>
+          </div>
+
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-2 text-sm">
+                <span className="font-medium">{t("squad.formation")}</span>
+                <select
+                  className="rounded-md border bg-background px-2 py-1 text-sm"
+                  value={formation}
+                  onChange={(e) => changeFormation(e.target.value)}
+                >
+                  {FORMATION_IDS.map((id) => (
+                    <option key={id} value={id}>
+                      {id}
+                    </option>
+                  ))}
+                  <option value={CUSTOM_FORMATION_ID}>{t("squad.formation.custom")}</option>
+                </select>
+              </label>
+              <Button size="sm" variant="outline" onClick={() => setConfirmRecommend(true)}>
+                {t("squad.recommendedXI")}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={resetTactics}>
+                {t("squad.resetTactics")}
+              </Button>
+            </div>
+
+            <TacticalFitPanel assessment={assessment} />
+
+            {/* The full 22-player squad isn't shown open by default here -
+                the Squad tab already exists for that. This just opens the
+                same SquadList in a panel (side drawer on desktop, bottom
+                sheet on mobile) so the tactics screen itself stays about
+                lineup/bench/formation/instructions. */}
+            <Button variant="outline" className="w-full" onClick={() => setSquadSheetOpen(true)}>
+              {t("squad.openFullSquad")}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <YouthAcademyPanel
+          state={youthState}
+          data={youthData}
+          msRemaining={youthMsRemaining}
+          promotingProspectId={promotingProspectId}
+          finalizeDialogOpen={finalizeDialogOpen}
+          finalizing={finalizing}
+          onPromote={handlePromoteProspect}
+          onOpenFinalize={() => setFinalizeDialogOpen(true)}
+          onCloseFinalize={() => !finalizing && setFinalizeDialogOpen(false)}
+          onConfirmFinalize={handleFinalizeIntake}
+          onRetry={refreshYouthAcademy}
+          t={t}
+          locale={locale}
+        />
+      )}
+
+      {/* The dragged card itself, floating at the pointer - a fixed-position
+          clone (translate3d only, no state-driven layout) so 60fps movement
+          never has to re-render the pitch/bench underneath it. The source
+          card stays in place at reduced opacity (see PitchPlayerCard/
+          BenchChip's `dragging` prop) so where it came from stays visible. */}
+      {drag &&
+        (() => {
+          const player = byId.get(drag.playerId)
+          if (!player) return null
+          const slotRole = drag.originSlotIndex !== null ? slots[drag.originSlotIndex]?.role : player.primaryPosition as PlayerPosition
+          const fit = slotRole ? fitOf(player, slotRole) : "natural"
+          return (
+            <div
+              className="pointer-events-none fixed z-50 transition-none"
+              style={{
+                left: 0,
+                top: 0,
+                width: drag.width,
+                height: drag.height,
+                transform: `translate3d(${drag.originClientX + drag.dx - drag.width / 2}px, ${drag.originClientY + drag.dy - drag.height / 2}px, 0) scale(1.08)`,
+              }}
+            >
+              <PitchPlayerCard
+                player={player}
+                slotRole={slotRole ?? (player.primaryPosition as PlayerPosition)}
+                fit={fit}
+                selected={false}
+                homeKit={homeKit}
+                elevated
+              />
+            </div>
+          )
+        })()}
+
+      {/* Full squad panel - opened on demand from the button above. Reuses
+          SquadList exactly as the Squad tab does; selecting a player here
+          just opens the same read-only detail dialog as everywhere else. */}
+      <Sheet open={squadSheetOpen} onOpenChange={setSquadSheetOpen}>
+        <SheetContent
+          side="bottom"
+          className="max-h-[85vh] overflow-y-auto rounded-t-2xl lg:inset-y-0 lg:inset-x-auto lg:top-0 lg:right-0 lg:left-auto lg:bottom-auto lg:h-full lg:max-h-none lg:w-full lg:max-w-md lg:rounded-none lg:border-t-0 lg:border-l lg:data-[state=open]:slide-in-from-right lg:data-[state=closed]:slide-out-to-right"
+        >
+          <SheetHeader>
+            <SheetTitle>{t("squad.tabSquad")}</SheetTitle>
+          </SheetHeader>
+          <div className="px-4 pb-4">
+            <SquadList
+              players={players}
+              startingIds={startingIds}
+              onSelect={(playerId) => {
+                setSquadSheetOpen(false)
+                setExpandedPlayerId(playerId)
+              }}
+            />
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      {/* Expanded player profile - the one place a manager can see everything
+          real that's known about a player. Same Dialog component on every
+          breakpoint; only its position/rounding/animation classes change at
+          sm+, from a full-width sheet sliding up from the bottom (mobile) to
+          a centered card (desktop) - one implementation, not two dialogs. */}
+      <Dialog open={!!expandedPlayer} onOpenChange={(open) => !open && setExpandedPlayerId(null)}>
+        <DialogContent
+          className={cn(
+            "gap-0 overflow-hidden p-0",
+            "fixed inset-x-0 bottom-0 top-auto left-0 max-h-[88vh] w-full max-w-full translate-x-0 translate-y-0 rounded-t-2xl rounded-b-none border-b-0",
+            "sm:inset-x-auto sm:bottom-auto sm:left-[50%] sm:top-[50%] sm:max-h-[85vh] sm:w-full sm:max-w-md sm:translate-x-[-50%] sm:translate-y-[-50%] sm:rounded-2xl sm:border-b"
+          )}
+        >
+          {expandedPlayer &&
+            (() => {
+              const slotEntry = [...assignments.entries()].find(([, playerId]) => playerId === expandedPlayer.id)
+              const currentRole = slotEntry ? slots[slotEntry[0]].role : null
+              const isOutOfPosition = currentRole !== null && currentRole !== (expandedPlayer.primaryPosition as PlayerPosition)
+              const countryName = getCountryName(expandedPlayer.nationality, locale)
+
+              return (
+                <div className="flex max-h-[88vh] flex-col overflow-y-auto sm:max-h-[85vh]">
+                  {/* Top: kit + Overall + name + position + age */}
+                  <DialogHeader className="shrink-0 gap-0 space-y-0 border-b bg-muted/30 p-4 text-start sm:p-5">
+                    <DialogTitle className="sr-only">{fullName(expandedPlayer)}</DialogTitle>
+                    <div className="flex items-center gap-3">
+                      <div className="relative size-16 shrink-0 overflow-hidden rounded-lg border bg-card shadow-sm sm:size-20">
+                        <JerseyPreview
+                          template={homeKit.template}
+                          primaryColor={homeKit.primaryColor}
+                          secondaryColor={homeKit.secondaryColor}
+                          accentColor={homeKit.accentColor}
+                          className="h-full w-full"
+                        />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-3xl font-extrabold leading-none text-primary sm:text-4xl">
+                            {expandedPlayer.overall}
+                          </span>
+                          <span className="truncate text-lg font-bold leading-tight">{fullName(expandedPlayer)}</span>
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground sm:text-sm">
+                          <span>#{expandedPlayer.shirtNumber}</span>
+                          <span>·</span>
+                          <span>{t(positionLabelKey(expandedPlayer.primaryPosition))}</span>
+                          <span>·</span>
+                          <span>
+                            {t("squad.colAge")} {expandedPlayer.age}
+                          </span>
+                        </div>
+                        {/* The squad's link to a player's career.
+                            DELIBERATELY HERE AND NOT ON THE LIST ROW OR THE
+                            PITCH CARD: those two are controls - a row opens
+                            this dialog, a pitch card drags into a slot - and
+                            wrapping either in a Link would swallow the click
+                            that makes squad selection work. This dialog is
+                            already a detail view the manager chose to open,
+                            so a dedicated link here costs no interaction. */}
+                        <Link
+                          href={`/players/${expandedPlayer.id}`}
+                          className="mt-1 inline-block text-xs text-primary hover:underline"
+                        >
+                          {t("players.viewProfile")}
+                        </Link>
+                      </div>
+                    </div>
+                  </DialogHeader>
+
+                  <div className="space-y-5 p-4 sm:p-5">
+                    {/* Player info */}
+                    <div>
+                      <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        {t("squad.playerDetails.info")}
+                      </h3>
+                      <div className="space-y-1.5 text-sm">
+                        {isOutOfPosition && currentRole && (
+                          <Row
+                            label={t("squad.currentPositionOverall")}
+                            value={String(calculatePositionOverall(expandedPlayer.attributes, currentRole))}
+                          />
+                        )}
+                        <Row label={t("squad.colPotential")} value={String(expandedPlayer.potential)} />
+                        {expandedPlayer.secondaryPositions.length > 0 && (
+                          <Row
+                            label={t("squad.secondaryPositionsList")}
+                            value={expandedPlayer.secondaryPositions.map((p) => t(positionLabelKey(p))).join(", ")}
+                          />
+                        )}
+                        <Row
+                          label={t("squad.colFitness")}
+                          value={t(`squad.fitness.${getFitnessLevel(expandedPlayer.fitness)}` as TranslationKey)}
+                        />
+                        <Row
+                          label={t("squad.status.starting")}
+                          value={
+                            // The status, plus how long it lasts when it
+                            // lasts at all - counted in this club's own
+                            // fixtures, which is the unit the ban and the
+                            // injury are actually served in.
+                            expandedPlayer.injuryMatchesRemaining > 0
+                              ? t("squad.unavailableInjured", { n: String(expandedPlayer.injuryMatchesRemaining) })
+                              : expandedPlayer.suspensionMatches > 0
+                                ? t("squad.unavailableSuspended", { n: String(expandedPlayer.suspensionMatches) })
+                                : t(
+                                    `squad.status.${getDisplayStatus(expandedPlayer.status, startingIds.has(expandedPlayer.id))}` as TranslationKey
+                                  )
+                          }
+                        />
+                        <Row label={t("squad.colFoot")} value={t(`squad.foot.${expandedPlayer.preferredFoot}` as TranslationKey)} />
+                        {countryName && <Row label={t("squad.colNationality")} value={countryName} />}
+                        <Row label={t("squad.colMarketValue")} value={formatMarketValue(expandedPlayer.marketValue)} />
+                        <Row
+                          label={t("squad.colWeeklySalary")}
+                          value={`${formatMarketValue(expandedPlayer.weeklySalary)} ${t("economy.perWeek")}`}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Abilities - only real attribute numbers the DB actually has for this player (see attributes.ts) */}
+                    <div>
+                      <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        {t("squad.playerDetails.abilities")}
+                      </h3>
+                      <AttributeCategories player={expandedPlayer} />
+                    </div>
+
+                    <div className="space-y-2">
+                      {expandedPlayer.activeListing ? (
+                        <>
+                          <div className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm text-primary">
+                            {t("transfers.listedForSale", {
+                              price: formatMarketValue(expandedPlayer.activeListing.askingPrice),
+                            })}
+                          </div>
+                          <Button
+                            variant="outline"
+                            className="w-full"
+                            disabled={busyPlayerId !== null}
+                            onClick={() => {
+                              setExpandedPlayerId(null)
+                              setCancelDialogPlayerId(expandedPlayer.id)
+                            }}
+                          >
+                            {t("transfers.cancelListingAction")}
+                          </Button>
+                        </>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          className="w-full"
+                          disabled={busyPlayerId !== null}
+                          onClick={() => {
+                            setExpandedPlayerId(null)
+                            openSellDialog(expandedPlayer.id)
+                          }}
+                        >
+                          {t("transfers.sellAction")}
+                        </Button>
+                      )}
+
+                      {slotEntry && (
+                        <Button
+                          variant="outline"
+                          className="w-full"
+                          disabled={busyPlayerId !== null}
+                          onClick={() => {
+                            setExpandedPlayerId(null)
+                            setPickerMode("swap")
+                            setPickerSlotIndex(slotEntry[0])
+                          }}
+                        >
+                          {t("squad.action.swapPosition")}
+                        </Button>
+                      )}
+
+                      <Button
+                        variant="destructive"
+                        className="w-full"
+                        disabled={busyPlayerId !== null}
+                        onClick={() => {
+                          setExpandedPlayerId(null)
+                          setReleaseDialogPlayerId(expandedPlayer.id)
+                        }}
+                      >
+                        {t("transfers.releaseAction")}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )
+            })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* Pick a player for a slot - the click/tap alternative to dragging.
+          Filling an empty slot only offers bench players (there's no one to
+          displace); swapping a starter offers everyone else, bench and
+          starters alike, since assignOrSwap already knows how to handle
+          either - this is the accessible equivalent of dragging one starter
+          onto another (see step 9 of the spec: dragging isn't the only way
+          in). */}
+      <Dialog open={pickerSlotIndex !== null} onOpenChange={(open) => !open && setPickerSlotIndex(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t(pickerMode === "swap" ? "squad.swapPlayerTitle" : "squad.pickPlayerTitle")}</DialogTitle>
+          </DialogHeader>
+          <ul className="max-h-80 space-y-1 overflow-y-auto">
+            {pickerSlotIndex !== null &&
+              (() => {
+                const currentOccupantId = assignments.get(pickerSlotIndex)
+                const candidates = pickerMode === "swap" ? players.filter((p) => p.id !== currentOccupantId) : benchPlayers
+                const slotRole = slots[pickerSlotIndex].role
+                return candidates
+                  .slice()
+                  .sort((a, b) => {
+                    const fitScore = (p: PlayerDTO) => {
+                      const fit = fitOf(p, slotRole)
+                      return fit === "natural" ? 2 : fit === "secondary" ? 1 : 0
+                    }
+                    return fitScore(b) - fitScore(a) || b.overall - a.overall
+                  })
+                  .map((p) => {
+                    const currentSlot = [...assignments.entries()].find(([, pid]) => pid === p.id)
+                    return (
+                      <li key={p.id}>
+                        <button
+                          type="button"
+                          onClick={() => assignOrSwap(pickerSlotIndex, p.id)}
+                          className="flex w-full items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-accent"
+                        >
+                          <span>
+                            #{p.shirtNumber} {fullName(p)}
+                          </span>
+                          <span className="flex items-center gap-2 text-muted-foreground">
+                            {currentSlot ? (
+                              <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[11px] font-medium text-emerald-800">
+                                {t(positionLabelKey(slots[currentSlot[0]].role))}
+                              </span>
+                            ) : (
+                              <span className="rounded-full bg-muted px-1.5 py-0.5 text-[11px] font-medium">
+                                {t("squad.status.bench")}
+                              </span>
+                            )}
+                            {t(positionLabelKey(p.primaryPosition))} · {p.overall}
+                          </span>
+                        </button>
+                      </li>
+                    )
+                  })
+              })()}
+          </ul>
+        </DialogContent>
+      </Dialog>
+
+      {/* recommended XI confirmation */}
+      <Dialog open={confirmRecommend} onOpenChange={setConfirmRecommend}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("squad.recommendedXI")}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">{t("squad.recommendedConfirm")}</p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmRecommend(false)}>
+              {t("common.cancel")}
+            </Button>
+            <Button onClick={applyRecommended}>{t("common.confirm")}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* List a player for sale - POST /api/transfers/listings with exactly
+          {playerId, askingPrice}. Client-side price validation here is UX
+          only (disables the submit button); the real rule (positive integer,
+          within Prisma's Int range) lives exclusively in createTransferListing
+          and comes back as INVALID_ASKING_PRICE if this input is ever bypassed. */}
+      <Dialog open={sellDialogPlayer !== null} onOpenChange={(open) => !open && !busyPlayerId && setSellDialogPlayerId(null)}>
+        <DialogContent>
+          {sellDialogPlayer && (
+            <>
+              <DialogHeader>
+                <DialogTitle>{t("transfers.sellDialogTitle")}</DialogTitle>
+              </DialogHeader>
+              <dl className="space-y-2 text-sm">
+                <Row label={t("transfers.confirmPlayerLabel")} value={fullName(sellDialogPlayer)} />
+                <Row label={t("squad.colMarketValue")} value={formatMarketValue(sellDialogPlayer.marketValue)} />
+                <Row
+                  label={t("squad.colWeeklySalary")}
+                  value={`${formatMarketValue(sellDialogPlayer.weeklySalary)} ${t("economy.perWeek")}`}
+                />
+              </dl>
+              <p className="text-sm text-muted-foreground">{t("transfers.sellDialogBody")}</p>
+              <div className="space-y-2">
+                <label htmlFor="askingPrice" className="text-sm font-medium">
+                  {t("transfers.sellAskingPriceLabel")}
+                </label>
+                <Input
+                  id="askingPrice"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  step={1}
+                  value={askingPriceInput}
+                  onChange={(e) => setAskingPriceInput(e.target.value)}
+                  disabled={busyPlayerId !== null}
+                />
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setSellDialogPlayerId(null)} disabled={busyPlayerId !== null}>
+                  {t("common.cancel")}
+                </Button>
+                <Button
+                  onClick={confirmCreateListing}
+                  disabled={busyPlayerId !== null || !Number.isFinite(Number(askingPriceInput)) || Math.trunc(Number(askingPriceInput)) <= 0}
+                >
+                  {busyPlayerId === sellDialogPlayer.id && <Loader2 className="me-2 size-4 animate-spin" />}
+                  {t("transfers.sellSubmit")}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Cancel an active listing - POST
+          /api/transfers/listings/{id}/cancel with no body at all (listingId
+          travels only in the URL). The player stays on the squad and in the
+          lineup exactly as-is; only the listing's own status changes. */}
+      <Dialog open={cancelDialogPlayer !== null} onOpenChange={(open) => !open && !busyPlayerId && setCancelDialogPlayerId(null)}>
+        <DialogContent>
+          {cancelDialogPlayer && cancelDialogPlayer.activeListing && (
+            <>
+              <DialogHeader>
+                <DialogTitle>{t("transfers.cancelDialogTitle")}</DialogTitle>
+              </DialogHeader>
+              <dl className="space-y-2 text-sm">
+                <Row label={t("transfers.confirmPlayerLabel")} value={fullName(cancelDialogPlayer)} />
+                <Row label={t("transfers.sellAskingPriceLabel")} value={formatMarketValue(cancelDialogPlayer.activeListing.askingPrice)} />
+              </dl>
+              <p className="text-sm text-muted-foreground">{t("transfers.cancelDialogBody")}</p>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setCancelDialogPlayerId(null)} disabled={busyPlayerId !== null}>
+                  {t("transfers.cancelListingBack")}
+                </Button>
+                <Button variant="destructive" onClick={confirmCancelListing} disabled={busyPlayerId !== null}>
+                  {busyPlayerId === cancelDialogPlayer.id && <Loader2 className="me-2 size-4 animate-spin" />}
+                  {t("transfers.cancelListingSubmit")}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Release a player - POST /api/transfers/release with exactly
+          {playerId}, never weeklySalary/cost/referenceId (all server-derived).
+          releaseCostDisplay below is purely informational - the server
+          re-reads the player's current weeklySalary itself and never trusts
+          any number the client sends. Releasing a listed player also
+          cancels that listing atomically server-side - no separate request
+          from here. */}
+      <Dialog open={releaseDialogPlayer !== null} onOpenChange={(open) => !open && !busyPlayerId && setReleaseDialogPlayerId(null)}>
+        <DialogContent>
+          {releaseDialogPlayer && (
+            <>
+              <DialogHeader>
+                <DialogTitle>{t("transfers.releaseDialogTitle")}</DialogTitle>
+              </DialogHeader>
+              <dl className="space-y-2 text-sm">
+                <Row label={t("transfers.confirmPlayerLabel")} value={fullName(releaseDialogPlayer)} />
+                <Row
+                  label={t("transfers.releaseCostLabel")}
+                  value={`${formatMarketValue(releaseDialogPlayer.weeklySalary)} ${t("economy.perWeek")}`}
+                />
+              </dl>
+              <p className="text-sm text-destructive">{t("transfers.releaseDialogBody")}</p>
+              {releaseDialogPlayer.activeListing && (
+                <p className="text-sm text-destructive">{t("transfers.releaseDialogBodyWithListing")}</p>
+              )}
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setReleaseDialogPlayerId(null)} disabled={busyPlayerId !== null}>
+                  {t("common.cancel")}
+                </Button>
+                <Button variant="destructive" onClick={confirmRelease} disabled={busyPlayerId !== null}>
+                  {busyPlayerId === releaseDialogPlayer.id && <Loader2 className="me-2 size-4 animate-spin" />}
+                  {t("transfers.releaseSubmit")}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
+function fitOf(player: PlayerDTO, position: PlayerPosition): PositionFit {
+  return calculatePositionSuitability(player, position)
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between border-b py-1 last:border-0">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium">{value}</span>
+    </div>
+  )
+}
+
+// --- Youth Academy tab ----------------------------------------------------
+
+/** One stat chip in the Youth hero - the same "big bold number, small muted label" pattern as the squad summary stats grid above (teamTotalQuality etc.), never a new typography scale. */
+/** One stat chip in the Youth hero - a single bold line of already-composed text (the translation string carries its own numbers), never a split number+label pair that would need reconstructing from a templated sentence. */
+function YouthStatChip({ text, tone }: { text: string; tone?: "default" | "warning" }) {
+  return (
+    <div
+      className={cn(
+        "rounded-xl border bg-card/70 px-4 py-2 text-sm font-semibold backdrop-blur-sm",
+        tone === "warning" ? "border-destructive/40 bg-destructive/5 text-destructive" : "text-foreground"
+      )}
+    >
+      {text}
+    </div>
+  )
+}
+
+function YouthHero({
+  seasonNumber,
+  status,
+  promotedCount,
+  activeRoster,
+  maxRoster,
+  msRemaining,
+  t,
+}: {
+  seasonNumber: number | null
+  status: "OPEN" | "CLOSED"
+  promotedCount: number
+  activeRoster: number
+  maxRoster: number
+  msRemaining: number | null
+  t: Translator
+}) {
+  return (
+    <div className="relative overflow-hidden rounded-2xl border border-primary/30 bg-gradient-to-br from-primary/15 via-primary/5 to-transparent p-5 shadow-sm sm:p-6">
+      <div aria-hidden className="pointer-events-none absolute -end-16 -top-16 size-48 rounded-full bg-primary/20 blur-3xl" />
+      <div className="relative space-y-4">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-primary">
+            {status === "CLOSED" ? t("youth.closedTitle") : t("youth.heroKicker")}
+          </p>
+          <h2 className="mt-1 flex items-center gap-2 text-2xl font-bold">
+            <GraduationCap className="size-6 text-primary" aria-hidden />
+            {t("youth.heroTitle")}
+          </h2>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            {t("youth.subtitle")}
+            {seasonNumber != null ? ` · ${t("youth.seasonLabel", { number: String(seasonNumber) })}` : null}
+          </p>
+        </div>
+
+        <p className="text-sm text-muted-foreground">
+          {status === "CLOSED" ? t("youth.closedSummary", { count: String(promotedCount) }) : t("youth.heroBody")}
+        </p>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <YouthStatChip
+            text={t("youth.promotedCounter", { count: String(promotedCount), max: String(MAX_YOUTH_PROMOTIONS_PER_INTAKE) })}
+          />
+          <YouthStatChip text={t("youth.rosterLabel", { active: String(activeRoster), max: String(maxRoster) })} />
+          {status === "OPEN" && msRemaining !== null && (
+            <YouthStatChip
+              text={msRemaining > 0 ? t("youth.deadlineLabel", { time: formatCountdown(msRemaining) }) : t("youth.deadlineExpiredLabel")}
+              tone={msRemaining <= 3600_000 ? "warning" : "default"}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function YouthProspectCard({
+  prospect,
+  disabled,
+  disableReason,
+  busy,
+  onPromote,
+  t,
+  locale,
+}: {
+  prospect: YouthProspectDTO
+  disabled: boolean
+  disableReason: string | null
+  busy: boolean
+  onPromote: () => void
+  t: Translator
+  locale: Locale
+}) {
+  const tier = getPlayerTier(prospect.overall)
+  const countryName = getCountryName(prospect.nationality, locale)
+  const isPromoted = prospect.status === "PROMOTED"
+  const isExpired = prospect.status === "EXPIRED"
+  const isPending = prospect.status === "PENDING"
+
+  return (
+    <div
+      className={cn(
+        "flex flex-col gap-3 rounded-2xl border p-4 transition-shadow",
+        TIER_CARD_CLASSES[tier.cardStyle],
+        isExpired && "opacity-60 saturate-50",
+        isPromoted && "ring-2 ring-primary/50"
+      )}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-base font-semibold">
+            {prospect.firstName} {prospect.lastName}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {t(positionLabelKey(prospect.primaryPosition))} · {t("youth.colAge")} {prospect.age}
+          </p>
+        </div>
+        <span
+          className={cn(
+            "shrink-0 rounded-lg px-2.5 py-1 text-2xl font-extrabold leading-none",
+            TIER_BADGE_CLASSES[tier.cardStyle]
+          )}
+        >
+          {prospect.overall}
+        </span>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+        <span>
+          {t("youth.colPotential")}: <span className="font-semibold text-foreground">{prospect.potential}</span>
+        </span>
+        <span aria-hidden>·</span>
+        <span>{countryName ?? prospect.nationality}</span>
+        <span aria-hidden>·</span>
+        <span>{t(`squad.foot.${prospect.preferredFoot}` as TranslationKey)}</span>
+      </div>
+
+      {prospect.attributes.length > 0 && (
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 border-t pt-3 text-xs sm:grid-cols-4">
+          {prospect.attributes.map((attr) => (
+            <div key={attr.key} className="flex items-center justify-between gap-2 sm:flex-col sm:items-start sm:gap-0.5">
+              <span className="text-muted-foreground">{t(attributeLabelKey(attr.key) as TranslationKey)}</span>
+              <span className="font-semibold">{attr.value}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-auto pt-1">
+        {isPromoted ? (
+          <div className="flex items-center justify-center gap-1.5 rounded-lg bg-primary/10 py-2 text-sm font-medium text-primary motion-safe:animate-in motion-safe:fade-in motion-safe:zoom-in-95">
+            <CheckCircle2 className="size-4" aria-hidden />
+            {t("youth.promotedBadge")}
+          </div>
+        ) : isExpired ? (
+          <div className="rounded-lg bg-muted py-2 text-center text-sm text-muted-foreground">{t("youth.expiredBadge")}</div>
+        ) : (
+          <>
+            <Button className="w-full" disabled={disabled || busy} onClick={onPromote}>
+              {busy && <Loader2 className="me-2 size-4 animate-spin" aria-hidden />}
+              {busy ? t("youth.promotingAction") : t("youth.promoteAction")}
+            </Button>
+            {isPending && disableReason && !busy && (
+              <p className="mt-1.5 text-center text-[11px] text-muted-foreground">{disableReason}</p>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The Youth Academy tab's whole content area - loading/error/empty/open/
+ * closed states, the 5 prospect cards, and the Finalize confirmation
+ * dialog. A separate component (not inlined in SquadTacticsApp's return)
+ * purely to keep that already-2600-line function from growing further;
+ * every piece of state and every mutation still lives in SquadTacticsApp
+ * and is only ever passed down as props/callbacks.
+ */
+function YouthAcademyPanel({
+  state,
+  data,
+  msRemaining,
+  promotingProspectId,
+  finalizeDialogOpen,
+  finalizing,
+  onPromote,
+  onOpenFinalize,
+  onCloseFinalize,
+  onConfirmFinalize,
+  onRetry,
+  t,
+  locale,
+}: {
+  state: "idle" | "loading" | "loaded" | "error"
+  data: YouthAcademyData | null
+  msRemaining: number | null
+  promotingProspectId: string | null
+  finalizeDialogOpen: boolean
+  finalizing: boolean
+  onPromote: (prospectId: string) => void
+  onOpenFinalize: () => void
+  onCloseFinalize: () => void
+  onConfirmFinalize: () => void
+  onRetry: () => void
+  t: Translator
+  locale: Locale
+}) {
+  if (state === "loading" && !data) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" aria-hidden />
+      </div>
+    )
+  }
+
+  if (state === "error") {
+    return (
+      <div className="flex flex-col items-center gap-3 rounded-2xl border border-destructive/30 bg-destructive/5 p-10 text-center">
+        <p className="text-sm text-destructive">{t("youth.loadError")}</p>
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          {t("common.retry")}
+        </Button>
+      </div>
+    )
+  }
+
+  if (!data || !data.intake) {
+    return (
+      <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed p-10 text-center">
+        <GraduationCap className="size-10 text-muted-foreground" aria-hidden />
+        <p className="text-sm font-medium">{t("youth.emptyTitle")}</p>
+        <p className="text-xs text-muted-foreground">{t("youth.emptyBody")}</p>
+      </div>
+    )
+  }
+
+  const { intake, prospects, roster, season } = data
+  const isOpen = intake.status === "OPEN"
+  const rosterFull = roster.availableSlots <= 0
+  const limitReached = intake.promotedCount >= MAX_YOUTH_PROMOTIONS_PER_INTAKE
+  const anyPromotionBusy = promotingProspectId !== null
+
+  return (
+    <div className="space-y-5">
+      <YouthHero
+        seasonNumber={season?.number ?? null}
+        status={intake.status}
+        promotedCount={intake.promotedCount}
+        activeRoster={roster.activeCount}
+        maxRoster={roster.maxSize}
+        msRemaining={msRemaining}
+        t={t}
+      />
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {prospects.map((prospect) => {
+          // The only disabled-with-explanation case that can actually reach
+          // a still-PENDING card: the roster has no free slot. Reaching the
+          // 3-promotion limit or the intake closing both auto-expire every
+          // remaining PENDING prospect server-side (see the promotion
+          // engine), so a PENDING card in either of those states shouldn't
+          // exist by the time this renders.
+          const disableReason = rosterFull
+            ? t("youth.rosterFullReason", { active: String(roster.activeCount), max: String(roster.maxSize) })
+            : null
+          return (
+            <YouthProspectCard
+              key={prospect.id}
+              prospect={prospect}
+              disabled={!isOpen || rosterFull || limitReached || anyPromotionBusy}
+              disableReason={disableReason}
+              busy={promotingProspectId === prospect.id}
+              onPromote={() => onPromote(prospect.id)}
+              t={t}
+              locale={locale}
+            />
+          )
+        })}
+      </div>
+
+      {isOpen && (
+        <div className="flex justify-center pt-1">
+          <Button size="lg" className="w-full sm:w-auto sm:min-w-64" onClick={onOpenFinalize} disabled={anyPromotionBusy}>
+            {t("youth.finalizeButton")}
+          </Button>
+        </div>
+      )}
+
+      <Dialog open={finalizeDialogOpen} onOpenChange={(open) => !open && onCloseFinalize()}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("youth.finalizeConfirmTitle")}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {intake.promotedCount > 0
+              ? t("youth.finalizeConfirmBodyWithChoices", { count: String(intake.promotedCount) })
+              : t("youth.finalizeConfirmBodyNone")}
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={onCloseFinalize} disabled={finalizing}>
+              {t("common.cancel")}
+            </Button>
+            <Button onClick={onConfirmFinalize} disabled={finalizing}>
+              {finalizing && <Loader2 className="me-2 size-4 animate-spin" aria-hidden />}
+              {t("youth.finalizeConfirmSubmit")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
+function AttributeBar({ attrKey, value }: { attrKey: AttributeKey; value: number }) {
+  const t = useT()
+  const tier = getAttributeScoreTier(value)
+  return (
+    <div className="flex items-center gap-2 py-1 text-sm">
+      <span className="w-28 shrink-0 text-muted-foreground sm:w-36">{t(attributeLabelKey(attrKey) as TranslationKey)}</span>
+      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+        <div className={cn("h-full rounded-full", tier.colorClass)} style={{ width: `${value}%` }} />
+      </div>
+      <span className="w-6 shrink-0 text-end font-medium">{value}</span>
+    </div>
+  )
+}
+
+/** Full categorized attribute breakdown - the "profile" a player card opens into. */
+function AttributeCategories({ player }: { player: PlayerDTO }) {
+  const t = useT()
+  const isGoalkeeper = player.primaryPosition === "GK"
+  const categories = isGoalkeeper ? GOALKEEPER_ATTRIBUTE_CATEGORIES : ATTRIBUTE_CATEGORIES
+
+  return (
+    <div className="space-y-4">
+      {categories.map((category) => (
+        <div key={category.id}>
+          <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {t(category.labelKey as TranslationKey)}
+          </h3>
+          {category.keys.map((key) => {
+            const value = player.attributes[key as AttributeKey]
+            if (value == null) return null
+            return <AttributeBar key={key} attrKey={key as AttributeKey} value={value} />
+          })}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function PlayerCard({
+  player,
+  status,
+  onClick,
+  compact,
+  draggable,
+}: {
+  player: PlayerDTO
+  status: DisplayPlayerStatus
+  onClick: () => void
+  compact?: boolean
+  draggable?: boolean
+}) {
+  const t = useT()
+  const tier = getPlayerTier(player.overall)
+  const statusColor =
+    status === "starting"
+      ? "bg-emerald-100 text-emerald-800"
+      : status === "injured"
+        ? "bg-red-100 text-red-800"
+        : status === "suspended"
+          ? "bg-amber-100 text-amber-800"
+          : status === "unavailable"
+            ? "bg-muted text-muted-foreground"
+            : "bg-muted text-muted-foreground"
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      draggable={draggable}
+      onDragStart={(e) => e.dataTransfer.setData("text/plain", player.id)}
+      className={cn(
+        "flex w-full min-w-0 items-center justify-between gap-3 rounded-lg border px-3 text-start hover:brightness-[0.98]",
+        TIER_CARD_CLASSES[tier.cardStyle],
+        compact ? "py-1.5" : "py-2.5"
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="w-6 shrink-0 text-center text-xs text-muted-foreground">#{player.shirtNumber}</span>
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium">{fullName(player)}</div>
+          <div className="truncate text-xs text-muted-foreground">
+            {t(positionLabelKey(player.primaryPosition))} · {t("squad.colAge")} {player.age}
+          </div>
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <span className="text-xs text-muted-foreground">
+          {t(`squad.fitness.${getFitnessLevel(player.fitness)}` as TranslationKey)}
+        </span>
+        <span className={cn("rounded-md px-2 py-0.5 text-sm font-bold", TIER_BADGE_CLASSES[tier.cardStyle])}>
+          {player.overall}
+        </span>
+        <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", statusColor)}>
+          {t(`squad.status.${status}` as TranslationKey)}
+        </span>
+      </div>
+    </button>
+  )
+}
+
+function BenchChip({
+  player,
+  onClick,
+  onPointerDown,
+  dragging,
+}: {
+  player: PlayerDTO
+  onClick: (e: React.MouseEvent) => void
+  onPointerDown: (e: React.PointerEvent) => void
+  dragging?: boolean
+}) {
+  const t = useT()
+  const tier = getPlayerTier(player.overall)
+  return (
+    <button
+      type="button"
+      onPointerDown={onPointerDown}
+      onClick={onClick}
+      className={cn(
+        "touch-none flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs hover:brightness-[0.98] transition-opacity",
+        TIER_CARD_CLASSES[tier.cardStyle],
+        dragging && "opacity-30"
+      )}
+      title={fullName(player)}
+    >
+      <span className="text-muted-foreground">#{player.shirtNumber}</span>
+      <span className="font-medium">{fullName(player)}</span>
+      <span className="text-muted-foreground">{t(positionLabelKey(player.primaryPosition))}</span>
+      <span className="font-bold text-primary">{player.overall}</span>
+    </button>
+  )
+}
+
+/**
+ * The full squad, as a compact scannable list under the pitch - one row per
+ * player instead of the old attribute-heavy PlayerCard. Filtering, search
+ * and sort all run in memory over the already-loaded `players` prop (no
+ * extra fetches). Clicking a row only opens the existing full-detail dialog
+ * (via onSelect/expandedPlayerId in the parent) - it never touches the
+ * lineup itself.
+ */
+function SquadList({
+  players,
+  startingIds,
+  onSelect,
+}: {
+  players: PlayerDTO[]
+  startingIds: Set<string>
+  onSelect: (playerId: string) => void
+}) {
+  const t = useT()
+  const [query, setQuery] = useState("")
+  const [positionFilter, setPositionFilter] = useState<SquadPositionFilter>("ALL")
+  const [sortKey, setSortKey] = useState<SquadSortKey>("overall")
+
+  const visiblePlayers = useMemo(() => {
+    let arr = players
+    if (positionFilter !== "ALL") {
+      arr = arr.filter((p) => POSITION_GROUP[p.primaryPosition as PlayerPosition] === positionFilter)
+    }
+    const q = query.trim().toLowerCase()
+    if (q) arr = arr.filter((p) => fullName(p).toLowerCase().includes(q))
+
+    const sorted = [...arr]
+    sorted.sort((a, b) => {
+      if (sortKey === "overall") return b.overall - a.overall
+      if (sortKey === "age") return a.age - b.age
+      if (sortKey === "fitness") return b.fitness - a.fitness
+      return (
+        POSITION_ORDER.indexOf(a.primaryPosition as PlayerPosition) -
+        POSITION_ORDER.indexOf(b.primaryPosition as PlayerPosition)
+      )
+    })
+    return sorted
+  }, [players, positionFilter, query, sortKey])
+
+  return (
+    <div className="space-y-1.5">
+      <h2 className="text-sm font-medium text-muted-foreground">{t("squad.tabSquad")}</h2>
+
+      {/* One flex-wrap toolbar for chips + search + sort - on a wide enough
+          screen (desktop) it all fits on a single line; on mobile it wraps
+          exactly like two separate rows would, so nothing is lost there. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <PositionFilter value={positionFilter} onChange={setPositionFilter} />
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={t("squad.searchPlaceholder")}
+          className="min-w-0 flex-1 rounded-md border bg-background px-2.5 py-1 text-sm"
+        />
+        <select
+          value={sortKey}
+          onChange={(e) => setSortKey(e.target.value as SquadSortKey)}
+          className="shrink-0 rounded-md border bg-background px-1.5 py-1 text-xs"
+          aria-label={t("squad.sortBy")}
+        >
+          <option value="overall">{t("squad.sortAbility")}</option>
+          <option value="position">{t("squad.sortPosition")}</option>
+          <option value="age">{t("squad.sortAge")}</option>
+          <option value="fitness">{t("squad.sortFitness")}</option>
+        </select>
+      </div>
+
+      {visiblePlayers.length === 0 ? (
+        <p className="py-6 text-center text-sm text-muted-foreground">{t("squad.noPlayersFound")}</p>
+      ) : (
+        <ul className="space-y-1">
+          {visiblePlayers.map((player) => (
+            <li key={player.id}>
+              <PlayerSquadRow
+                player={player}
+                status={getDisplayStatus(player.status, startingIds.has(player.id))}
+                onClick={() => onSelect(player.id)}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+/** Segmented position-group chips (All / GK / DF / MF / FW) filtering SquadList. */
+function PositionFilter({
+  value,
+  onChange,
+}: {
+  value: SquadPositionFilter
+  onChange: (value: SquadPositionFilter) => void
+}) {
+  const t = useT()
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {SQUAD_POSITION_FILTERS.map((f) => (
+        <button
+          key={f.key}
+          type="button"
+          onClick={() => onChange(f.key)}
+          className={cn(
+            "rounded-full border px-2.5 py-1 text-xs font-medium transition-colors",
+            value === f.key ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted"
+          )}
+        >
+          {t(f.labelKey)}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * One player, one compact row: Overall (tier-colored, most prominent) →
+ * name → position/fitness → status badge. Two lines on mobile (name; then
+ * position + fitness, age dropped as secondary), a single line at sm+.
+ * Reuses the existing tier/fitness color systems verbatim - no new colors.
+ */
+function PlayerSquadRow({
+  player,
+  status,
+  onClick,
+}: {
+  player: PlayerDTO
+  status: DisplayPlayerStatus
+  onClick: () => void
+}) {
+  const t = useT()
+  const tier = getPlayerTier(player.overall)
+  const fitnessLevel = getFitnessLevel(player.fitness)
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={fullName(player)}
+      className={cn(
+        "flex w-full min-w-0 items-center gap-2 rounded-lg border px-2.5 py-1.5 text-start transition-colors hover:brightness-[0.98] sm:gap-3",
+        TIER_CARD_CLASSES[tier.cardStyle]
+      )}
+    >
+      <span className={cn("shrink-0 rounded-md px-1.5 py-0.5 text-sm font-extrabold sm:px-2", TIER_BADGE_CLASSES[tier.cardStyle])}>
+        {player.overall}
+      </span>
+
+      <span className="min-w-0 flex-1 truncate text-sm font-medium">{fullName(player)}</span>
+
+      {/* Position always shows (capped width, truncates on the rare very-long
+          label) - age is secondary and only appears once there's room, at sm+. */}
+      <span className="max-w-[5.5rem] shrink-0 truncate text-xs text-muted-foreground">
+        {t(positionLabelKey(player.primaryPosition))}
+      </span>
+      <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
+        {t("squad.colAge")} {player.age}
+      </span>
+
+      {/* Fitness: a dot always, the word itself only once there's room (sm+) - never a wide progress bar. */}
+      <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+        <span className={cn("size-1.5 rounded-full", FITNESS_DOT_CLASSES[fitnessLevel])} />
+        <span className="hidden sm:inline">{t(`squad.fitness.${fitnessLevel}` as TranslationKey)}</span>
+      </span>
+
+      <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium sm:text-xs", SQUAD_ROW_STATUS_CLASSES[status])}>
+        {t(`squad.status.${status}` as TranslationKey)}
+      </span>
+    </button>
+  )
+}
+
+// Real pitch proportions in meters, rendered portrait (own goal at the top,
+// attacking goal at the bottom) - the container's aspect-ratio is set to
+// match exactly, so the SVG markings below land at true-to-life positions
+// instead of being derived from an arbitrary "2/3" box.
+const PITCH_W = 68
+const PITCH_H = 105
+const LINE_W = 0.45
+const PENALTY_BOX_W = 40.32
+const PENALTY_BOX_D = 16.5
+const SIX_YARD_W = 18.32
+const SIX_YARD_D = 5.5
+const PENALTY_SPOT_Y = 11
+const CENTER_CIRCLE_R = 9.15
+const GOAL_W = 7.32
+
+// Where the D-arc (the part of the penalty-arc circle that lies outside the
+// box) meets the box's front edge - solved once here from the real
+// dimensions above, reused for both ends by mirroring y.
+const D_ARC_HALF_CHORD = Math.sqrt(CENTER_CIRCLE_R ** 2 - (PENALTY_BOX_D - PENALTY_SPOT_Y) ** 2)
+const D_ARC_X0 = PITCH_W / 2 - D_ARC_HALF_CHORD
+const D_ARC_X1 = PITCH_W / 2 + D_ARC_HALF_CHORD
+
+/** The real line markings only - no fill, no tactical zone bands, drawn once in true proportion and mirrored top/bottom. */
+function PitchMarkings() {
+  const boxX = (PITCH_W - PENALTY_BOX_W) / 2
+  const sixYardX = (PITCH_W - SIX_YARD_W) / 2
+  const goalX = (PITCH_W - GOAL_W) / 2
+  const cx = PITCH_W / 2
+
+  return (
+    <svg
+      viewBox={`0 0 ${PITCH_W} ${PITCH_H}`}
+      className="pointer-events-none absolute inset-0 h-full w-full overflow-visible"
+      preserveAspectRatio="xMidYMid meet"
+    >
+      <g fill="none" stroke="white" strokeOpacity={0.92} strokeWidth={LINE_W}>
+        <rect x={LINE_W / 2} y={LINE_W / 2} width={PITCH_W - LINE_W} height={PITCH_H - LINE_W} />
+        <line x1={0} y1={PITCH_H / 2} x2={PITCH_W} y2={PITCH_H / 2} />
+        <circle cx={cx} cy={PITCH_H / 2} r={CENTER_CIRCLE_R} />
+
+        {/* Top (own) penalty area */}
+        <rect x={boxX} y={0} width={PENALTY_BOX_W} height={PENALTY_BOX_D} />
+        <rect x={sixYardX} y={0} width={SIX_YARD_W} height={SIX_YARD_D} />
+        <path d={`M ${D_ARC_X0} ${PENALTY_BOX_D} A ${CENTER_CIRCLE_R} ${CENTER_CIRCLE_R} 0 0 0 ${D_ARC_X1} ${PENALTY_BOX_D}`} />
+        <path d={`M ${goalX} 0 L ${goalX} ${-2} L ${goalX + GOAL_W} ${-2} L ${goalX + GOAL_W} 0`} />
+
+        {/* Bottom (attacking) penalty area */}
+        <rect x={boxX} y={PITCH_H - PENALTY_BOX_D} width={PENALTY_BOX_W} height={PENALTY_BOX_D} />
+        <rect x={sixYardX} y={PITCH_H - SIX_YARD_D} width={SIX_YARD_W} height={SIX_YARD_D} />
+        <path
+          d={`M ${D_ARC_X0} ${PITCH_H - PENALTY_BOX_D} A ${CENTER_CIRCLE_R} ${CENTER_CIRCLE_R} 0 0 1 ${D_ARC_X1} ${PITCH_H - PENALTY_BOX_D}`}
+        />
+        <path d={`M ${goalX} ${PITCH_H} L ${goalX} ${PITCH_H + 2} L ${goalX + GOAL_W} ${PITCH_H + 2} L ${goalX + GOAL_W} ${PITCH_H}`} />
+
+        {/* Corner arcs */}
+        <path d={`M 0 1 A 1 1 0 0 0 1 0`} />
+        <path d={`M ${PITCH_W - 1} 0 A 1 1 0 0 0 ${PITCH_W} 1`} />
+        <path d={`M ${PITCH_W} ${PITCH_H - 1} A 1 1 0 0 0 ${PITCH_W - 1} ${PITCH_H}`} />
+        <path d={`M 1 ${PITCH_H} A 1 1 0 0 0 0 ${PITCH_H - 1}`} />
+      </g>
+      <circle cx={cx} cy={PITCH_H / 2} r={0.45} fill="white" />
+      <circle cx={cx} cy={PENALTY_SPOT_Y} r={0.45} fill="white" />
+      <circle cx={cx} cy={PITCH_H - PENALTY_SPOT_Y} r={0.45} fill="white" />
+    </svg>
+  )
+}
+
+/**
+ * A player as they appear on the pitch - Overall is the dominant number
+ * (never the shirt number), name and position underneath, tier styling
+ * reused verbatim from the existing PLAYER_TIERS system (TIER_CARD_CLASSES/
+ * TIER_BADGE_CLASSES - the same classes PlayerCard uses in the squad list),
+ * and only a small dot for fitness/fit warnings - never a colorful card-game
+ * treatment, and never a permanently-visible remove control.
+ */
+function PitchPlayerCard({
+  player,
+  slotRole,
+  fit,
+  selected,
+  onClick,
+  onPointerDown,
+  homeKit,
+  dragging,
+  dragOver,
+  justChanged,
+  elevated,
+}: {
+  player: PlayerDTO
+  slotRole: PlayerPosition
+  fit: PositionFit
+  selected: boolean
+  onClick?: (e: React.MouseEvent) => void
+  onPointerDown?: (e: React.PointerEvent) => void
+  homeKit: KitColors
+  /** This exact card is the one currently being dragged - dimmed so the origin stays visible under the floating clone. */
+  dragging?: boolean
+  /** Another card is being dragged and the pointer is currently over this slot - a drop here would land it. */
+  dragOver?: boolean
+  /** Just took part in a swap/move - a brief pulse so the manager sees who traded with whom. */
+  justChanged?: boolean
+  /** This is the floating clone following the pointer, not a real slot's card. */
+  elevated?: boolean
+}) {
+  const t = useT()
+  const fitnessLevel = getFitnessLevel(player.fitness)
+  // A purely cosmetic read of Overall (see visual-grade.ts) - separate from
+  // the 7-step getPlayerTier system PlayerCard/BenchChip/PlayerSquadRow
+  // still use unchanged. Frames the card; never touches the jersey colors.
+  const grade = getPlayerVisualGrade(player.overall)
+  const gradeStyle = PLAYER_VISUAL_GRADE_CONFIG[grade]
+  // Whatever reads on top of this specific kit's primary color - the same
+  // three colors every card on the pitch shares, so this is cheap to
+  // recompute per card and never needs its own query or state.
+  const kitTextColor = getReadableTextColor(homeKit.primaryColor)
+  const kitTextBacking = kitTextColor === "#FFFFFF" ? "rgba(0,0,0,0.45)" : "rgba(255,255,255,0.8)"
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      onPointerDown={onPointerDown}
+      title={
+        fit === "unsuitable"
+          ? t("squad.positionWarning", {
+              playerPosition: t(positionLabelKey(player.primaryPosition)),
+              slotPosition: t(positionLabelKey(slotRole)),
+            })
+          : undefined
+      }
+      className={cn(
+        "touch-none relative flex w-[2.875rem] flex-col items-center overflow-hidden rounded-lg px-0.5 py-0.5 transition-all sm:w-[4.5rem] sm:rounded-xl sm:px-1 sm:py-1.5",
+        gradeStyle.cardBorder,
+        gradeStyle.cardBackground,
+        gradeStyle.cardShadow,
+        selected && "ring-1 ring-primary ring-offset-1",
+        !selected && !dragging && !elevated && "hover:scale-[1.04]",
+        dragging && "opacity-30",
+        dragOver && "ring-2 ring-primary ring-offset-2 scale-[1.06]",
+        justChanged && "ring-2 ring-emerald-400 scale-[1.06]",
+        elevated && "shadow-2xl scale-105"
+      )}
+    >
+      {/* The club's own home kit - the same JerseyPreview /club uses, same
+          TeamKit data loaded once for the whole pitch (see Pitch/
+          SquadTacticsApp) - no crest or number at this scale, both of
+          JerseyPreview's optional props are simply omitted here rather
+          than building a separate small component. */}
+      <JerseyPreview
+        template={homeKit.template}
+        primaryColor={homeKit.primaryColor}
+        secondaryColor={homeKit.secondaryColor}
+        accentColor={homeKit.accentColor}
+        className="pointer-events-none absolute inset-0 h-full w-full"
+      />
+
+      {fit === "unsuitable" && (
+        <span className="absolute -end-1 -top-1 z-10 size-2 rounded-full border border-white bg-red-500 sm:size-3" />
+      )}
+      {fit === "secondary" && (
+        <span className="absolute -end-1 -top-1 z-10 size-2 rounded-full border border-white bg-orange-500 sm:size-3" />
+      )}
+      <span
+        className={cn(
+          "relative z-10 rounded px-1 py-0.5 text-xs font-extrabold leading-none sm:px-1.5 sm:text-lg",
+          gradeStyle.badge
+        )}
+      >
+        {player.overall}
+      </span>
+      <span
+        className="relative z-10 mt-0.5 max-w-full truncate rounded px-0.5 text-[9px] font-semibold leading-tight sm:mt-1 sm:text-xs"
+        style={{ backgroundColor: kitTextBacking, color: kitTextColor }}
+      >
+        {shortName(player)}
+      </span>
+      <span
+        className="relative z-10 mt-px flex items-center gap-1 rounded px-0.5 text-[8px] sm:text-[10px]"
+        style={{ backgroundColor: kitTextBacking, color: kitTextColor }}
+      >
+        <span className={cn("size-1 rounded-full sm:size-1.5", FITNESS_DOT_CLASSES[fitnessLevel])} />
+        {t(positionLabelKey(player.primaryPosition))}
+      </span>
+    </button>
+  )
+}
+
+function Pitch({
+  slots,
+  assignments,
+  byId,
+  selectedSlotIndex,
+  onSelectSlot,
+  onOpenPicker,
+  onOpenDetails,
+  homeKit,
+  registerSlotEl,
+  onCardPointerDown,
+  onCardClick,
+  drag,
+  justChangedSlots,
+}: {
+  slots: FormationSlot[]
+  assignments: Map<number, string>
+  byId: Map<string, PlayerDTO>
+  selectedSlotIndex: number | null
+  onSelectSlot: (slotIndex: number | null) => void
+  onOpenPicker: (slotIndex: number) => void
+  onOpenDetails: (playerId: string) => void
+  homeKit: KitColors
+  registerSlotEl: (slotIndex: number, el: HTMLDivElement | null) => void
+  onCardPointerDown: (e: React.PointerEvent, playerId: string, originSlotIndex: number | null) => void
+  onCardClick: (e: React.MouseEvent, onTap: () => void) => void
+  drag: DragState | null
+  justChangedSlots: Set<number>
+}) {
+  const t = useT()
+  return (
+    <div
+      className="relative mx-auto w-full max-w-2xl select-none overflow-hidden rounded-2xl shadow-lg"
+      style={{
+        aspectRatio: `${PITCH_W} / ${PITCH_H}`,
+        background: "repeating-linear-gradient(to bottom, #2f9e44 0%, #2f9e44 6.25%, #35ab4b 6.25%, #35ab4b 12.5%)",
+      }}
+    >
+      <PitchMarkings />
+
+      {slots.map((slot, slotIndex) => {
+        const playerId = assignments.get(slotIndex)
+        const player = playerId ? byId.get(playerId) : undefined
+        const fit = player ? fitOf(player, slot.role) : "natural"
+        // Rendering-only nudge so the keeper reads as standing near their own
+        // goal line rather than mid-box - the formation's real y (used for
+        // every position/fit calculation) is untouched.
+        const visualY = slot.role === "GK" ? Math.max(4, slot.y - 4) : slot.y
+        const isDragOverThisSlot = drag !== null && drag.overSlotIndex === slotIndex
+
+        return (
+          <div
+            key={slotIndex}
+            ref={(el) => registerSlotEl(slotIndex, el)}
+            className="absolute -translate-x-1/2 -translate-y-1/2"
+            style={{ left: `${slot.x}%`, top: `${visualY}%` }}
+          >
+            {player ? (
+              <PitchPlayerCard
+                player={player}
+                slotRole={slot.role}
+                fit={fit}
+                selected={selectedSlotIndex === slotIndex}
+                onClick={(e) =>
+                  onCardClick(e, () => {
+                    onSelectSlot(selectedSlotIndex === slotIndex ? null : slotIndex)
+                    onOpenDetails(player.id)
+                  })
+                }
+                onPointerDown={(e) => onCardPointerDown(e, player.id, slotIndex)}
+                homeKit={homeKit}
+                dragging={drag?.playerId === player.id}
+                dragOver={isDragOverThisSlot && drag?.playerId !== player.id}
+                justChanged={justChangedSlots.has(slotIndex)}
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => onOpenPicker(slotIndex)}
+                className={cn(
+                  "flex size-12 flex-col items-center justify-center rounded-full border-2 border-dashed border-white/70 bg-white/10 text-[9px] text-white/85 transition-colors sm:size-14",
+                  isDragOverThisSlot && "border-white bg-white/30"
+                )}
+              >
+                {t(positionLabelKey(slot.role))}
+              </button>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/**
+ * Pure geometry editor for a custom formation - a flat (non-3D) pitch so
+ * pointer coordinates map directly to percentages. Only shapes WHERE the ten
+ * outfield players stand; who plays each spot is still decided on the
+ * regular Pitch above, which re-renders with whatever shape is saved here.
+ */
+function CustomFormationBuilder({
+  slots,
+  onCommit,
+  accentColor,
+}: {
+  slots: Point[]
+  onCommit: (next: Point[]) => void
+  accentColor: string
+}) {
+  const t = useT()
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [draft, setDraft] = useState<Point[]>(slots)
+  const draggingIndex = useRef<number | null>(null)
+
+  useEffect(() => setDraft(slots), [slots])
+
+  function positionFromEvent(e: React.PointerEvent): Point {
+    const rect = containerRef.current!.getBoundingClientRect()
+    const x = ((e.clientX - rect.left) / rect.width) * 100
+    const y = ((e.clientY - rect.top) / rect.height) * 100
+    return {
+      x: Math.min(CUSTOM_MAX_X, Math.max(CUSTOM_MIN_X, x)),
+      y: Math.min(CUSTOM_OUTFIELD_MAX_Y, Math.max(CUSTOM_OUTFIELD_MIN_Y, y)),
+    }
+  }
+
+  function handlePointerDown(index: number, e: React.PointerEvent<HTMLDivElement>) {
+    e.currentTarget.setPointerCapture(e.pointerId)
+    draggingIndex.current = index
+  }
+
+  function handlePointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    const index = draggingIndex.current
+    if (index === null) return
+    const point = positionFromEvent(e)
+    setDraft((prev) => prev.map((slot, i) => (i === index ? point : slot)))
+  }
+
+  function handlePointerUp() {
+    if (draggingIndex.current === null) return
+    draggingIndex.current = null
+    onCommit(draft)
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border bg-card p-3">
+      <h3 className="text-sm font-semibold">{t("squad.customFormation.title")}</h3>
+      <p className="text-xs text-muted-foreground">{t("squad.customFormation.hint")}</p>
+      <div
+        ref={containerRef}
+        className="relative mx-auto w-full max-w-md touch-none select-none overflow-hidden rounded-xl"
+        style={{
+          aspectRatio: "2 / 3",
+          background: "repeating-linear-gradient(to bottom, #2f9e44 0%, #2f9e44 10%, #37b24d 10%, #37b24d 20%)",
+        }}
+      >
+        {CUSTOM_FORMATION_ZONES.map((zone) => (
+          <div
+            key={zone.id}
+            className="pointer-events-none absolute left-0 right-0 border-t border-dashed border-white/30"
+            style={{ top: `${zone.minY}%` }}
+          />
+        ))}
+        <div
+          className="pointer-events-none absolute flex size-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-white/80 bg-black/60 text-[10px] font-bold text-white"
+          style={{ left: `${GOALKEEPER_SLOT.x}%`, top: `${GOALKEEPER_SLOT.y}%` }}
+        >
+          {t(positionLabelKey("GK"))}
+        </div>
+        {draft.map((slot, index) => (
+          <div
+            key={index}
+            onPointerDown={(e) => handlePointerDown(index, e)}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            className="absolute flex size-9 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none items-center justify-center rounded-full border-2 border-white/90 text-[10px] font-bold text-white shadow-md active:cursor-grabbing"
+            style={{ left: `${slot.x}%`, top: `${slot.y}%`, backgroundColor: accentColor }}
+          >
+            {t(positionLabelKey(deriveRoleFromPosition(slot.x, slot.y)))}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * A tactics dial as a small segmented control (iOS/macOS style) - the whole
+ * point of this round's redesign: same setting, same options, same per-value
+ * description, just compact enough that the manager can see most of the
+ * panel without scrolling. Only the active option's description is ever
+ * shown - never a full legend of all the choices.
+ */
+function CompactDial({
+  titleKey,
+  value,
+  options,
+  prefix,
+  onChange,
+}: {
+  titleKey: TranslationKey
+  value: string
+  options: readonly string[]
+  prefix: string
+  onChange: (value: string) => void
+}) {
+  const t = useT()
+  return (
+    <div>
+      <h3 className="mb-1.5 text-sm font-semibold">{t(titleKey)}</h3>
+      <div className="flex min-w-0 gap-1 rounded-lg bg-muted/60 p-1">
+        {options.map((option) => (
+          <button
+            key={option}
+            type="button"
+            onClick={() => onChange(option)}
+            className={cn(
+              "min-w-0 flex-1 rounded-md px-1.5 py-2 text-center text-sm font-medium leading-tight transition-colors",
+              value === option ? "bg-background text-primary shadow-sm" : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {t(`${prefix}.${option}` as TranslationKey)}
+          </button>
+        ))}
+      </div>
+      <p className="mt-1.5 text-xs leading-snug text-muted-foreground">
+        {t(`${prefix}.${value}Desc` as TranslationKey)}
+      </p>
+    </div>
+  )
+}
+
+/** Same compact treatment as CompactDial, for the one boolean tactic (offside trap). */
+function CompactToggle({
+  titleKey,
+  descKey,
+  value,
+  onChange,
+}: {
+  titleKey: TranslationKey
+  descKey: TranslationKey
+  value: boolean
+  onChange: (value: boolean) => void
+}) {
+  const t = useT()
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold">{t(titleKey)}</h3>
+        <button
+          type="button"
+          onClick={() => onChange(!value)}
+          className={cn(
+            "shrink-0 rounded-full border px-3 py-1.5 text-sm font-medium",
+            value ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground"
+          )}
+        >
+          {t(value ? "squad.offsideTrap.on" : "squad.offsideTrap.off")}
+        </button>
+      </div>
+      <p className="mt-1.5 text-xs leading-snug text-muted-foreground">{t(descKey)}</p>
+    </div>
+  )
+}
+
+/**
+ * A native <details>/<summary> disclosure - zero extra state, keyboard- and
+ * screen-reader-accessible for free. Used to fold away the secondary tactics
+ * (everything beyond the five headline dials) and the set-piece/captain
+ * roles, so the panel opens compact and the manager expands only what they
+ * need.
+ */
+function CollapsibleSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <details className="group rounded-lg border">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2.5 text-sm font-semibold text-muted-foreground marker:content-none [&::-webkit-details-marker]:hidden">
+        {title}
+        <svg
+          className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+        >
+          <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </summary>
+      <div className="space-y-4 border-t px-3 pb-3 pt-2.5">{children}</div>
+    </details>
+  )
+}
+
+/**
+ * The one place the manager sees whether their plan actually suits their
+ * players - computed server-side by the same engine logic the match itself
+ * uses, never a separate client-side guess.
+ */
+function TacticalFitPanel({ assessment }: { assessment: TacticalAssessment | null }) {
+  const t = useT()
+  if (!assessment) return null
+
+  return (
+    <div className="space-y-3 rounded-lg border bg-card p-3">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold">{t("squad.fit.title")}</h3>
+        <span className={cn("rounded-full px-2 py-0.5 text-xs font-bold", FIT_BADGE_CLASSES[assessment.rating])}>
+          {t(`squad.fit.${assessment.rating}` as TranslationKey)}
+        </span>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {t(assessment.explanation.key as TranslationKey, assessment.explanation.values)}
+      </p>
+
+      {assessment.advice.length > 0 && (
+        <div>
+          <h4 className="mb-1 text-xs font-semibold text-muted-foreground">{t("squad.coachAdvice.title")}</h4>
+          <ul className="space-y-1 text-xs text-muted-foreground">
+            {assessment.advice.map((item) => (
+              <li key={item.key}>• {t(item.key as TranslationKey, item.values)}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {assessment.bestStyles[0] && (
+        <div>
+          <h4 className="mb-1 text-xs font-semibold text-muted-foreground">{t("squad.bestStyles.title")}</h4>
+          <p className="text-xs text-muted-foreground">
+            {t(`squad.attackingStyle.${assessment.bestStyles[0].style}` as TranslationKey)} ·{" "}
+            {t(`squad.fit.${assessment.bestStyles[0].rating}` as TranslationKey)}
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function RoleSelect({
+  label,
+  players,
+  value,
+  onChange,
+}: {
+  label: string
+  players: PlayerDTO[]
+  value: string | null
+  onChange: (value: string | null) => void
+}) {
+  const t = useT()
+  return (
+    <label className="flex items-center justify-between gap-2 text-sm">
+      <span className="font-medium">{label}</span>
+      <select
+        className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-sm"
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value || null)}
+      >
+        <option value="">{t("squad.selectPlayer")}</option>
+        {players.map((p) => (
+          <option key={p.id} value={p.id}>
+            #{p.shirtNumber} {fullName(p)}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}

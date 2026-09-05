@@ -1,59 +1,106 @@
 services:
-  # Backend API Service
   - type: web
-    name: shift-scheduler-backend
+    name: goalx-manager
     env: node
     plan: free
-    buildCommand: cd backend && npm install
-    startCommand: cd backend && npm start
+    # next.config.ts sets output: "standalone", so the build only produces a
+    # working server at .next/standalone/server.js - `next start` (the
+    # previous startCommand here) prints "next start does not work with
+    # output: standalone configuration" and never actually opens a port,
+    # which is exactly why Render's port scan was timing out. Standalone
+    # mode also doesn't bundle public/ or .next/static/ into that folder on
+    # its own (this is documented Next.js behavior, not a bug) - the two
+    # cp/mkdir steps below are the officially-recommended way to put them
+    # there so CSS, fonts, and client JS chunks actually resolve instead of
+    # 404ing once the server is up.
+    buildCommand: npm install --include=dev && npx prisma migrate deploy && npm run build && mkdir -p .next/standalone/.next/static && cp -r .next/static/* .next/standalone/.next/static/ && cp -r public .next/standalone/public
+    startCommand: node .next/standalone/server.js
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: 10000
-      - key: DB_HOST
-        fromDatabase:
-          name: shift-scheduler-db
-          property: host
-      - key: DB_PORT
-        fromDatabase:
-          name: shift-scheduler-db
-          property: port
-      - key: DB_NAME
-        fromDatabase:
-          name: shift-scheduler-db
-          property: database
-      - key: DB_USER
-        fromDatabase:
-          name: shift-scheduler-db
-          property: user
-      - key: DB_PASSWORD
-        fromDatabase:
-          name: shift-scheduler-db
-          property: password
-      - key: JWT_SECRET
-        generateValue: true
-      - key: JWT_EXPIRES_IN
-        value: 24h
-      - key: FRONTEND_URL
-        value: https://shift-scheduler-frontend-6erj.onrender.com
+      # The generated server.js already defaults to 0.0.0.0 when this is
+      # unset, which is what a Web Service on Render needs (binding to
+      # localhost/127.0.0.1 instead is the other classic cause of "port
+      # scan timeout, no open ports detected") - set explicitly anyway so
+      # that stays true regardless of what generates this file in a future
+      # Next.js version.
+      - key: HOSTNAME
+        value: 0.0.0.0
+      # Points at an external Postgres database - a free Neon project
+      # (https://neon.tech) works well. This service's own disk is NOT
+      # persistent: SQLite on it was wiped on every redeploy (and possibly
+      # on free-tier cold starts too), silently deleting every registered
+      # account. Paste the connection string in the Render dashboard -
+      # Environment tab for this service.
+      #
+      # Either Neon endpoint works. Writes are deliberately kept to short,
+      # bulk transactions (see src/lib/leagues/seed.ts) precisely so the
+      # pooled endpoint is safe: a long-running interactive transaction is
+      # what a pooler terminates mid-flight, surfacing as Prisma P2028
+      # "Transaction not found". If you ever add a genuinely long
+      # transaction, use the direct (non "-pooler") host for it.
+      - key: DATABASE_URL
+        sync: false
+      # A fixed secret you set once in the Render dashboard - Environment tab,
+      # not a Blueprint-generated value. Every signed-in session's JWT is
+      # signed with this; if it ever changed, every existing session would
+      # stop validating at once, indistinguishable from a mass logout.
+      # Generate one with: openssl rand -base64 32
+      #
+      # Changing this line from `generateValue: true` does NOT reset or
+      # rotate whatever value Render already generated for this service -
+      # that value stays exactly as it is; this only stops the Blueprint
+      # from ever being able to touch it going forward.
+      - key: NEXTAUTH_SECRET
+        sync: false
+      # REQUIRED. Must exactly match this service's real production URL
+      # (protocol, host, no trailing slash) - e.g.
+      # https://goalx-manager.onrender.com, or the custom domain if one is
+      # configured instead.
+      #
+      # When this is unset, NextAuth's detectOrigin() returns undefined on a
+      # host that isn't Vercel, parseUrl() then falls back to
+      # http://localhost:3000, and the server both believes it lives on
+      # localhost and logs "[next-auth][warn][NEXTAUTH_URL]" on every
+      # request. Cookie naming no longer depends on it (see
+      # src/lib/auth-cookies.ts), but callback/redirect handling still does.
+      - key: NEXTAUTH_URL
+        sync: false
+      # Set to 1 temporarily to log auth session-resolution decisions to the
+      # Render log - cookie name, whether the cookie arrived, whether the
+      # token decoded, and the remember flag. Never logs a token, cookie
+      # value or secret. Leave unset in normal operation.
+      - key: AUTH_DEBUG
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: APPLE_CLIENT_ID
+        sync: false
+      - key: APPLE_CLIENT_SECRET
+        sync: false
 
-  # Frontend Service
-  - type: web
-    name: shift-scheduler-frontend-6erj
+  # Plays every fixture whose kickoff has passed but hasn't been simulated
+  # yet - the ONLY thing that should ever run the match engine. Talks to
+  # Postgres directly (same DATABASE_URL as the web service above), so it
+  # needs no HTTP endpoint and no shared secret at all. Render Cron Jobs are
+  # a separate plan/pricing tier from the free web service above - check
+  # your account supports one before deploying this; if not, an external
+  # scheduler hitting POST /api/internal/process-fixtures (protected by
+  # INTERNAL_JOB_SECRET on the web service, see that route) is the fallback.
+  #
+  # Every 2 minutes keeps the gap between a fixture's real kickoff and its
+  # result actually landing small enough that a manager opening the live
+  # match view right after kickoff isn't staring at "scheduled" for long -
+  # tune to taste; there's no correctness reason to run it more often than
+  # that.
+  - type: cron
+    name: goalx-manager-fixture-processor
     env: node
-    plan: free
-    buildCommand: npm install && npm run build
-    startCommand: npx next start
+    schedule: "*/2 * * * *"
+    buildCommand: npm install --include=dev && npx prisma generate
+    startCommand: npm run process-scheduled-jobs
     envVars:
-      - key: NODE_ENV
-        value: production
-      - key: NEXT_PUBLIC_API_URL
-        value: https://shift-scheduler-backend.onrender.com/api
-
-  # PostgreSQL Database
-  - type: pserv
-    name: shift-scheduler-db
-    plan: free
-    databaseName: shift_scheduler
-    user: postgres
+      - key: DATABASE_URL
+        sync: false

@@ -22,6 +22,15 @@ dist/
 *.sqlite
 *.sqlite3
 
+# Prisma generated client (regenerated via `prisma generate` / postinstall)
+src/generated/prisma/
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# User-uploaded content
+public/uploads/
+
 # Logs
 logs/
 *.log
