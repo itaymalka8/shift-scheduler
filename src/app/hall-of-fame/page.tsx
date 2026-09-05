@@ -71,6 +71,9 @@ export default async function HallOfFamePage() {
     const retired = entry.player.careerStatus === "RETIRED" ? t("hof.retired") : null
     return {
       key: entry.player.playerId,
+      // The board stays compact and the profile holds the detail; this is the
+      // link between them, and playerId is the only thing that addresses it.
+      href: `/players/${entry.player.playerId}`,
       label: `${entry.player.firstName} ${entry.player.lastName}`,
       metric,
       context: [position, club, extra, retired].filter(Boolean).join(" · "),
@@ -263,10 +266,11 @@ function Section({ icon, title, children }: { icon: React.ReactNode; title: stri
 interface RowView {
   key: string
   /**
-   * Optional ON PURPOSE. Manager and club rows link to a profile that exists;
-   * player rows do not, because there is no player profile route yet. A row
-   * that looks clickable and goes nowhere is worse than a row that does not,
-   * so an unlinked row renders as plain content rather than a dead Link.
+   * Optional so a board can carry a row with nowhere to go. Every row on this
+   * page now has a destination - managers, clubs and, since the player profile
+   * route exists, players - but a row that looks clickable and goes nowhere is
+   * worse than one that does not, so the unlinked rendering stays available
+   * rather than being replaced by a dead Link.
    */
   href?: string
   label: string

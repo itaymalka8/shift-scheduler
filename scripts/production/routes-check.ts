@@ -3,11 +3,11 @@
  * Production over HTTPS. Issues SELECTs and GETs only - it never writes to
  * the database and never POSTs to the app.
  *
- * WHY IT TALKS TO THE DATABASE AT ALL: /managers/[userId] and
- * /clubs/[teamId] are only meaningfully exercised by ids that really exist,
- * so this picks a real manager (the userId on an open HUMAN TeamEra) and a
- * real club, and requests those. A 200 on a made-up id would prove nothing
- * about the pages the change actually added.
+ * WHY IT TALKS TO THE DATABASE AT ALL: /managers/[userId], /clubs/[teamId]
+ * and /players/[playerId] are only meaningfully exercised by ids that really
+ * exist, so this picks a real manager (the userId on an open HUMAN TeamEra),
+ * a real club and a real player WITH ELIGIBLE HISTORY, and requests those. A
+ * 200 on a made-up id would prove nothing about the pages a change added.
  *
  * It prints club ids and user ids - the same identifiers prod:eras:verify
  * already prints - and no personal data: no email, no display name.
@@ -19,6 +19,7 @@
  * Run with: npm run prod:routes:check
  */
 import { createProductionClient } from "../../src/lib/production/client"
+import { MATCH_REAL_DURATION_MINUTES } from "../../src/lib/match/timing"
 
 const DEFAULT_BASE_URL = "https://goalx-manager.onrender.com"
 
@@ -52,21 +53,34 @@ async function main() {
     })
     const anyTeam = await prisma.team.findFirst({ select: { id: true }, orderBy: { id: "asc" } })
 
-    if (!humanEra?.userId || !anyTeam) {
-      console.error("REFUSED: could not find an open HUMAN era and a club to check against.")
+    // A player who has actually PLAYED, gated by the same public-finished rule
+    // the profile itself uses - so the page under test has a career to render
+    // rather than an empty state that would pass without exercising anything.
+    const cutoff = new Date(Date.now() - MATCH_REAL_DURATION_MINUTES * 60_000)
+    const playedStat = await prisma.playerMatchStats.findFirst({
+      where: { fixture: { playedAt: { not: null }, scheduledAt: { not: null, lte: cutoff } } },
+      select: { playerId: true },
+      orderBy: { playerId: "asc" },
+    })
+
+    if (!humanEra?.userId || !anyTeam || !playedStat) {
+      console.error("REFUSED: could not find an open HUMAN era, a club and a played-in player to check against.")
       process.exitCode = 1
       return
     }
 
     console.info(`Manager under test: userId=${humanEra.userId} (open HUMAN era on team ${humanEra.teamId})`)
-    console.info(`Club under test:    teamId=${anyTeam.id}\n`)
+    console.info(`Club under test:    teamId=${anyTeam.id}`)
+    console.info(`Player under test:  playerId=${playedStat.playerId} (has publicly finished history)\n`)
 
     const targets = [
       { label: "Landing page (control)", path: "/" },
       { label: "Hall of Fame", path: "/hall-of-fame" },
       { label: "Manager Profile", path: `/managers/${humanEra.userId}` },
       { label: "Club Trophy Cabinet", path: `/clubs/${anyTeam.id}` },
+      { label: "Player Profile", path: `/players/${playedStat.playerId}` },
       { label: "Manager Profile (unknown id -> 404, not 500)", path: "/managers/not-a-real-user-id", expect: 404 },
+      { label: "Player Profile (unknown id -> 404, not 500)", path: "/players/not-a-real-player-id", expect: 404 },
     ]
 
     for (const t of targets) {
