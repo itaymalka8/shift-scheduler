@@ -113,7 +113,22 @@ async function main() {
       { label: "Player Comparison (unknown b -> safe state, not 404)", path: `/players/compare?a=${playedStat.playerId}&b=not-a-real-player-id` },
       { label: "Player Comparison (unknown a -> safe state, not 404)", path: `/players/compare?a=not-a-real-player-id&b=${otherStat.playerId}` },
       { label: "Player Comparison (selector search)", path: "/players/compare?qa=a" },
-      { label: "Player Comparison (injection-shaped id -> dropped, not 500)", path: "/players/compare?a=%27%20OR%201%3D1%20--&b=..%2F..%2Fetc%2Fpasswd" },
+      // MALFORMED IDS THAT REACH THE APPLICATION. Both are dropped by
+      // isPlayerIdShape and the page asks for a player instead.
+      //
+      // The first version of this check sent `' OR 1=1 --` and
+      // `../../etc/passwd` and got 403 with a 221 KB body - Render's edge
+      // refusing the request before the application ever saw it, on a host
+      // where every other route answered 200 or 404 from Next.js seconds
+      // earlier. That is the CDN working, not the page failing, and a check
+      // that measures the CDN tells us nothing about this release. The
+      // payloads below carry the same shapes the parser must reject - a
+      // LIKE metacharacter, a space, an id far past the length cap - without
+      // matching a generic WAF signature, so they exercise the code. The
+      // application's handling of the SQL-shaped string itself is covered by
+      // a unit test and was requested against a running server locally.
+      { label: "Player Comparison (metacharacter id -> dropped, not 500)", path: "/players/compare?a=abc%25def&b=abc%20def" },
+      { label: "Player Comparison (over-long id -> dropped, not 500)", path: `/players/compare?a=${"x".repeat(200)}` },
       { label: "Manager Profile (unknown id -> 404, not 500)", path: "/managers/not-a-real-user-id", expect: 404 },
       { label: "Player Profile (unknown id -> 404, not 500)", path: "/players/not-a-real-player-id", expect: 404 },
     ]
