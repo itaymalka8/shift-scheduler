@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { useT } from "@/lib/i18n/locale-context"
 import {
   describeEvent,
@@ -94,7 +95,28 @@ export function EventFeed({
                 >
                   <Icon className="size-[55%]" strokeWidth={2.5} />
                 </span>
-                <span className={cn("min-w-0 flex-1 truncate", style.text)}>{t(key, vars)}</span>
+                {/* The description is ONE interpolated translated sentence
+                    ("{player} scores"), and the placeholder sits in a
+                    different position in Hebrew and Arabic - so the name is
+                    not surgically extracted and wrapped. The whole sentence
+                    becomes the link instead, which reads the same in every
+                    direction and needs no string surgery.
+
+                    Linked ONLY when the id resolved to a real player: an
+                    event whose playerId names nobody (MatchEvent.playerId is
+                    a bare column with no foreign key) keeps its text and gets
+                    no link, and an event with no player at all - a corner -
+                    never had one. No id is ever inferred from a name. */}
+                {event.playerId && event.playerName ? (
+                  <Link
+                    href={`/players/${event.playerId}`}
+                    className={cn("min-w-0 flex-1 truncate underline-offset-2 hover:underline", style.text)}
+                  >
+                    {t(key, vars)}
+                  </Link>
+                ) : (
+                  <span className={cn("min-w-0 flex-1 truncate", style.text)}>{t(key, vars)}</span>
+                )}
                 <span className="shrink-0 text-xs text-white/55">{teamName(event.teamId)}</span>
               </li>
             )

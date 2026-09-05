@@ -1,5 +1,7 @@
 "use client"
 
+import Link from "next/link"
+
 import { useT } from "@/lib/i18n/locale-context"
 import type { TranslationKey } from "@/lib/i18n/translations"
 import {
@@ -168,9 +170,19 @@ function TeamTable({ teamName, stats }: { teamName: string; stats: PlayerMatchSt
                 <th scope="row" className="px-2 py-2 text-start font-normal">
                   <span className="flex items-center gap-2">
                     <span className="w-5 shrink-0 text-end text-[11px] tabular-nums text-white/40">{stat.shirtNumber}</span>
-                    <span className="truncate font-medium text-white">
+                    {/* The stats row already carries the canonical playerId -
+                        PlayerMatchStats.playerId, a real foreign key - so the
+                        name links straight to that profile. No name lookup,
+                        no id fabricated from a name. Only the NAME is the
+                        link: the row is a table of numbers and wrapping the
+                        whole thing would swallow nothing useful but would
+                        make every cell look clickable. */}
+                    <Link
+                      href={`/players/${stat.playerId}`}
+                      className="truncate font-medium text-white underline-offset-2 hover:underline"
+                    >
                       {stat.firstName} {stat.lastName}
-                    </span>
+                    </Link>
                     <span className="shrink-0 rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-white/60">
                       {stat.primaryPosition}
                     </span>

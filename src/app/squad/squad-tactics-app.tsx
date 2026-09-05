@@ -7,6 +7,7 @@ import { useT, useLocale } from "@/lib/i18n/locale-context"
 import type { TranslationKey, Translator, Locale } from "@/lib/i18n/translations"
 import { getCountryName } from "@/lib/countries"
 import { cn } from "@/lib/utils"
+import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -1688,6 +1689,20 @@ export function SquadTacticsApp({
                             {t("squad.colAge")} {expandedPlayer.age}
                           </span>
                         </div>
+                        {/* The squad's link to a player's career.
+                            DELIBERATELY HERE AND NOT ON THE LIST ROW OR THE
+                            PITCH CARD: those two are controls - a row opens
+                            this dialog, a pitch card drags into a slot - and
+                            wrapping either in a Link would swallow the click
+                            that makes squad selection work. This dialog is
+                            already a detail view the manager chose to open,
+                            so a dedicated link here costs no interaction. */}
+                        <Link
+                          href={`/players/${expandedPlayer.id}`}
+                          className="mt-1 inline-block text-xs text-primary hover:underline"
+                        >
+                          {t("players.viewProfile")}
+                        </Link>
                       </div>
                     </div>
                   </DialogHeader>

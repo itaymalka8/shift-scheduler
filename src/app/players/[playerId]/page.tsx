@@ -62,8 +62,8 @@ export default async function PlayerProfilePage({ params }: { params: Promise<{ 
       <main className="mx-auto max-w-3xl space-y-6 px-4 py-8 sm:px-6 sm:py-12">
         <div className="flex items-center justify-between gap-3">
           <h1 className="text-lg font-semibold sm:text-2xl">{t("playerProfile.title")}</h1>
-          <Link href="/hall-of-fame" className="shrink-0 text-sm text-primary hover:underline">
-            {t("nav.hallOfFame")}
+          <Link href="/players" className="shrink-0 text-sm text-primary hover:underline">
+            {t("players.backToDirectory")}
           </Link>
         </div>
 

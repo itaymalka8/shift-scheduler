@@ -1,4 +1,4 @@
-import { Home, Users, LayoutGrid, CalendarDays, Trophy, Landmark, Wallet, Shirt, ArrowLeftRight, Medal, type LucideIcon } from "lucide-react"
+import { Home, Users, UsersRound, LayoutGrid, CalendarDays, Trophy, Landmark, Wallet, Shirt, ArrowLeftRight, Medal, type LucideIcon } from "lucide-react"
 import type { TranslationKey } from "@/lib/i18n/translations"
 
 export interface NavItem {
@@ -70,6 +70,16 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/club",
     icon: Shirt,
     isActive: (pathname) => pathname.startsWith("/club"),
+  },
+  {
+    key: "players",
+    labelKey: "nav.players",
+    href: "/players",
+    icon: UsersRound,
+    // Only the directory - a profile at /players/[playerId] is reached FROM
+    // here but is its own destination, and highlighting "Players" while
+    // reading one person's career would misdescribe where the reader is.
+    isActive: (pathname) => pathname === "/players",
   },
   {
     key: "hallOfFame",
