@@ -6,10 +6,12 @@ import {
   DEFAULT_STARTING_SEATS,
   DEFAULT_STADIUM_NAME_SUFFIX,
   toSeatColumns,
+  toSeatCounts,
   type SeatCounts,
   type StadiumConfig,
 } from "./config"
 import { calculateConstructionCost, calculateConstructionTime, totalSeats } from "./construction"
+import { seatsAsOf, type SeatsAsOfResult } from "./as-of"
 
 export class ConstructionInProgressError extends Error {
   constructor() {
@@ -55,6 +57,35 @@ export async function ensureStadiumForTeam(teamId: string, name?: string) {
     }
     throw error
   }
+}
+
+/**
+ * THE CLUB'S SEATS AS OF A GIVEN INSTANT - the read every match must use.
+ *
+ * Reads the Stadium row (creating it on miss, as every other stadium reader
+ * does) plus that stadium's whole construction history, and hands both to the
+ * pure seatsAsOf calculation. See src/lib/stadium/as-of.ts for why the answer
+ * cannot be the Stadium row alone, in either direction.
+ *
+ * Deliberately NOT taking a transaction client: ensureStadiumForTeam creates
+ * on miss and recovers from a unique-constraint race by re-reading, and a
+ * failed statement poisons the rest of a Postgres transaction. The stadium is
+ * not part of the legality question the match transaction holds locks for.
+ */
+export async function readSeatsAsOf(teamId: string, asOf: Date | null, name?: string): Promise<SeatsAsOfResult> {
+  const stadium = await ensureStadiumForTeam(teamId, name)
+  const jobs = await prisma.stadiumConstructionJob.findMany({
+    where: { stadiumId: stadium.id },
+    select: {
+      status: true,
+      endsAt: true,
+      regularSeatsAdded: true,
+      coveredSeatsAdded: true,
+      premiumSeatsAdded: true,
+      vipSeatsAdded: true,
+    },
+  })
+  return seatsAsOf(toSeatCounts(stadium), jobs, asOf)
 }
 
 /**
@@ -141,27 +172,60 @@ export async function completeStadiumConstruction(jobId: string): Promise<void> 
 }
 
 /**
- * Self-heal, run on every stadium page load - relies on server time, never a
- * browser-side timer. Returns the just-finished job (if any) so the page can
- * show a one-time completion message.
+ * THE SCHEDULED SETTLER - every club, every overdue job, once per tick.
  *
- * Unlike match results (see processDueFixtures in
- * src/lib/match/simulate.ts), completing a construction job is a single
- * idempotent update with no simulation and no risk of a duplicate/
- * conflicting write, so it stays safe to run from a page load rather than
- * needing a scheduled job of its own.
+ * This replaces the per-club self-heal that used to run from the /stadium
+ * page render. A page load is a fact about one manager's browser, and 57 of
+ * this league's 60 clubs have no manager at all, so a build could sit
+ * finished-but-unmaterialised indefinitely while the matches it should have
+ * been open for were played at the old capacity.
+ *
+ * IT MOVES NO MONEY, and that is what makes migrating it safe: the whole cost
+ * was debited when the job was created (startStadiumConstruction, in the same
+ * transaction), so there is no backlog of charges hiding behind an overdue
+ * job. Completion adds seats and closes a job, nothing else.
+ *
+ * IT IS NOT WHAT MAKES MATCHES CORRECT. Running this first in the tick keeps
+ * the Stadium row fresh, but a fixture's capacity is decided by seatsAsOf
+ * (src/lib/stadium/as-of.ts) against the fixture's own scheduledAt, so a
+ * match played by a late cron gets the same stadium a punctual one would have
+ * given it. This settler is a freshness step, not an authority.
+ *
+ * BOUNDED: at most `limit` jobs per run, oldest deadline first, so one club
+ * with a pile of history can never monopolise a tick. Club-type agnostic on
+ * purpose - a club can be abandoned back to BOT status while a job is still
+ * running, and that job must still finish.
  */
-export async function settleDueStadiumConstruction(teamId: string) {
-  const stadium = await prisma.stadium.findUnique({
-    where: { teamId },
-    include: { constructionJobs: { where: { status: "active", endsAt: { lte: new Date() } } } },
-  })
-  if (!stadium || stadium.constructionJobs.length === 0) return null
+export const STADIUM_COMPLETION_BATCH = 50
 
-  for (const job of stadium.constructionJobs) {
-    await completeStadiumConstruction(job.id)
+export interface StadiumCompletionResult {
+  found: number
+  completed: number
+  failures: { jobId: string; error: unknown }[]
+}
+
+export async function settleDueStadiumConstructionForAll(
+  now: Date = new Date(),
+  limit: number = STADIUM_COMPLETION_BATCH
+): Promise<StadiumCompletionResult> {
+  const due = await prisma.stadiumConstructionJob.findMany({
+    where: { status: "active", endsAt: { lte: now } },
+    orderBy: [{ endsAt: "asc" }, { id: "asc" }],
+    take: limit,
+    select: { id: true },
+  })
+
+  const result: StadiumCompletionResult = { found: due.length, completed: 0, failures: [] }
+  for (const job of due) {
+    try {
+      await completeStadiumConstruction(job.id)
+      result.completed++
+    } catch (error) {
+      // One club's job failing must not stop the rest of the league's.
+      result.failures.push({ jobId: job.id, error })
+    }
   }
-  return stadium.constructionJobs[0]
+  return result
 }
 
 export { InsufficientFundsError }

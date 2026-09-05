@@ -35,6 +35,7 @@ export function EconomyApp({
   balance,
   totalWeeklyPlayerSalaries,
   nextPayrollDate,
+  lastSettledPayroll,
   players,
   forecast,
   transactions,
@@ -42,6 +43,12 @@ export function EconomyApp({
   balance: number
   totalWeeklyPlayerSalaries: number
   nextPayrollDate: string
+  /**
+   * The last payroll week this club actually paid, read from the ledger.
+   * Shown so a manager can see the wage clock is running without having to
+   * trust that it is - the page settles nothing itself any more.
+   */
+  lastSettledPayroll: { weekKey: string; amount: number } | null
   players: PlayerSalary[]
   forecast: { expectedIncome: number; expectedExpenses: number; net: number }
   transactions: Transaction[]
@@ -76,6 +83,14 @@ export function EconomyApp({
         <div className="mt-2 text-xs text-muted-foreground">
           {t("economy.nextPayment")}: {nextPaymentLabel}
         </div>
+        {lastSettledPayroll && (
+          <div className="mt-1 text-xs text-muted-foreground">
+            {t("economy.lastSettledPayroll", {
+              week: lastSettledPayroll.weekKey.replace("_", " "),
+              amount: lastSettledPayroll.amount.toLocaleString(),
+            })}
+          </div>
+        )}
       </button>
 
       <div className="rounded-lg border bg-card p-4">

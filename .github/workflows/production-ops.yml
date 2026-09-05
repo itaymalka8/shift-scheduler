@@ -31,6 +31,8 @@ on:
           - prod:players:availability-audit
           - prod:replenishment:verify
           - prod:season:next-verify
+          - prod:economy:audit
+          - prod:payroll:activation-check
           - prod:render:autodeploy:off
           - prod:backup:create
           - prod:backup:prune:execute

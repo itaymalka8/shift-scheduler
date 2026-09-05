@@ -37,6 +37,30 @@
  *    reads and writes TransferListing rows alone, so it is genuinely
  *    order-independent with respect to the other two.
  *
+ * 3. STADIUM COMPLETION RUNS FIRST, PAYROLL RUNS BEFORE THE SEASON ROLL.
+ *
+ *    Stadium completion is first purely for freshness - a build that finished
+ *    should be visible as soon as possible. It is NOT what makes matches
+ *    correct: a fixture's capacity comes from seatsAsOf against its own
+ *    scheduledAt (src/lib/stadium/as-of.ts), so a late tick and a punctual one
+ *    give the identical stadium to the identical match. The ordering is a
+ *    convenience; the as-of read is the authority.
+ *
+ *    Payroll runs BEFORE season lifecycle, and that ordering IS load-bearing.
+ *    The season roll retires players (nulling their teamId) and recalculates
+ *    every surviving player's weeklySalary. No salary history is persisted
+ *    anywhere, so payroll can only ever charge the squad as it stands when it
+ *    runs - which means letting the roll mutate the roster first, inside the
+ *    same tick, would change what a already-closed payroll week costs. Wages
+ *    first, then the roll.
+ *
+ *    And if payroll cannot settle, SEASON LIFECYCLE IS SKIPPED FOR THIS TICK
+ *    (see the guard at step C). A failed payroll week retries in two minutes;
+ *    letting the orchestrator retire players in between would mean the retry
+ *    charged a different squad for the same closed week. This does not make a
+ *    long outage exact - nothing can, without salary snapshots - it stops the
+ *    scheduler from creating the inconsistency itself.
+ *
  * The tasks are isolated from each other: a failure in one is logged clearly
  * and does not stop the others from getting their own chance to run, so a
  * problem with transfer expiration never silently prevents fixtures from
@@ -48,6 +72,8 @@
  *
  * Run with: npx tsx scripts/process-scheduled-jobs.ts
  */
+import { settleDueStadiumConstructionForAll } from "../src/lib/stadium/actions"
+import { settleDuePayroll } from "../src/lib/economy/payroll"
 import { processDueFixtures } from "../src/lib/match/simulate"
 import { activateDueMatchConsequences } from "../src/lib/match/consequence-service"
 import { expireDueTransferListings } from "../src/lib/transfers/expiration"
@@ -58,6 +84,11 @@ async function main() {
   const startedAt = Date.now()
   const failedSubsystems: string[] = []
 
+  let stadiumJobsCompleted: number | null = null
+  let payrollWeeksSettled: number | null = null
+  let payrollCharged: number | null = null
+  let payrollOutstanding = false
+  let seasonsDeferred = false
   let fixturesObserved: number | null = null
   let fixturesBlocked = 0
   let consequencesAppliedBefore: number | null = null
@@ -66,6 +97,23 @@ async function main() {
   let seasonsChecked: number | null = null
   let seasonTransitions: number | null = null
   let seasonErrors = 0
+
+  // --- 0. Stadium construction completion ---------------------------------
+  // A build whose deadline has passed becomes real seats here, for every club
+  // - not only for the three that have a manager who might open /stadium.
+  // MOVES NO MONEY: the whole cost was debited when the job was created.
+  try {
+    const stadium = await settleDueStadiumConstructionForAll()
+    stadiumJobsCompleted = stadium.completed
+    console.info(`Stadium construction completed: ${stadium.completed}/${stadium.found} job(s)`)
+    for (const failure of stadium.failures) {
+      console.error(`Stadium completion failed for job ${failure.jobId}:`, failure.error)
+    }
+    if (stadium.failures.length > 0) failedSubsystems.push("stadium")
+  } catch (error) {
+    failedSubsystems.push("stadium")
+    console.error("Stadium construction completion failed:", error)
+  }
 
   // --- A1. Match consequence activation (BACKLOG FIRST) -------------------
   // Everything a club already owes from matches the public has seen finish is
@@ -156,7 +204,47 @@ async function main() {
     console.error("Transfer listing expiration failed:", error)
   }
 
+  // --- B2. PAYROLL ---------------------------------------------------------
+  // Every club that owes wages for a closed payroll week pays them, league
+  // wide and atomically per week. Nothing before the activation boundary is
+  // ever charged; see src/lib/economy/payroll-clock.ts.
+  try {
+    const payroll = await settleDuePayroll()
+    payrollWeeksSettled = payroll.weeksSettled.length
+    payrollCharged = payroll.totalCharged
+    for (const week of payroll.weeksSettled) {
+      console.info(
+        `Payroll ${week.weekKey}: ${week.teamsCharged}/${week.eligibleTeams} club(s) charged, ` +
+          `${week.teamsAlreadySettled} already settled, total ${week.totalCharged}`
+      )
+    }
+    if (payroll.weeksSettled.length === 0) {
+      console.info(`Payroll: nothing due (${payroll.weeksAlreadyComplete} week(s) already complete)`)
+    }
+    // A post-activation week older than the look-back window is an incident,
+    // not a backlog: say so loudly rather than let wages vanish quietly.
+    if (payroll.weeksOutsideWindow > 0) {
+      payrollOutstanding = true
+      failedSubsystems.push("payroll")
+      console.error(
+        `Payroll: ${payroll.weeksOutsideWindow} post-activation week(s) fell outside the catch-up window and were NOT settled`
+      )
+    }
+  } catch (error) {
+    payrollOutstanding = true
+    failedSubsystems.push("payroll")
+    console.error("Payroll settlement failed:", error)
+  }
+
   // --- C. Season lifecycle orchestration ----------------------------------
+  // DEFERRED WHEN PAYROLL IS OUTSTANDING. The orchestrator retires players and
+  // rewrites salaries; doing that while an already-due payroll week is still
+  // unsettled would change what that closed week costs when it retries two
+  // minutes from now. Wages are settled first or the roll waits a tick.
+  if (payrollOutstanding) {
+    seasonsDeferred = true
+    console.error("Season lifecycle DEFERRED this tick: an already-due payroll week is outstanding")
+  } else
   try {
     const report = await runSeasonEndOrchestratorForAllSeasons()
     seasonsChecked = report.seasonsChecked
@@ -190,12 +278,15 @@ async function main() {
   console.info(
     [
       "Scheduled run summary:",
+      `  Stadium jobs completed:    ${na(stadiumJobsCompleted)}`,
       `  Consequences (backlog):    ${na(consequencesAppliedBefore)}`,
       `  Fixtures processed:        ${na(fixturesObserved)}`,
       `  Fixtures blocked (XI):     ${fixturesBlocked}`,
       `  Consequences (post-match): ${na(consequencesAppliedAfter)}`,
       `  Transfer listings expired: ${na(listingsExpired)}`,
-      `  Active seasons checked:    ${na(seasonsChecked)}`,
+      `  Payroll weeks settled:     ${na(payrollWeeksSettled)}`,
+      `  Payroll charged:           ${na(payrollCharged)}`,
+      `  Active seasons checked:    ${seasonsDeferred ? "deferred (payroll outstanding)" : na(seasonsChecked)}`,
       `  Season transitions:        ${na(seasonTransitions)}`,
       `  Season errors:             ${seasonErrors}`,
       `  Duration:                  ${Date.now() - startedAt}ms`,

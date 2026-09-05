@@ -5,8 +5,7 @@ import { isPlayerPosition, type PlayerPosition } from "@/lib/players/positions"
 import { readTeamTactics } from "@/lib/players/tactics"
 import { resolveFormationSlots } from "@/lib/players/formations"
 import { calculateTeamTotalQuality } from "@/lib/players/quality"
-import { ensureStadiumForTeam } from "@/lib/stadium/actions"
-import { toSeatCounts } from "@/lib/stadium/config"
+import { readSeatsAsOf } from "@/lib/stadium/actions"
 import { calculateStadiumCapacity } from "@/lib/stadium/metrics"
 import { calculateAttendance } from "@/lib/stadium/attendance"
 import type { MatchSnapshot, SnapshotPlayer, SnapshotTeam } from "./snapshot"
@@ -93,13 +92,20 @@ export async function buildMatchSnapshot(
   const away = await buildTeamSnapshot(fixture.awayTeamId, db)
 
   const homeTeam = await db.team.findUniqueOrThrow({ where: { id: fixture.homeTeamId } })
-  // Deliberately NOT on `db`. ensureStadiumForTeam creates on miss and
-  // recovers from a P2002 by re-reading - and a failed statement poisons the
-  // rest of a Postgres transaction, so that recovery cannot happen inside
-  // one. The stadium is not part of the XI, so reading it outside the match's
-  // lock scope changes nothing this phase is about.
-  const stadium = await ensureStadiumForTeam(fixture.homeTeamId, homeTeam.name)
-  const seats = toSeatCounts(stadium)
+  // AS OF KICKOFF, NOT AS OF NOW. readSeatsAsOf corrects the Stadium row in
+  // both directions against this fixture's own scheduledAt: a stand that was
+  // not finished when the whistle blew is taken back out even if the settler
+  // has since materialised it, and a stand that WAS finished is put in even
+  // if the settler has not reached it yet. Without that, a club's capacity -
+  // and therefore its attendance and its gate receipts - would depend on how
+  // punctual the cron happened to be. See src/lib/stadium/as-of.ts.
+  //
+  // Deliberately NOT on `db`. readSeatsAsOf goes through ensureStadiumForTeam,
+  // which creates on miss and recovers from a P2002 by re-reading - and a
+  // failed statement poisons the rest of a Postgres transaction, so that
+  // recovery cannot happen inside one. The stadium is not part of the XI, so
+  // reading it outside the match's lock scope changes nothing.
+  const { seats } = await readSeatsAsOf(fixture.homeTeamId, fixture.scheduledAt, homeTeam.name)
   const capacity = calculateStadiumCapacity(seats)
 
   const homePlayers = await db.player.findMany({ where: { teamId: fixture.homeTeamId } })

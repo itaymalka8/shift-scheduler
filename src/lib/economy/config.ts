@@ -115,3 +115,47 @@ export const DEFAULT_MATCH_EXPENSE_CONFIG: MatchExpenseConfig = {
 // src/lib/match/schedule.ts).
 export const PAYROLL_WEEKDAY = 4 // Thursday (JS Date#getDay(): 0=Sunday)
 export const PAYROLL_HOUR_UTC = 13
+
+/**
+ * THE ACTIVATION BOUNDARY - the instant autonomous payroll begins.
+ *
+ * START-LINE ACTIVATION. Payroll weeks that closed BEFORE this instant are
+ * permanently outside autonomous settlement and are never charged, whether or
+ * not a ledger row exists for them. Weeks from here on are charged to every
+ * club, Human and BOT alike, by the scheduled job and by nothing else.
+ *
+ * WHY A COMMITTED LITERAL RATHER THAN A DATABASE ROW. It has to be explicit,
+ * canonical, identical for every club, and impossible for a redeploy to
+ * reset - a constant in source is all four, and needs no migration and no
+ * write to Production to establish. Deploy time is NEVER read: this is a
+ * fixed instant, not "whenever the container started".
+ *
+ * WHY IT IS IN THE FUTURE WHEN IT SHIPS. The deploy that first turns payroll
+ * on must land BEFORE this instant, so that the first week the league is
+ * charged for is one that closes with the new behaviour already live and
+ * observable. Deploying after it had passed would settle a week retroactively
+ * on the very first tick. `npm run prod:payroll:activation-check` fails
+ * closed on exactly that, and preflight prints the boundary every time.
+ *
+ * ONCE AUTONOMOUS PAYROLL IS LIVE THIS VALUE IS HISTORY. It must not be moved
+ * forward by a later deploy: doing so would silently skip the weeks between
+ * the old and new boundary. Moving it is a reviewed code change with a diff,
+ * which is the point.
+ *
+ * 2026-09-10T13:00:00.000Z is a Thursday at 13:00 UTC - on the payroll grid
+ * defined by PAYROLL_WEEKDAY and PAYROLL_HOUR_UTC above, which
+ * payroll-clock.test.ts asserts rather than trusts.
+ */
+export const PAYROLL_AUTOMATION_START = new Date("2026-09-10T13:00:00.000Z")
+
+/**
+ * How many payroll boundaries one run will look back over.
+ *
+ * The scheduled job runs every two minutes, so the healthy case has exactly
+ * one candidate week and usually zero unsettled ones. This bound exists so a
+ * long outage cannot grow the candidate list without limit - and when it is
+ * actually hit, the run REPORTS the weeks it left outside the window rather
+ * than dropping them silently. Six months of missed payroll is an incident to
+ * be looked at by a person, not a backlog to be quietly charged.
+ */
+export const PAYROLL_MAX_CATCHUP_WEEKS = 26

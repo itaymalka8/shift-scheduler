@@ -8,7 +8,7 @@ import { calculateStadiumCapacity } from "@/lib/stadium/metrics"
 import { toSeatCounts } from "@/lib/stadium/config"
 import { calculateAttendance, calculateMatchStadiumRevenue } from "@/lib/stadium/attendance"
 import { calculateHomeMatchExpenses, calculateAwayTravelCost } from "@/lib/economy/match-expenses"
-import { settleDuePayroll, getNextPayrollDate } from "@/lib/economy/payroll"
+import { getNextPayrollDate, readLastSettledPayroll } from "@/lib/economy/payroll"
 import { EconomyApp } from "./economy-app"
 
 const LEDGER_LIMIT = 30
@@ -22,17 +22,26 @@ export default async function EconomyPage() {
   const team = await prisma.team.findUnique({ where: { userId: session.user.id } })
   if (!team) notFound()
 
-  await settleDuePayroll(team.id)
+  // READ ONLY WITH RESPECT TO PAYROLL. This page used to be the game's wage
+  // clock - it called settleDuePayroll on every render, which meant only the
+  // three clubs with a signed-in manager could ever pay wages at all, while
+  // the cron charged all sixty for playing. The scheduled job settles payroll
+  // now, league-wide and atomically per week, and a page render must never be
+  // a second clock racing it.
+  //
+  // ensureStadiumForTeam stays: it creates a MISSING row, which is
+  // initialisation, not the passage of time.
   const stadium = await ensureStadiumForTeam(team.id, team.name)
 
-  const [freshTeam, players, transactions] = await Promise.all([
+  const [freshTeam, players, transactions, lastSettledPayroll] = await Promise.all([
     prisma.team.findUniqueOrThrow({ where: { id: team.id }, select: { balance: true } }),
-    prisma.player.findMany({ where: { teamId: team.id } }),
+    prisma.player.findMany({ where: { teamId: team.id, careerStatus: "ACTIVE" } }),
     prisma.financialTransaction.findMany({
       where: { teamId: team.id },
       orderBy: { createdAt: "desc" },
       take: LEDGER_LIMIT,
     }),
+    readLastSettledPayroll(team.id),
   ])
 
   const totalWeeklyPlayerSalaries = players.reduce((sum, p) => sum + p.weeklySalary, 0)
@@ -73,6 +82,7 @@ export default async function EconomyPage() {
           balance={freshTeam.balance}
           totalWeeklyPlayerSalaries={totalWeeklyPlayerSalaries}
           nextPayrollDate={nextPayrollDate.toISOString()}
+          lastSettledPayroll={lastSettledPayroll}
           players={players
             .map((p) => ({ id: p.id, name: `${p.firstName} ${p.lastName}`, position: p.primaryPosition, overall: p.overall, weeklySalary: p.weeklySalary }))
             .sort((a, b) => b.weeklySalary - a.weeklySalary)}

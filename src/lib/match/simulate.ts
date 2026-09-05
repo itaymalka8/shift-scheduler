@@ -1,10 +1,9 @@
 import type { Prisma } from "@/generated/prisma"
 import { prisma } from "@/lib/prisma"
-import { toSeatCounts } from "@/lib/stadium/config"
 import { calculateStadiumCapacity } from "@/lib/stadium/metrics"
 import { calculateMatchStadiumRevenue, calculateAttendance } from "@/lib/stadium/attendance"
 import { calculateTeamTotalQuality } from "@/lib/players/quality"
-import { ensureStadiumForTeam } from "@/lib/stadium/actions"
+import { readSeatsAsOf } from "@/lib/stadium/actions"
 import { assertFixtureLineupsLegal, MatchPreflightError } from "./lineup-preflight"
 import { settlePriorConsequences } from "./consequence-service"
 import { lockTeamSquads } from "@/lib/players/locks"
@@ -119,12 +118,16 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
   // line in the feature.
   const neutralVenue = isNeutralVenue(fixture.stage)
 
+  // AS OF KICKOFF, NOT AS OF NOW - the same rule the snapshot uses, so the
+  // expenses this match is charged are computed against the stadium it was
+  // actually played in. See src/lib/stadium/as-of.ts.
+  //
   // Outside the transaction ON PURPOSE: this creates on miss and recovers
   // from a unique-constraint race by re-reading, and a failed statement
   // poisons the rest of a Postgres transaction. The stadium is not part of
   // the XI question, so it is settled before the authority is taken.
-  const homeStadium = await ensureStadiumForTeam(fixture.homeTeamId)
-  const capacity = calculateStadiumCapacity(toSeatCounts(homeStadium))
+  const { seats: homeSeatsAtKickoff } = await readSeatsAsOf(fixture.homeTeamId, fixture.scheduledAt)
+  const capacity = calculateStadiumCapacity(homeSeatsAtKickoff)
 
   await prisma.$transaction(async (tx) => {
     // ---- AUTHORITY, IN THE PROJECT'S DOCUMENTED LOCK ORDER ----------------
@@ -197,7 +200,7 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
     const attendanceDetail = calculateAttendance(
       { isHome: true },
       { teamTotalQuality: calculateTeamTotalQuality(homePlayers) },
-      { seats: toSeatCounts(homeStadium) }
+      { seats: homeSeatsAtKickoff }
     )
     // NEUTRAL VENUE MEANS NEUTRAL MONEY TOO.
     //

@@ -70,6 +70,7 @@ export function StadiumApp({
   showExpansionHint,
   activeJob,
   justCompletedCapacity,
+  awaitingCompletion,
 }: {
   stadiumName: string
   teamName: string
@@ -85,6 +86,13 @@ export function StadiumApp({
   showExpansionHint: boolean
   activeJob: ActiveJob | null
   justCompletedCapacity: number | null
+  /**
+   * A build whose deadline has passed that the scheduled settler has not
+   * collected yet. Shown as a truthful "finishing" status - this page no
+   * longer completes anything itself, so it says what is true rather than
+   * making it true.
+   */
+  awaitingCompletion: boolean
 }) {
   const t = useT()
   const [view, setView] = useState<"main" | "upgrade">("main")
@@ -108,6 +116,13 @@ export function StadiumApp({
           >
             {t("stadium.dismiss")}
           </button>
+        </div>
+      )}
+
+      {awaitingCompletion && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+          <p className="font-medium">{t("stadium.constructionFinishingTitle")}</p>
+          <p>{t("stadium.constructionFinishingBody")}</p>
         </div>
       )}
 

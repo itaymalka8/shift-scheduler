@@ -2,7 +2,7 @@ import { notFound } from "next/navigation"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
-import { ensureStadiumForTeam, settleDueStadiumConstruction } from "@/lib/stadium/actions"
+import { ensureStadiumForTeam } from "@/lib/stadium/actions"
 import { calculateStadiumCapacity, calculateStadiumValue, calculateWeeklyMaintenance } from "@/lib/stadium/metrics"
 import { toSeatCounts } from "@/lib/stadium/config"
 import { StadiumApp } from "./stadium-app"
@@ -17,13 +17,25 @@ export default async function StadiumPage() {
   const team = await prisma.team.findUnique({ where: { userId: session.user.id } })
   if (!team) notFound()
 
+  // READ ONLY WITH RESPECT TO PROGRESSION. This page used to be the game's
+  // construction clock: a job finished only when its own manager happened to
+  // open this page, so 57 of the league's 60 clubs - which have no manager -
+  // could never finish a build at all. The scheduled job settles it now
+  // (settleDueStadiumConstructionForAll), for every club equally, and a page
+  // render must never be a second clock racing it.
+  //
+  // ensureStadiumForTeam stays: it creates a MISSING row, which is
+  // initialisation, not the passage of time.
   await ensureStadiumForTeam(team.id, team.name)
-  const justCompletedJob = await settleDueStadiumConstruction(team.id)
 
   const stadium = await prisma.stadium.findUniqueOrThrow({
     where: { teamId: team.id },
     include: { constructionJobs: { where: { status: "active" } } },
   })
+  // A job past its deadline that the scheduled settler has not collected yet.
+  // Reported truthfully as "finishing" rather than quietly completed here.
+  const now = new Date()
+  const awaitingCompletion = stadium.constructionJobs.some((job) => job.endsAt <= now)
   const seats = toSeatCounts(stadium)
   const capacity = calculateStadiumCapacity(seats)
   const stadiumValue = calculateStadiumValue(seats)
@@ -106,7 +118,8 @@ export default async function StadiumPage() {
                 }
               : null
           }
-          justCompletedCapacity={justCompletedJob ? capacity : null}
+          justCompletedCapacity={null}
+          awaitingCompletion={awaitingCompletion}
         />
       </main>
     </div>
