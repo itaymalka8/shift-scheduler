@@ -60,7 +60,11 @@ export async function runPreflightCheck(): Promise<OpsPreflightResult> {
   const [divisionCount, divisionTeamCount, leagueFixtureCount, nonLeagueFixtureCount, playedFixtureCount, qaFixtures] =
     await Promise.all([
       prisma.division.count({ where: seasonScope }),
-      prisma.divisionTeam.count({ where: seasonScope }),
+      // Through the RELATION, never through DivisionTeam.seasonId: this runs
+      // as a pre-deploy gate against a database that may be one migration
+      // behind, and a verifier should not depend on the denormalisation it is
+      // verifying.
+      prisma.divisionTeam.count({ where: { division: seasonScope } }),
       prisma.fixture.count({ where: { stage: "LEAGUE", division: seasonScope } }),
       prisma.fixture.count({ where: { stage: { not: "LEAGUE" }, division: seasonScope } }),
       prisma.fixture.count({ where: { playedAt: { not: null } } }),

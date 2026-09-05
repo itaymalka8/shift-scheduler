@@ -238,7 +238,10 @@ describe("league structure verification counts LEAGUE only, per active season", 
   it("the ops preflight scopes every structural count to the active season", () => {
     const checks = read("lib", "production-ops", "checks.ts")
     expect(checks).toMatch(/prisma\.division\.count\(\{ where: seasonScope \}\)/)
-    expect(checks).toMatch(/prisma\.divisionTeam\.count\(\{ where: seasonScope \}\)/)
+    // Membership is counted through the RELATION, never through
+    // DivisionTeam.seasonId: this gate runs before the deploy that adds that
+    // column, and a verifier must not depend on what it is verifying.
+    expect(checks).toMatch(/prisma\.divisionTeam\.count\(\{ where: \{ division: seasonScope \} \}\)/)
     expect(checks).toMatch(/stage: "LEAGUE", division: seasonScope/)
   })
 

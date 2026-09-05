@@ -185,7 +185,12 @@ async function main() {
       playerSeasonLifecycleCount,
     ] = await Promise.all([
       prisma.division.count({ where: activeSeasonScope }),
-      prisma.divisionTeam.count({ where: activeSeasonScope }),
+      // Through the RELATION, not through DivisionTeam.seasonId. This gate
+      // runs BEFORE the deploy that adds that column, so reading it directly
+      // would make preflight fail on exactly the database it exists to check.
+      // It is also the better check on principle: a verifier should not
+      // depend on the denormalisation it is verifying.
+      prisma.divisionTeam.count({ where: { division: activeSeasonScope } }),
       prisma.team.count(),
       prisma.player.count(),
       countFixturesByStage(prisma, hasStage, activeSeasonId),
