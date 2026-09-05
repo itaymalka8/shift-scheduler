@@ -9,6 +9,14 @@
  * one question that decides whether any fixture will be BLOCKED after the
  * deploy: how many clubs cannot field eleven eligible players today.
  *
+ * IT RUNS ON BOTH SIDES OF THE MIGRATION, deliberately. A baseline that only
+ * works once the change it is meant to baseline has shipped is not a
+ * baseline. Player.injuryMatchesRemaining and Fixture.consequencesAppliedAt
+ * are therefore probed in information_schema first and read through raw SQL
+ * only when they are actually there; everything else - fitness, status,
+ * careerStatus, lineup slots, eligibility - is available either way and is
+ * reported either way.
+ *
  * Run with: npm run prod:players:availability-audit
  */
 import { createProductionClient } from "../../src/lib/production/client"
@@ -44,18 +52,29 @@ async function main() {
   printProductionBanner("prod:players:availability-audit", target)
 
   try {
-    const players = await prisma.player.findMany({
-      select: {
-        id: true,
-        teamId: true,
-        fitness: true,
-        status: true,
-        injuryStatus: true,
-        injuryMatchesRemaining: true,
-        suspensionMatches: true,
-        careerStatus: true,
-      },
-    })
+    // Does the Phase 3L migration exist here yet? Asked of the database
+    // rather than assumed from the checked-out schema, because those two are
+    // exactly what a pre-deploy baseline is run to compare.
+    const columns = await prisma.$queryRaw<{ table_name: string; column_name: string }[]>`
+      SELECT table_name, column_name FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND ((table_name = 'Player' AND column_name = 'injuryMatchesRemaining')
+          OR (table_name = 'Fixture' AND column_name = 'consequencesAppliedAt'))
+    `
+    const hasInjuryMatches = columns.some((c) => c.column_name === "injuryMatchesRemaining")
+    const hasLedger = columns.some((c) => c.column_name === "consequencesAppliedAt")
+    console.info(`Phase 3L columns present: injuryMatchesRemaining=${hasInjuryMatches} consequencesAppliedAt=${hasLedger}\n`)
+
+    // Raw, so the generated client's expectation of the new column cannot
+    // fail the whole read on a database that predates it.
+    const rows = await prisma.$queryRawUnsafe<
+      { id: string; teamId: string | null; fitness: number; status: string; injuryStatus: string | null; suspensionMatches: number; careerStatus: string; injuryMatchesRemaining: number }[]
+    >(
+      `SELECT "id", "teamId", "fitness", "status", "injuryStatus", "suspensionMatches", "careerStatus",
+              ${hasInjuryMatches ? '"injuryMatchesRemaining"' : "0 AS \"injuryMatchesRemaining\""}
+       FROM "Player"`
+    )
+    const players = rows
 
     console.info("--- 1. FITNESS ---")
     histogram("fitness", players.map((p) => p.fitness))
@@ -133,13 +152,18 @@ async function main() {
 
     console.info("\n--- 8. CONSEQUENCE LEDGER ---")
     const played = await prisma.fixture.count({ where: { playedAt: { not: null } } })
-    const applied = await prisma.fixture.count({ where: { consequencesAppliedAt: { not: null } } })
-    const outstanding = await prisma.fixture.count({
-      where: { playedAt: { not: null }, consequencesAppliedAt: null },
-    })
     console.info(`  played fixtures: ${played}`)
-    console.info(`  consequences applied: ${applied}`)
-    console.info(`  outstanding (played, not yet applied): ${outstanding}`)
+    if (!hasLedger) {
+      console.info("  consequence ledger: column not present yet - this is the pre-migration baseline")
+    } else {
+      const [{ applied, outstanding }] = await prisma.$queryRaw<{ applied: bigint; outstanding: bigint }[]>`
+        SELECT COUNT(*) FILTER (WHERE "consequencesAppliedAt" IS NOT NULL) AS applied,
+               COUNT(*) FILTER (WHERE "playedAt" IS NOT NULL AND "consequencesAppliedAt" IS NULL) AS outstanding
+        FROM "Fixture"
+      `
+      console.info(`  consequences applied: ${applied}`)
+      console.info(`  outstanding (played, not yet applied): ${outstanding}`)
+    }
 
     console.info("\nPLAYER AVAILABILITY AUDIT: REPORTED")
   } catch (error) {
