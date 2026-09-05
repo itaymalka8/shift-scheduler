@@ -39,6 +39,7 @@
     "prod:champions:verify": "tsx scripts/production/verify-season-champions.ts",
     "prod:routes:check": "tsx scripts/production/routes-check.ts",
     "prod:retention:verify": "tsx scripts/production/verify-historical-retention.ts",
+    "prod:players:samples": "tsx scripts/production/player-profile-samples.ts",
     "prod:players:distribution": "tsx scripts/production/player-stats-distribution.ts"
   },
   "dependencies": {

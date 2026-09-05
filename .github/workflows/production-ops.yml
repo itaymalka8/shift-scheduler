@@ -26,6 +26,7 @@ on:
           - prod:routes:check
           - prod:retention:verify
           - prod:players:distribution
+          - prod:players:samples
           - prod:render:autodeploy:off
           - prod:backup:create
           - prod:backup:prune:execute
