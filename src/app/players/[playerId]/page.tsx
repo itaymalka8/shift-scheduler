@@ -123,7 +123,21 @@ export default async function PlayerProfilePage({ params }: { params: Promise<{ 
         <Section icon={<User className="size-4" aria-hidden />} title={t("playerProfile.currentStatus")} note={t("playerProfile.currentStateNote")}>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <Stat label={t("playerProfile.shirtNumber")} value={numbers.format(current.shirtNumber)} />
-            <Stat label={t("playerProfile.squadStatus")} value={t(`squad.status.${current.squadStatus}` as TranslationKey)} />
+            <Stat
+              label={t("playerProfile.squadStatus")}
+              value={t(`squad.status.${current.squadStatus}` as TranslationKey)}
+              // A TRUTHFUL DURATION, not a date. Injuries and bans are
+              // counted in the club's own fixtures - a postponement must not
+              // heal anybody - so "3 matches" is the honest unit and a
+              // calendar estimate would be a guess dressed as a fact.
+              note={
+                current.injuryMatchesRemaining > 0
+                  ? t("playerProfile.outForMatches", { n: numbers.format(current.injuryMatchesRemaining) })
+                  : current.suspensionMatches > 0
+                    ? t("playerProfile.bannedForMatches", { n: numbers.format(current.suspensionMatches) })
+                    : undefined
+              }
+            />
             <Stat label={t("playerProfile.fitness")} value={`${numbers.format(current.fitness)}%`} />
             <Stat label={t("playerProfile.preferredFoot")} value={t(`squad.foot.${current.preferredFoot}` as TranslationKey)} />
           </div>

@@ -94,13 +94,24 @@ function makeTx(
       }),
       delete: jest.fn(),
       deleteMany: jest.fn(),
+      // removePlayerFromSquad now runs the canonical lineup repair, which
+      // reads the club's remaining squad. An empty squad is the right stub
+      // here: this suite is about the LIFECYCLE (development, aging,
+      // retirement, the ledger), and an empty pool makes the repair a no-op
+      // that cannot interfere with what it is measuring. The repair's own
+      // behaviour is proven against real PostgreSQL.
+      findMany: jest.fn(async () => []),
     },
     team: {
-      findUniqueOrThrow: jest.fn(async () => team),
+      findUniqueOrThrow: jest.fn(async () => ({ ...team, id: "team-1", formation: "4-4-2", customFormation: null })),
       update: jest.fn(async () => team),
     },
     transferListing: { updateMany: jest.fn(async () => ({ count: 1 })) },
-    lineupSlot: { deleteMany: jest.fn(async () => ({ count: 1 })) },
+    lineupSlot: {
+      deleteMany: jest.fn(async () => ({ count: 1 })),
+      findMany: jest.fn(async () => []),
+      createMany: jest.fn(async () => ({ count: 0 })),
+    },
     playerMatchStats: { deleteMany: jest.fn(), delete: jest.fn(), updateMany: jest.fn() },
     financialTransaction: { create: jest.fn(), findUnique: jest.fn() },
   }

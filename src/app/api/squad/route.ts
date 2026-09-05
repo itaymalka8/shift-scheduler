@@ -18,6 +18,7 @@ import {
   isFullbackOverlaps,
 } from "@/lib/players/tactics"
 import { computeRecommendedLineup } from "@/lib/players/recommend"
+import { isSelectable } from "@/lib/players/availability"
 
 async function getOwnTeam(userId: string) {
   return prisma.team.findUnique({ where: { userId } })
@@ -79,7 +80,16 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: "VALIDATION_ERROR" }, { status: 400 })
   }
 
-  const playerIds = new Set((await prisma.player.findMany({ where: { teamId: team.id }, select: { id: true } })).map((p) => p.id))
+  const ownedPlayers = await prisma.player.findMany({
+    where: { teamId: team.id },
+    select: { id: true, careerStatus: true, injuryMatchesRemaining: true, suspensionMatches: true },
+  })
+  const playerIds = new Set(ownedPlayers.map((p) => p.id))
+  // WHO MAY ACTUALLY BE PICKED, from the canonical contract - not a local
+  // reading of `status`. A manager must not be able to put an injured or
+  // suspended player into a starting slot and have the pre-match repair
+  // quietly undo it later; the mutation is refused at the door instead.
+  const selectableIds = new Set(ownedPlayers.filter(isSelectable).map((p) => p.id))
 
   function isOwnPlayerOrNull(value: unknown): value is string | null {
     return value === null || (typeof value === "string" && playerIds.has(value))
@@ -128,6 +138,9 @@ export async function PATCH(request: Request) {
         const playerId = entry?.playerId
         if (!Number.isInteger(slotIndex)) throw new Error("VALIDATION_ERROR")
         if (!isOwnPlayerOrNull(playerId)) throw new Error("VALIDATION_ERROR")
+        // A stable, separate code: this is not malformed input, it is a
+        // legal request the squad rules refuse, and the UI should say which.
+        if (playerId && !selectableIds.has(playerId)) throw new Error("PLAYER_UNAVAILABLE")
 
         await tx.lineupSlot.deleteMany({ where: { teamId: team.id, slotIndex } })
         if (playerId) {
@@ -182,6 +195,10 @@ export async function PATCH(request: Request) {
   } catch (err) {
     if (err instanceof Error && err.message === "VALIDATION_ERROR") {
       return NextResponse.json({ error: "VALIDATION_ERROR" }, { status: 400 })
+    }
+    // 409, not 400: the request is well formed, the squad rules just say no.
+    if (err instanceof Error && err.message === "PLAYER_UNAVAILABLE") {
+      return NextResponse.json({ error: "PLAYER_UNAVAILABLE" }, { status: 409 })
     }
     throw err
   }

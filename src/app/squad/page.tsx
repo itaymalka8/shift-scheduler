@@ -102,6 +102,8 @@ export default async function SquadPage() {
             potential: p.potential,
             fitness: p.fitness,
             status: p.status as "available" | "injured" | "suspended" | "unavailable",
+            injuryMatchesRemaining: p.injuryMatchesRemaining,
+            suspensionMatches: p.suspensionMatches,
             marketValue: p.marketValue,
             weeklySalary: p.weeklySalary,
             preferredFoot: p.preferredFoot as "left" | "right" | "both",

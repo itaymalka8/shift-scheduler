@@ -86,6 +86,12 @@ function makeTx(): Prisma.TransactionClient {
     },
     player: {
       findUnique: () => record("player.findUnique", makePlayer()),
+      // The canonical lineup repair now runs inside removePlayerFromSquad, so
+      // the stub has to answer the reads it makes. Returning an empty squad
+      // is the right shape here: this suite is about LOCK ORDER, not about
+      // which eleven the repair picks, and an empty pool makes the repair a
+      // no-op that cannot reorder anything.
+      findMany: () => record("player.findMany", []),
       update: () => record("player.update", makePlayer()),
       count: () => record("player.count", 0),
     },
@@ -99,10 +105,14 @@ function makeTx(): Prisma.TransactionClient {
       updateMany: () => record("listing.updateMany", { count: 1 }),
       create: () => record("listing.create", { ...makeListing() }),
     },
-    lineupSlot: { deleteMany: () => record("lineupSlot.deleteMany", { count: 0 }) },
+    lineupSlot: {
+      deleteMany: () => record("lineupSlot.deleteMany", { count: 0 }),
+      findMany: () => record("lineupSlot.findMany", []),
+      createMany: () => record("lineupSlot.createMany", { count: 0 }),
+    },
     team: {
       findUnique: () => record("team.findUnique", teamRoles),
-      findUniqueOrThrow: () => record("team.findUniqueOrThrow", teamRoles),
+      findUniqueOrThrow: () => record("team.findUniqueOrThrow", { ...teamRoles, id: SELLER_ID, formation: "4-4-2", customFormation: null }),
       update: () => record("team.update", teamRoles),
     },
     financialTransaction: {

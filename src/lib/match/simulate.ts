@@ -4,6 +4,7 @@ import { calculateStadiumCapacity } from "@/lib/stadium/metrics"
 import { calculateMatchStadiumRevenue, calculateAttendance } from "@/lib/stadium/attendance"
 import { calculateTeamTotalQuality } from "@/lib/players/quality"
 import { ensureStadiumForTeam } from "@/lib/stadium/actions"
+import { assertFixtureLineupsLegal, MatchPreflightError } from "./lineup-preflight"
 import { calculateHomeMatchExpenses, calculateAwayTravelCost } from "@/lib/economy/match-expenses"
 import { createFinancialTransaction } from "@/lib/economy/service"
 import { simulateMatch } from "./engine/engine"
@@ -55,6 +56,14 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
   const fixture = await prisma.fixture.findUnique({ where: { id: fixtureId } })
   if (!fixture || fixture.playedAt) return
   if (!fixture.scheduledAt || fixture.scheduledAt.getTime() > Date.now()) return
+
+  // FAIL CLOSED BEFORE ANYTHING IS SIMULATED. Both clubs are repaired through
+  // the canonical lineup service and then judged against the canonical legal
+  // XI; a club that still cannot field one throws MatchPreflightError here,
+  // which is BEFORE the snapshot, the engine, and every write below. The
+  // fixture keeps playedAt = null, so nothing partial exists and the match is
+  // still there to be played once the squad is fixed.
+  await prisma.$transaction((tx) => assertFixtureLineupsLegal(tx, fixtureId, [fixture.homeTeamId, fixture.awayTeamId]))
 
   const seed = fixture.matchSeed ?? generateMatchSeed()
   // A championship match - a two-club decider or any playoff fixture - is
@@ -268,13 +277,30 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
  * match gets played by this function running on its own schedule, not by
  * someone happening to look.
  */
-export async function processDueFixtures(): Promise<{ processedCount: number; fixtureIds: string[] }> {
+export async function processDueFixtures(): Promise<{
+  processedCount: number
+  fixtureIds: string[]
+  blocked: { fixtureId: string; code: string; detail: string }[]
+}> {
   const due = await prisma.fixture.findMany({
     where: { playedAt: null, scheduledAt: { lte: new Date() } },
     select: { id: true },
   })
+  const blocked: { fixtureId: string; code: string; detail: string }[] = []
   for (const fixture of due) {
-    await ensureFixtureSimulated(fixture.id)
+    try {
+      await ensureFixtureSimulated(fixture.id)
+    } catch (error) {
+      // A club that cannot field a legal XI blocks ITS OWN fixture and
+      // nothing else - the rest of the matchday still plays. Reported rather
+      // than swallowed, because a league quietly not playing matches is worse
+      // than one that says which club is short and why.
+      if (error instanceof MatchPreflightError) {
+        blocked.push({ fixtureId: fixture.id, code: error.code, detail: error.message })
+        continue
+      }
+      throw error
+    }
   }
-  return { processedCount: due.length, fixtureIds: due.map((f) => f.id) }
+  return { processedCount: due.length, fixtureIds: due.map((f) => f.id), blocked }
 }

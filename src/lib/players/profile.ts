@@ -81,6 +81,8 @@ export interface PlayerCurrentState {
   /** Squad availability (available / injured / suspended), not career status. */
   squadStatus: string
   injuryStatus: string | null
+  /** Club fixtures still to sit out, injured. Matches, never days - see availability.ts. */
+  injuryMatchesRemaining: number
   suspensionMatches: number
   fitness: number
   /** CURRENT ability, cached from the attributes. Never used to explain a past rating. */
@@ -147,6 +149,7 @@ const CURRENT_PLAYER_SELECT = {
   careerStatus: true,
   status: true,
   injuryStatus: true,
+  injuryMatchesRemaining: true,
   suspensionMatches: true,
   fitness: true,
   overall: true,
@@ -225,6 +228,7 @@ export async function loadPlayerProfile(playerId: string, now: Date = new Date()
     careerStatus: player.careerStatus,
     squadStatus: player.status,
     injuryStatus: player.injuryStatus,
+    injuryMatchesRemaining: player.injuryMatchesRemaining,
     suspensionMatches: player.suspensionMatches,
     fitness: player.fitness,
     overall: player.overall,

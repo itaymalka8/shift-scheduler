@@ -112,6 +112,9 @@ interface PlayerDTO {
   potential: number
   fitness: number
   status: PlayerStatus
+  /** Club fixtures still to sit out. Matches, never days - see availability.ts. */
+  injuryMatchesRemaining: number
+  suspensionMatches: number
   marketValue: number
   weeklySalary: number
   preferredFoot: "left" | "right" | "both"
@@ -1733,9 +1736,19 @@ export function SquadTacticsApp({
                         />
                         <Row
                           label={t("squad.status.starting")}
-                          value={t(
-                            `squad.status.${getDisplayStatus(expandedPlayer.status, startingIds.has(expandedPlayer.id))}` as TranslationKey
-                          )}
+                          value={
+                            // The status, plus how long it lasts when it
+                            // lasts at all - counted in this club's own
+                            // fixtures, which is the unit the ban and the
+                            // injury are actually served in.
+                            expandedPlayer.injuryMatchesRemaining > 0
+                              ? t("squad.unavailableInjured", { n: String(expandedPlayer.injuryMatchesRemaining) })
+                              : expandedPlayer.suspensionMatches > 0
+                                ? t("squad.unavailableSuspended", { n: String(expandedPlayer.suspensionMatches) })
+                                : t(
+                                    `squad.status.${getDisplayStatus(expandedPlayer.status, startingIds.has(expandedPlayer.id))}` as TranslationKey
+                                  )
+                          }
                         />
                         <Row label={t("squad.colFoot")} value={t(`squad.foot.${expandedPlayer.preferredFoot}` as TranslationKey)} />
                         {countryName && <Row label={t("squad.colNationality")} value={countryName} />}

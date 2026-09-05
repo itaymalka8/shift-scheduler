@@ -28,6 +28,7 @@ on:
           - prod:players:distribution
           - prod:players:samples
           - prod:players:directory-audit
+          - prod:players:availability-audit
           - prod:render:autodeploy:off
           - prod:backup:create
           - prod:backup:prune:execute

@@ -3,6 +3,7 @@ import { InsufficientFundsError } from "@/lib/finance/balance"
 import { TransferError } from "./errors"
 import { runSerializableTransaction } from "./retry"
 import { removePlayerFromSquad } from "./squad-cleanup"
+import { repairTeamLineup } from "@/lib/players/lineup-repair"
 import { ensureTransferWindowExists, getTransferWindowDefinition, isWithinTransferWindow } from "./window"
 import { lockPlayerRow } from "@/lib/players/locks"
 import { getActiveRosterCount, lockTeamRosters, MAX_ACTIVE_ROSTER_SIZE } from "@/lib/players/roster"
@@ -244,6 +245,13 @@ export async function purchaseTransferListing(input: PurchaseTransferListingInpu
       where: { id: player.id },
       data: { teamId: input.buyingTeamId, stintNumber: { increment: 1 } },
     })
+
+    // 15. The BUYING club's lineup, through the same canonical repair the
+    // selling side just ran. It only ever fills a vacancy - a slot the
+    // manager deliberately filled is never taken off them by a signing - so
+    // a club that bought a player because it was short is legal again the
+    // moment the transfer commits.
+    await repairTeamLineup(tx, input.buyingTeamId)
 
     return {
       listingId: listing.id,

@@ -151,37 +151,55 @@ enum PlayerCareerStatus {
 }
 
 model Player {
-  id                 String             @id @default(cuid())
+  id                     String             @id @default(cuid())
   // Current ownership only - null means Free Agent (released) or Retired.
   // No history is kept here; a past-teams record would be a separate model
   // if ever needed.
-  teamId             String?
-  team               Team?              @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  teamId                 String?
+  team                   Team?              @relation(fields: [teamId], references: [id], onDelete: Cascade)
   // Career lifecycle, independent of ownership (teamId) and of match-day
   // availability (the existing `status` field below, e.g. injured/suspended).
-  careerStatus       PlayerCareerStatus @default(ACTIVE)
+  careerStatus           PlayerCareerStatus @default(ACTIVE)
   // Counts ownership episodes - increments only when the player enters a
   // new team's ownership (Purchase, or a future signing path). Release does
   // NOT increment it: it stays the same stint the player was released from,
   // so RELEASE_<playerId>_<stintNumber> always names the stint that ended.
-  stintNumber        Int                @default(1)
-  firstName          String
-  lastName           String
-  age                Int
-  overall            Int
-  potential          Int
-  primaryPosition    String
-  secondaryPositions String[]           @default([])
-  fitness            Int                @default(100)
-  status             String             @default("available")
-  marketValue        Int
-  weeklySalary       Int                @default(0)
-  injuryStatus       String?
-  suspensionMatches  Int                @default(0)
-  preferredFoot      String
-  nationality        String
-  shirtNumber        Int
-  createdAt          DateTime           @default(now())
+  stintNumber            Int                @default(1)
+  firstName              String
+  lastName               String
+  age                    Int
+  overall                Int
+  potential              Int
+  primaryPosition        String
+  secondaryPositions     String[]           @default([])
+  // MATCH-DAY CONDITION, 1-100. Moved only by the match-consequence
+  // activation step (src/lib/match/consequence-service.ts): every player of a
+  // club recovers when that club's fixture becomes publicly finished, and
+  // everyone who actually appeared pays a cost on top. Never touched by a
+  // page load, and never by the simulation itself.
+  fitness                Int                @default(100)
+  // DERIVED, SYNCHRONISED PRESENTATION STATE - never the authority.
+  // The authority is (careerStatus, injuryMatchesRemaining,
+  // suspensionMatches); this column is what derivePlayerStatus() makes of
+  // them, written in the same statement that moves a counter so the two can
+  // never disagree. See src/lib/players/availability.ts.
+  status                 String             @default("available")
+  marketValue            Int
+  weeklySalary           Int                @default(0)
+  // Free-text colour for the CURRENT injury, for display only. It has never
+  // carried a duration and still does not: injuryMatchesRemaining does.
+  injuryStatus           String?
+  // HOW MANY MORE OF THEIR CLUB'S OFFICIAL FIXTURES THIS PLAYER MUST SIT OUT.
+  // Counted in matches rather than days on purpose - a postponed fixture must
+  // not serve a ban merely because time passed - which is exactly the model
+  // suspensionMatches below already uses. Decremented by the same activation
+  // step, once per club fixture the player did not appear in.
+  injuryMatchesRemaining Int                @default(0)
+  suspensionMatches      Int                @default(0)
+  preferredFoot          String
+  nationality            String
+  shirtNumber            Int
+  createdAt              DateTime           @default(now())
 
   // Attributes (1-100). Overall is never set directly - it's always
   // calculatePlayerOverall(this) run at generation time and cached, per the
@@ -647,31 +665,31 @@ enum PlayoffPhase {
 }
 
 model Fixture {
-  id                String               @id @default(cuid())
-  divisionId        String
-  division          Division             @relation(fields: [divisionId], references: [id], onDelete: Restrict)
-  matchday          Int
-  homeTeamId        String
-  homeTeam          Team                 @relation("HomeFixtures", fields: [homeTeamId], references: [id], onDelete: Restrict)
-  awayTeamId        String
-  awayTeam          Team                 @relation("AwayFixtures", fields: [awayTeamId], references: [id], onDelete: Restrict)
+  id                    String               @id @default(cuid())
+  divisionId            String
+  division              Division             @relation(fields: [divisionId], references: [id], onDelete: Restrict)
+  matchday              Int
+  homeTeamId            String
+  homeTeam              Team                 @relation("HomeFixtures", fields: [homeTeamId], references: [id], onDelete: Restrict)
+  awayTeamId            String
+  awayTeam              Team                 @relation("AwayFixtures", fields: [awayTeamId], references: [id], onDelete: Restrict)
   // NOT NULL with a constant default, so every fixture that already exists
   // is a league fixture by definition and the migration rewrites no rows.
-  stage             FixtureStage         @default(LEAGUE)
+  stage                 FixtureStage         @default(LEAGUE)
   // Set on TITLE_PLAYOFF fixtures and on nothing else - CHECK constraints
   // enforce both directions. A two-club TITLE_DECIDER deliberately has no
   // playoff: it is one match, not a competition.
-  playoffId         String?
-  playoff           ChampionshipPlayoff? @relation(fields: [playoffId], references: [id], onDelete: Restrict)
-  playoffPhase      PlayoffPhase?
+  playoffId             String?
+  playoff               ChampionshipPlayoff? @relation(fields: [playoffId], references: [id], onDelete: Restrict)
+  playoffPhase          PlayoffPhase?
   // The round WITHIN its phase: 1..3 for ROUND_ROBIN (capped by a CHECK, so
   // a fourth round-robin round is unstorable), 1..ceil(log2(n)) for KNOCKOUT.
   //
   // Deliberately NOT matchday. matchday keeps its own meaning - the index of
   // a slot in the Mon/Wed/Sat calendar, which computeMatchdayDate is defined
   // on - and one playoff round can span several matchdays.
-  playoffRound      Int?
-  homeScore         Int?
+  playoffRound          Int?
+  homeScore             Int?
   // PENALTY SHOOTOUT, and only that.
   //
   // Both null for every league match, and for a decider settled inside the
@@ -684,27 +702,40 @@ model Fixture {
   // migration): both-or-neither, TITLE_DECIDER only, and never equal. They
   // are constraints rather than application rules because a wrong value
   // here would silently name the wrong champion.
-  homeShootoutScore Int?
-  awayShootoutScore Int?
-  awayScore         Int?
-  attendance        Int?
-  homeRevenue       Int?
-  homeMatchExpense  Int?
+  homeShootoutScore     Int?
+  awayShootoutScore     Int?
+  awayScore             Int?
+  attendance            Int?
+  homeRevenue           Int?
+  homeMatchExpense      Int?
   // Seeds the match engine's RNG, so re-running a fixture's simulation
   // from the same snapshot always produces the identical match.
-  matchSeed         String?
+  matchSeed             String?
   // Team-level match statistics, as produced by the engine (possession,
   // shots, corners, ...). Stored as JSON since it's a read-only result
   // blob the engine defines, never queried field-by-field.
-  homeStats         Json?
-  awayStats         Json?
-  scheduledAt       DateTime?
-  playedAt          DateTime?
-  createdAt         DateTime             @default(now())
-  events            MatchEvent[]
-  playerStats       PlayerMatchStats[]
+  homeStats             Json?
+  awayStats             Json?
+  scheduledAt           DateTime?
+  playedAt              DateTime?
+  // WHEN THIS FIXTURE'S PLAYER CONSEQUENCES WERE APPLIED - the exactly-once
+  // ledger for fitness, injuries and suspensions, and the reason they cannot
+  // spoil a live match.
+  //
+  // playedAt is set at KICKOFF (the engine writes the whole match at once),
+  // so it cannot gate anything a viewer must not see yet. This column is set
+  // only once the fixture is PUBLICLY finished - the same
+  // `scheduledAt <= now - MATCH_REAL_DURATION_MINUTES` rule the Player
+  // Profile already uses - so no Player row moves while the match is still
+  // on screen. A NULL here on a played, publicly-finished fixture is work
+  // still to do; the conditional UPDATE that sets it is what makes a retried
+  // cron run a no-op rather than a second deduction.
+  consequencesAppliedAt DateTime?
+  createdAt             DateTime             @default(now())
+  events                MatchEvent[]
+  playerStats           PlayerMatchStats[]
   // Set only on a TITLE_DECIDER that actually settled a title.
-  decidedChampion   SeasonChampion?
+  decidedChampion       SeasonChampion?
 
   // Postgres does not index a foreign key on its own, so until now this
   // table had no index at all beyond its primary key and every read below
@@ -735,6 +766,12 @@ model Fixture {
   // piece of invisible drift like the two partial UNIQUE indexes already
   // documented above - not worth it for a table this size.
   @@index([playedAt, scheduledAt])
+  // The consequence activator's exact predicate: `consequencesAppliedAt IS
+  // NULL AND scheduledAt <= cutoff`. The NULL leads, for the same reason
+  // playedAt leads above - IS NULL is equality-shaped and seeks straight to
+  // the outstanding set, which stays small, while every already-activated
+  // fixture (eventually almost all of them) is skipped without being read.
+  @@index([consequencesAppliedAt, scheduledAt])
 }
 
 // One row per player per match they appeared in - the raw record every

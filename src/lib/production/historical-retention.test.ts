@@ -273,15 +273,22 @@ describe("schema.prisma and the migration match the contract", () => {
   })
 
   it("schema.prisma agrees: the six relations are Restrict", () => {
+    // Matched on the DECLARATION, not on its column padding. `prisma format`
+    // re-aligns a model's whitespace whenever a longer field name is added to
+    // it, so an exact-spacing assertion here fails on a formatting change
+    // that altered no relation at all - which is precisely what it did the
+    // first time a column was added to Fixture. The relation itself is the
+    // contract; the alignment is not.
+    const collapsed = schema.replace(/[ \t]+/g, " ")
     for (const line of [
-      'division          Division             @relation(fields: [divisionId], references: [id], onDelete: Restrict)',
-      'homeTeam          Team                 @relation("HomeFixtures", fields: [homeTeamId], references: [id], onDelete: Restrict)',
-      'awayTeam          Team                 @relation("AwayFixtures", fields: [awayTeamId], references: [id], onDelete: Restrict)',
+      "division Division @relation(fields: [divisionId], references: [id], onDelete: Restrict)",
+      'homeTeam Team @relation("HomeFixtures", fields: [homeTeamId], references: [id], onDelete: Restrict)',
+      'awayTeam Team @relation("AwayFixtures", fields: [awayTeamId], references: [id], onDelete: Restrict)',
     ]) {
-      expect(schema).toContain(line)
+      expect(collapsed).toContain(line)
     }
     // The two fixture cascades survive in the schema too.
-    expect(schema).toContain('fixture           Fixture  @relation(fields: [fixtureId], references: [id], onDelete: Cascade)')
+    expect(collapsed).toContain("fixture Fixture @relation(fields: [fixtureId], references: [id], onDelete: Cascade)")
   })
 
   it("MatchEvent still has NO foreign key on playerId, and no name snapshot", () => {

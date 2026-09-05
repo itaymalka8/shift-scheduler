@@ -31,6 +31,7 @@
  * Run with: npx tsx scripts/process-scheduled-jobs.ts
  */
 import { processDueFixtures } from "../src/lib/match/simulate"
+import { activateDueMatchConsequences } from "../src/lib/match/consequence-service"
 import { expireDueTransferListings } from "../src/lib/transfers/expiration"
 import { runSeasonEndOrchestratorForAllSeasons } from "../src/lib/seasons/orchestrator"
 import { prisma } from "../src/lib/prisma"
@@ -40,6 +41,8 @@ async function main() {
   const failedSubsystems: string[] = []
 
   let fixturesObserved: number | null = null
+  let fixturesBlocked = 0
+  let consequencesApplied: number | null = null
   let listingsExpired: number | null = null
   let seasonsChecked: number | null = null
   let seasonTransitions: number | null = null
@@ -56,12 +59,47 @@ async function main() {
     // stays correct either way (a fixture is only ever really played
     // once) - only the wording below is adjusted, to never claim this
     // Runner itself simulated a fixture it may not actually have.
-    const { processedCount } = await processDueFixtures()
+    const { processedCount, blocked } = await processDueFixtures()
     fixturesObserved = processedCount
+    fixturesBlocked = blocked.length
     console.info(`Fixtures due observed: ${processedCount}`)
+    // A blocked fixture is a club that cannot field a legal XI. It is NOT a
+    // crash and it does not stop the matchday - but it must be loud, because
+    // the alternative this replaces was simulating eight against eleven.
+    for (const entry of blocked) {
+      console.error(`Fixture ${entry.fixtureId} BLOCKED (${entry.code}): ${entry.detail}`)
+    }
+    if (blocked.length > 0) failedSubsystems.push("lineups")
   } catch (error) {
     failedSubsystems.push("fixtures")
     console.error("Fixture processing failed:", error)
+  }
+
+  // --- A2. Match consequence activation -----------------------------------
+  // Runs AFTER fixture processing and BEFORE everything else, because a match
+  // played earlier in this same tick may already be publicly finished (the
+  // cron can be late), and a ban served here must be served before the
+  // season orchestrator looks at anything.
+  //
+  // Fixture-driven and idempotent: it selects only fixtures that are played,
+  // publicly finished and not yet applied, and each one is applied under its
+  // own row lock behind Fixture.consequencesAppliedAt. Running this twice in
+  // a row deducts no fitness twice and serves no ban twice.
+  try {
+    const consequences = await activateDueMatchConsequences()
+    consequencesApplied = consequences.fixturesApplied
+    console.info(
+      `Match consequences activated: ${consequences.fixturesApplied}/${consequences.fixturesFound} fixture(s), ` +
+        `${consequences.playersUpdated} player(s), ${consequences.injuriesStarted} injury(ies), ` +
+        `${consequences.suspensionsAdded} suspension(s)`
+    )
+    for (const failure of consequences.failures) {
+      console.error(`Consequence activation failed for fixture ${failure.fixtureId}:`, failure.error)
+    }
+    if (consequences.failures.length > 0) failedSubsystems.push("consequences")
+  } catch (error) {
+    failedSubsystems.push("consequences")
+    console.error("Match consequence activation failed:", error)
   }
 
   // --- B. Transfer scheduled jobs -----------------------------------------
@@ -109,6 +147,8 @@ async function main() {
     [
       "Scheduled run summary:",
       `  Fixtures processed:        ${na(fixturesObserved)}`,
+      `  Fixtures blocked (XI):     ${fixturesBlocked}`,
+      `  Consequences activated:    ${na(consequencesApplied)}`,
       `  Transfer listings expired: ${na(listingsExpired)}`,
       `  Active seasons checked:    ${na(seasonsChecked)}`,
       `  Season transitions:        ${na(seasonTransitions)}`,
