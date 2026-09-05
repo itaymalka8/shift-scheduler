@@ -234,3 +234,61 @@ describe("the clock is fixed UTC and DST-unaware, on purpose", () => {
     expect((after.getTime() - before.getTime()) % MS_PER_WEEK).toBe(0)
   })
 })
+
+describe("THE FIRST AUTONOMOUS PAYROLL LANDS ON THE BOUNDARY ITSELF", () => {
+  /**
+   * The due rule reads `instant >= getFirstPayrollDueAfter(activationStart)`,
+   * and `getFirstPayrollDueAfter` is the function that pushes a club born at
+   * 13:01 into the following week. If it ever pushed the BOUNDARY into the
+   * following week too, the first autonomous payroll would silently slip from
+   * 2026-09-10 to 2026-09-17 and nothing in a log would say so.
+   *
+   * Every assertion below is written against the LITERAL instant and the
+   * LITERAL week key rather than against arithmetic derived from the constant,
+   * so an off-by-one-week regression cannot move the expectation with it.
+   */
+  const LITERAL_BOUNDARY = new Date("2026-09-10T13:00:00.000Z")
+  const ancient = { createdAt: new Date("2026-08-01T00:00:00.000Z") }
+
+  it("the committed constant is the instant this suite reasons about", () => {
+    expect(PAYROLL_AUTOMATION_START.toISOString()).toBe("2026-09-10T13:00:00.000Z")
+    expect(LITERAL_BOUNDARY.getUTCDay()).toBe(PAYROLL_WEEKDAY)
+  })
+
+  it("getFirstPayrollDueAfter(boundary) returns the boundary, NOT a week later", () => {
+    expect(getFirstPayrollDueAfter(LITERAL_BOUNDARY).toISOString()).toBe("2026-09-10T13:00:00.000Z")
+    expect(getFirstPayrollDueAfter(LITERAL_BOUNDARY).toISOString()).not.toBe("2026-09-17T13:00:00.000Z")
+  })
+
+  it("the boundary week is 2026_W37, keyed PAYROLL_2026_W37", () => {
+    expect(payrollWeekKey(LITERAL_BOUNDARY)).toBe("2026_W37")
+    expect(payrollReferenceId(payrollWeekKey(LITERAL_BOUNDARY))).toBe("PAYROLL_2026_W37")
+  })
+
+  it("with now === activationStart === the boundary, 2026_W37 is due", () => {
+    expect(isPayrollDueForTeam(LITERAL_BOUNDARY, ancient, LITERAL_BOUNDARY)).toBe(true)
+  })
+
+  it("settleDuePayroll's window offers exactly PAYROLL_2026_W37 at that instant", () => {
+    // settleDuePayroll settles precisely the instants payrollWindow returns.
+    const window = payrollWindow(LITERAL_BOUNDARY, LITERAL_BOUNDARY)
+    expect(window.instants.map((i) => payrollReferenceId(payrollWeekKey(i)))).toEqual(["PAYROLL_2026_W37"])
+    expect(window.weeksOutsideWindow).toBe(0)
+  })
+
+  it("one millisecond earlier there is nothing to settle at all", () => {
+    const window = payrollWindow(new Date(LITERAL_BOUNDARY.getTime() - 1), LITERAL_BOUNDARY)
+    expect(window.instants).toEqual([])
+  })
+
+  it("2026_W36 - the week the one legacy ledger row belongs to - is never due", () => {
+    const previous = new Date("2026-09-03T13:00:00.000Z")
+    expect(payrollWeekKey(previous)).toBe("2026_W36")
+    expect(isPayrollDueForTeam(previous, ancient, LITERAL_BOUNDARY)).toBe(false)
+  })
+
+  it("a tick that arrives late still settles W37 rather than skipping it", () => {
+    const window = payrollWindow(new Date("2026-09-17T13:00:00.000Z"), LITERAL_BOUNDARY)
+    expect(window.instants.map((i) => payrollWeekKey(i))).toEqual(["2026_W37", "2026_W38"])
+  })
+})
