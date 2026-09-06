@@ -782,7 +782,7 @@ async function main() {
     /** Minimise the WORST deviation across the three horizons, over the full 2-D box. */
     const minimax = (traj: Trajectory): GridPoint => {
       let best: GridPoint | null = null
-      for (let sv = 0.60; sv <= 1.0001; sv += 0.01) {
+      for (let sv = 0.60; sv <= 1.4001; sv += 0.01) {
         for (let k = 0; k <= 0.6001; k += 0.01) {
           const p = pointOn(traj, P(Number(sv.toFixed(4)), Number(k.toFixed(4))))
           if (!best || p.worstDeviation < best.worstDeviation) best = p
@@ -821,7 +821,7 @@ async function main() {
     console.info("  grows against a flat wage bill and the economy is NOT stationary. No pair of")
     console.info("  time-invariant constants can hold a target that moves.")
 
-    let chosen: { regime: Regime; point: GridPoint } | null = null
+    let chosen: { regime: Regime; point: GridPoint; compression: number; reprice: boolean } | null = null
     const regimeSummaries: { label: string; best: GridPoint; feasibleCount: number; minimax: GridPoint }[] = []
 
     for (const regime of regimes) {
@@ -853,7 +853,7 @@ async function main() {
         minimax: mm,
       })
       console.info(
-        `    feasible ridge points: ${feasible.length}.  BEST ANYWHERE in salary 0.60-1.00 x sponsor 0.00-0.60,` +
+        `    feasible ridge points: ${feasible.length}.  BEST ANYWHERE in salary 0.60-1.40 x sponsor 0.00-0.60,` +
           ` minimising the WORST horizon:`
       )
       console.info(
@@ -866,7 +866,7 @@ async function main() {
         // what separates them is how close the weakest club ever comes to zero.
         const within10 = feasible.filter((p) => p.worstDeviation <= 0.1)
         const pool = within10.length > 0 ? within10 : feasible
-        chosen = { regime, point: [...pool].sort((a, b) => b.minBalanceEver - a.minBalanceEver)[0] }
+        chosen = { regime, point: [...pool].sort((a, b) => b.minBalanceEver - a.minBalanceEver)[0], compression: 0, reprice: regime.reprice }
         console.info(`    FEASIBLE BAND (every point holds all three horizons AND leaves no club negative):`)
         console.info(`      ${"salary".padStart(7)}${"sponsorK".padStart(11)}${"worst dev".padStart(11)}${"min balance ever".padStart(18)}`)
         for (const p of feasible) {
@@ -906,22 +906,29 @@ async function main() {
       for (const c of [0, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4]) {
         REPRICE = repriceMode
         COMPRESSION = c
-        let bestHere: GridPoint | null = null
-        for (let sv = 0.6; sv <= 1.0001; sv += 0.02) {
+        let inBand: GridPoint | null = null
+        let closest: GridPoint | null = null
+        // The salary box reaches ABOVE 1.0 on purpose: compression pulls the
+        // expensive tail down hard, so the level that balances the books at a
+        // high c can sit above today's curve rather than below it.
+        for (let sv = 0.6; sv <= 1.4001; sv += 0.02) {
           for (let k = 0; k <= 0.6001; k += 0.02) {
             const p = pointOn(trajRel, P(Number(sv.toFixed(4)), Number(k.toFixed(4))))
+            if (!closest || p.worstDeviation < closest.worstDeviation) closest = p
             if (p.worstDeviation > 0.15) continue
-            if (!bestHere || p.minBalanceEver > bestHere.minBalanceEver) bestHere = p
+            if (!inBand || p.minBalanceEver > inBand.minBalanceEver) inBand = p
           }
         }
-        if (!bestHere) continue
-        compressionResults.push({ c, point: bestHere, reprice: repriceMode })
+        const shown = inBand ?? closest
+        if (!shown) continue
+        if (inBand) compressionResults.push({ c, point: inBand, reprice: repriceMode })
         console.info(
-          `    ${c.toFixed(2).padStart(6)}${bestHere.salaryScale.toFixed(3).padStart(9)}${bestHere.sponsorK.toFixed(3).padStart(10)}` +
-            `${(bestHere.worstDeviation * 100).toFixed(2).padStart(10)}%${bestHere.dev5.toFixed(1).padStart(8)}${bestHere.dev10.toFixed(1).padStart(8)}` +
-            `${bestHere.dev20.toFixed(1).padStart(8)}${fmt(bestHere.minBalanceEver).padStart(18)}` +
-            `${(bestHere.feasible ? "YES" : "no").padStart(10)}` +
-            (repriceMode ? "   (re-priced)" : "")
+          `    ${c.toFixed(2).padStart(6)}${shown.salaryScale.toFixed(3).padStart(9)}${shown.sponsorK.toFixed(3).padStart(10)}` +
+            `${(shown.worstDeviation * 100).toFixed(2).padStart(10)}%${shown.dev5.toFixed(1).padStart(8)}${shown.dev10.toFixed(1).padStart(8)}` +
+            `${shown.dev20.toFixed(1).padStart(8)}${fmt(shown.minBalanceEver).padStart(18)}` +
+            `${(shown.feasible ? "YES" : "no").padStart(10)}` +
+            (repriceMode ? "   re-priced" : "            ") +
+            (inBand ? "" : "  [no point inside the band at this c - closest shown]")
         )
       }
     }
@@ -932,7 +939,12 @@ async function main() {
       const pick = feasibleCompression.sort((a, b) => a.c - b.c || b.point.minBalanceEver - a.point.minBalanceEver)[0]
       REPRICE = pick.reprice
       COMPRESSION = pick.c
-      chosen = { regime: { label: `R4 + curve compression c=${pick.c}`, traj: trajRel, reprice: pick.reprice }, point: pick.point }
+      chosen = {
+        regime: { label: `R4 (league-relative) + salary-curve compression c=${pick.c}`, traj: trajRel, reprice: pick.reprice },
+        point: pick.point,
+        compression: pick.c,
+        reprice: pick.reprice,
+      }
       console.info(
         `  SMALLEST COMPRESSION THAT CLEARS BOTH OBJECTIVES: c=${pick.c}, salary ${pick.point.salaryScale.toFixed(3)}, ` +
           `sponsorK ${pick.point.sponsorK.toFixed(3)}${pick.reprice ? ", squads re-priced at activation" : ""}`
@@ -944,15 +956,19 @@ async function main() {
     if (!chosen) {
       const fallback = regimeSummaries.sort((a, b) => a.minimax.worstDeviation - b.minimax.worstDeviation)[0]
       const regime = regimes.find((r) => r.label === fallback.label)!
-      chosen = { regime, point: fallback.minimax }
+      chosen = { regime, point: fallback.minimax, compression: 0, reprice: regime.reprice }
       console.info("  NO REGIME PRODUCED A FEASIBLE POINT. Reporting the most stable regime and point found.")
     }
     const traj = chosen.regime.traj
-    REPRICE = chosen.regime.reprice
+    // Set from the CHOSEN point, never left wherever the last sweep iteration
+    // happened to leave them - otherwise every section below would describe an
+    // economy solved under one shape and evaluated under another.
+    REPRICE = chosen.reprice
+    COMPRESSION = chosen.compression
     const best = chosen.point
     console.info(
       `\n  SELECTED REGIME: ${chosen.regime.label.trim()}` +
-        `\n  SELECTED CONSTANTS: salary ${best.salaryScale.toFixed(3)}, sponsorK ${best.sponsorK.toFixed(4)}, ` +
+        `\n  SELECTED CONSTANTS: salary ${best.salaryScale.toFixed(3)}, compression ${chosen.compression}, sponsorK ${best.sponsorK.toFixed(4)}, ` +
         `worst deviation ${(best.worstDeviation * 100).toFixed(2)}%, minimum balance ever ${fmt(best.minBalanceEver)}`
     )
 
