@@ -53,6 +53,7 @@
     "prod:economy:activation": "tsx scripts/production/check-phase3r-activation.ts",
     "prod:economy:regression": "tsx scripts/production/economy-runtime-regression.ts",
     "proof:economy": "tsx scripts/proof/economy-proof.ts",
+    "proof:mutations": "tsx scripts/proof/mutation-suite.ts",
     "prod:payroll:activation-check": "tsx scripts/production/check-payroll-activation.ts"
   },
   "dependencies": {

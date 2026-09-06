@@ -46,6 +46,7 @@ const STADIUM_ACTIONS = read("src", "lib", "stadium", "actions.ts")
 const AS_OF = read("src", "lib", "stadium", "as-of.ts")
 const WEEKLY = read("src", "lib", "economy", "weekly-settlement.ts")
 const REPRICING = read("src", "lib", "economy", "salary-repricing.ts")
+const SEASON_TIER = read("src", "lib", "economy", "season-tier.ts")
 const SIMULATE = read("src", "lib", "match", "simulate.ts")
 const SNAPSHOT = read("src", "lib", "match", "engine", "build-snapshot.ts")
 
@@ -61,6 +62,14 @@ describe("ONE CLOCK: no page advances the economy", () => {
     expect(page).not.toContain("settleDuePayroll")
     expect(page).not.toContain("settlePayrollWeek")
     expect(page).not.toContain("processWeeklyPayroll")
+    // Phase 3R gave the week two more settlers and a repricing. The page must
+    // not be able to reach any of them either - a page that settles money is
+    // the defect this whole file exists to prevent, and adding a settler
+    // without adding it here is how it would come back.
+    expect(page).not.toContain("settleWeeklyEconomy")
+    expect(page).not.toContain("settleSponsorWeek")
+    expect(page).not.toContain("settleMaintenanceWeek")
+    expect(page).not.toContain("repriceLeagueSalaries")
   })
 
   it("the stadium page never settles construction", () => {
@@ -77,6 +86,10 @@ describe("ONE CLOCK: no page advances the economy", () => {
       ["src", "app", "transfers", "page.tsx"],
       ["src", "app", "matches", "page.tsx"],
       ["src", "app", "club", "page.tsx"],
+      // The two pages that DISPLAY money were missing from this list, which is
+      // exactly where a settler would be most tempting to add.
+      ["src", "app", "economy", "page.tsx"],
+      ["src", "app", "stadium", "page.tsx"],
       ["src", "app", "api", "stadium", "construction", "route.ts"],
       ["src", "app", "api", "squad", "route.ts"],
     ]) {
@@ -394,11 +407,18 @@ describe("EVERY PHASE 3R SETTLEMENT HAS THE SIX PROPERTIES A MONEY WRITER NEEDS"
   })
 
   it.each(settlements)("$name checks what is already settled before writing", ({ name }) => {
-    const section = WEEKLY.slice(
-      WEEKLY.indexOf(name === "sponsor" ? "settleSponsorWeek" : "settleMaintenanceWeek")
-    )
+    // SLICED PRECISELY, between the two function declarations. Slicing from the
+    // first mention of a name onwards reached into the OTHER settlement's body
+    // and passed on its evidence - which is a way of testing nothing that
+    // looks exactly like testing something.
+    const sponsorAt = WEEKLY.indexOf("export async function settleSponsorWeek")
+    const maintenanceAt = WEEKLY.indexOf("export async function settleMaintenanceWeek")
+    const runnerAt = WEEKLY.indexOf("export async function settleWeeklyEconomy")
+    const section =
+      name === "sponsor" ? WEEKLY.slice(sponsorAt, maintenanceAt) : WEEKLY.slice(maintenanceAt, runnerAt)
+    expect(section.length).toBeGreaterThan(500)
     expect(section).toContain("financialTransaction.findMany")
-    expect(section).toContain("alreadySettled")
+    expect(section).toContain("alreadySettled.has(")
   })
 
   it("both write in ascending team id order, the project's documented lock order", () => {
@@ -409,6 +429,32 @@ describe("EVERY PHASE 3R SETTLEMENT HAS THE SIX PROPERTIES A MONEY WRITER NEEDS"
     expect(WEEKLY).toContain("createFinancialTransaction(")
     expect(WEEKLY).not.toContain("adjustClubBalance")
     expect(WEEKLY).not.toContain("team.update")
+  })
+
+  it("neither branches on whether a club has a manager", () => {
+    // Human/BOT parity, asserted where it could break rather than only where it
+    // is computed: the settlement has both flags available on the Team rows it
+    // reads, so this is the file where a well-meaning "give real managers a
+    // bonus" would land.
+    expect(code(WEEKLY)).not.toContain("isBot")
+    expect(code(WEEKLY)).not.toMatch(/userId/)
+  })
+
+  it("reads the tier from season membership as of the instant, never from live season state", () => {
+    // Season.isActive moves when the orchestrator advances, so a settlement
+    // running a minute later could read a different season and pay a different
+    // sponsor for the same closed week. Season.createdAt is immutable.
+    expect(code(SEASON_TIER)).toContain("createdAt: { lte: instant }")
+    expect(code(SEASON_TIER)).not.toContain("isActive")
+    expect(code(SEASON_TIER)).toContain("divisionTeam.findMany")
+  })
+
+  it("settlement never rolls attendance, and the match never rolls it twice", () => {
+    // The single-roll fix, guarded at both ends: the snapshot is the only place
+    // a crowd is drawn, and settlement reads the breakdown it carries.
+    expect(code(SIMULATE)).not.toContain("calculateAttendance(")
+    expect(code(SIMULATE)).toContain("snapshot.attendanceBySeatType")
+    expect(code(SNAPSHOT).match(/resolveMatchAttendance\(/g) ?? []).toHaveLength(1)
   })
 
   it("neither opts out of a negative balance - they are mandatory charges", () => {

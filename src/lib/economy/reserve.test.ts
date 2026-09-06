@@ -81,13 +81,19 @@ describe("what the reserve is deliberately silent about", () => {
   })
 
   it("is consulted by both discretionary spends, and only those", () => {
-    for (const file of [
-      ["src", "lib", "transfers", "purchase.ts"],
-      ["src", "lib", "stadium", "actions.ts"],
-    ]) {
-      const source = read(...file)
-      expect(source).toContain("evaluateDiscretionarySpendForTeam")
-    }
+    // ASSERTS THE CALL AND ITS REFUSAL, not merely the identifier. A check for
+    // the name alone is satisfied by the import line, so deleting the call and
+    // leaving the import would have passed - which is precisely the mutation
+    // the negative suite used to find this.
+    const purchase = read("src", "lib", "transfers", "purchase.ts")
+    expect(purchase).toContain("await evaluateDiscretionarySpendForTeam(\n      tx,\n      input.buyingTeamId,")
+    expect(purchase).toContain("if (!reserve.allowed) {")
+    expect(purchase).toContain('throw new TransferError(\n        "OPERATING_RESERVE_REACHED"')
+
+    const stadium = read("src", "lib", "stadium", "actions.ts")
+    expect(stadium).toContain("await evaluateDiscretionarySpendForTeam(tx, teamId, team.balance, totalCost)")
+    expect(stadium).toContain("if (!reserve.allowed) {")
+    expect(stadium).toContain("throw new OperatingReserveError(")
   })
 
   it("release still charges its cost and still allows the balance to go negative", () => {
