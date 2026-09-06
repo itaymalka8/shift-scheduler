@@ -198,16 +198,23 @@ async function main() {
       "FK TeamEconomicState.teamId -> Team.id is ON DELETE RESTRICT",
       `confdeltype=${fkRows[0]?.confdeltype ?? "missing"}`
     )
+    // Quote-insensitive on purpose: PostgreSQL renders an identifier unquoted
+    // in indexdef unless it needs quoting, so "version" comes back bare while
+    // "teamId" keeps its quotes. An assertion that demanded quotes on both
+    // failed against a perfectly correct index - the schema was right and the
+    // check was wrong, which is the more dangerous way round.
+    const uniqueDef = uniqueRows[0]?.indexdef ?? ""
     record(
-      (uniqueRows[0]?.indexdef ?? "").includes("UNIQUE") && (uniqueRows[0]?.indexdef ?? "").includes('"version"'),
-      "UNIQUE(teamId, version) exists - the per-club total-order authority"
+      /UNIQUE INDEX/.test(uniqueDef) && /\("teamId",\s*"?version"?\)/.test(uniqueDef),
+      "UNIQUE(teamId, version) exists - the per-club total-order authority",
+      uniqueDef || "missing"
     )
     // The ORDER matters, not just the columns: the as-of read seeks to
     // (teamId, T) and walks BACKWARDS, so both sorts must be DESC or the walk
     // is a scan.
     const asOfDef = indexRows[0]?.indexdef ?? ""
     record(
-      /\("teamId",\s*"effectiveAt"\s+DESC,\s*"version"\s+DESC\)/.test(asOfDef),
+      /\("teamId",\s*"effectiveAt"\s+DESC,\s*"?version"?\s+DESC\)/.test(asOfDef),
       "as-of index is (teamId, effectiveAt DESC, version DESC)",
       asOfDef || "missing"
     )
