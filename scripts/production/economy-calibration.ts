@@ -92,6 +92,14 @@ const RANDOM_VARIANCE = 0.12
 /** R4: the starting stadium is exempt from upkeep. Only seats beyond it are charged. */
 const MAINTENANCE_EXEMPT_CAPACITY = calculateStadiumCapacity(DEFAULT_STARTING_SEATS) // 10,600
 const RESERVE_WEEKS = 4
+/**
+ * The pivot of the salary-curve transform. A wage AT this level is moved by the
+ * flat scale alone; wages above it are pulled down harder and wages below it
+ * pulled down less, in proportion to the compression exponent. 20,000/week sits
+ * just above Production's measured p75 player wage, so the compression acts on
+ * the expensive tail and barely touches an ordinary squad.
+ */
+const SALARY_PIVOT = 20_000
 
 export type AttendanceModel = "A" | "B" | "C"
 /** Model C's "fixed number of relevant players" - the size of a starting XI. */
@@ -381,6 +389,16 @@ export interface Params {
    * This rewrites no history: FinancialTransaction is untouched either way.
    */
   repriceAtStart: boolean
+  /**
+   * Shape, not level. 0 = a flat multiplier, which is all the previous audit
+   * considered. Above 0 the curve is compressed at the top:
+   *     w' = scale x PIVOT^c x w^(1-c)
+   * This is the continuous form of retuning SALARY_OVERALL_BANDS' upper bands
+   * downward while leaving the lower ones alone, and it exists because the
+   * gate is CAPPED by stadium capacity while the wage curve is not - so no
+   * flat multiplier can stop a squad that develops past the revenue ceiling.
+   */
+  salaryCompression: number
 }
 
 interface Horizon {
@@ -409,14 +427,20 @@ interface Evaluation {
   occupancySamples: number[]
 }
 
-function wageOf(state: SeasonClubState, scale: number, seasonIndex: number, reprice: boolean): number {
+function transformWage(canonical: number, scale: number, compression: number): number {
+  if (compression <= 0) return Math.round(canonical * scale)
+  const w = Math.max(1, canonical)
+  return Math.round(scale * Math.pow(SALARY_PIVOT, compression) * Math.pow(w, 1 - compression))
+}
+
+function wageOf(state: SeasonClubState, scale: number, seasonIndex: number, reprice: boolean, compression: number): number {
   if (!reprice && seasonIndex === 0 && state.storedWages) {
     // Season 1 runs on the wage rows Production actually holds. A retuned curve
     // does not rewrite existing Player.weeklySalary - the next season roll does.
     return state.storedWages.reduce((s, w) => s + w, 0)
   }
   let total = 0
-  for (const w of state.canonicalWages) total += Math.round(w * scale)
+  for (const w of state.canonicalWages) total += transformWage(w, scale, compression)
   return total
 }
 
@@ -436,7 +460,7 @@ function evaluate(
 
   for (let s = 0; s < traj.seasons.length; s++) {
     const row = traj.seasons[s]
-    const wages = row.map((st) => wageOf(st, params.salaryScale, s, params.repriceAtStart))
+    const wages = row.map((st) => wageOf(st, params.salaryScale, s, params.repriceAtStart, params.salaryCompression))
     const medianWage = median(wages)
     const sponsorBase = params.sponsorK * medianWage
     const multOf = (tier: number) => (tier === 1 ? params.tier1Mult : params.tier2Mult)
@@ -705,6 +729,7 @@ async function main() {
       }
     }
     let REPRICE = false
+    let COMPRESSION = 0
     const P = (salaryScale: number, sponsorK: number, tier1Mult = 1.25): Params => ({
       salaryScale,
       sponsorK,
@@ -712,6 +737,7 @@ async function main() {
       tier2Mult: 1,
       maintenanceOn: false,
       repriceAtStart: REPRICE,
+      salaryCompression: COMPRESSION,
     })
 
     /** For a fixed salary scale, the sponsor coefficient that zeroes 20-season drift. */
@@ -861,6 +887,60 @@ async function main() {
       )
     }
 
+    // ---- 2c. THE THIRD PARAMETER, FORCED BY THE MEASUREMENT ----------------
+    //
+    // Every regime above holds the LEAGUE inside the band and still leaves
+    // individual clubs deeply negative. That is not a level problem, it is a
+    // SHAPE problem: the gate is capped by stadium capacity while the salary
+    // curve is not, so a squad that develops past the revenue ceiling bleeds no
+    // matter what flat multiplier is applied to it. A scalar cannot fix a
+    // curve. So the search gains one more axis - compression of the expensive
+    // tail - and the objective it is judged on is the FULL one: stock inside
+    // +/-15% at all three horizons AND no club ever negative.
+    console.info("\n  --- 2c. SALARY CURVE COMPRESSION (best regime: league-relative neutral) ---")
+    console.info("  w' = scale x PIVOT^c x w^(1-c), PIVOT = 20,000/week. c=0 is a flat multiplier.")
+    console.info(`    ${"c".padStart(6)}${"salary".padStart(9)}${"sponsorK".padStart(10)}${"worst dev".padStart(11)}` +
+      `${"dev5".padStart(8)}${"dev10".padStart(8)}${"dev20".padStart(8)}${"min balance ever".padStart(18)}${"feasible".padStart(10)}`)
+    const compressionResults: { c: number; point: GridPoint; reprice: boolean }[] = []
+    for (const repriceMode of [false, true]) {
+      for (const c of [0, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4]) {
+        REPRICE = repriceMode
+        COMPRESSION = c
+        let bestHere: GridPoint | null = null
+        for (let sv = 0.6; sv <= 1.0001; sv += 0.02) {
+          for (let k = 0; k <= 0.6001; k += 0.02) {
+            const p = pointOn(trajRel, P(Number(sv.toFixed(4)), Number(k.toFixed(4))))
+            if (p.worstDeviation > 0.15) continue
+            if (!bestHere || p.minBalanceEver > bestHere.minBalanceEver) bestHere = p
+          }
+        }
+        if (!bestHere) continue
+        compressionResults.push({ c, point: bestHere, reprice: repriceMode })
+        console.info(
+          `    ${c.toFixed(2).padStart(6)}${bestHere.salaryScale.toFixed(3).padStart(9)}${bestHere.sponsorK.toFixed(3).padStart(10)}` +
+            `${(bestHere.worstDeviation * 100).toFixed(2).padStart(10)}%${bestHere.dev5.toFixed(1).padStart(8)}${bestHere.dev10.toFixed(1).padStart(8)}` +
+            `${bestHere.dev20.toFixed(1).padStart(8)}${fmt(bestHere.minBalanceEver).padStart(18)}` +
+            `${(bestHere.feasible ? "YES" : "no").padStart(10)}` +
+            (repriceMode ? "   (re-priced)" : "")
+        )
+      }
+    }
+    const feasibleCompression = compressionResults.filter((r) => r.point.feasible)
+    if (feasibleCompression.length > 0) {
+      // Prefer the SMALLEST compression that clears the objective: it is the
+      // least disturbance to a curve players and managers can already see.
+      const pick = feasibleCompression.sort((a, b) => a.c - b.c || b.point.minBalanceEver - a.point.minBalanceEver)[0]
+      REPRICE = pick.reprice
+      COMPRESSION = pick.c
+      chosen = { regime: { label: `R4 + curve compression c=${pick.c}`, traj: trajRel, reprice: pick.reprice }, point: pick.point }
+      console.info(
+        `  SMALLEST COMPRESSION THAT CLEARS BOTH OBJECTIVES: c=${pick.c}, salary ${pick.point.salaryScale.toFixed(3)}, ` +
+          `sponsorK ${pick.point.sponsorK.toFixed(3)}${pick.reprice ? ", squads re-priced at activation" : ""}`
+      )
+    } else {
+      console.info("  NO COMPRESSION VALUE CLEARED BOTH OBJECTIVES within the searched box.")
+    }
+
     if (!chosen) {
       const fallback = regimeSummaries.sort((a, b) => a.minimax.worstDeviation - b.minimax.worstDeviation)[0]
       const regime = regimes.find((r) => r.label === fallback.label)!
@@ -886,7 +966,7 @@ async function main() {
         `${"T1/wk".padStart(11)}${"T2/wk".padStart(11)}${"annual diff".padStart(13)}${"5s cum".padStart(13)}${"10s cum".padStart(13)}${"neg@20".padStart(8)}`
     )
     for (const t1 of [1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3]) {
-      const p: Params = { salaryScale: best.salaryScale, sponsorK: best.sponsorK, tier1Mult: t1, tier2Mult: 1, maintenanceOn: false, repriceAtStart: REPRICE }
+      const p: Params = { salaryScale: best.salaryScale, sponsorK: best.sponsorK, tier1Mult: t1, tier2Mult: 1, maintenanceOn: false, repriceAtStart: REPRICE, salaryCompression: COMPRESSION }
       const ev = evaluate(traj, p, HORIZONS)
       const h20 = ev.horizons.get(20)!
       const h5 = ev.horizons.get(5)!
@@ -906,7 +986,7 @@ async function main() {
     // 4. THE FINAL CANDIDATE, THREE SEEDS, WITH AND WITHOUT MAINTENANCE
     // ------------------------------------------------------------------
     console.info("\n=== 4. FINAL CANDIDATE ACROSS THREE DETERMINISTIC SEEDS ===")
-    const finalParams: Params = { salaryScale: best.salaryScale, sponsorK: best.sponsorK, tier1Mult: 1.25, tier2Mult: 1, maintenanceOn: false, repriceAtStart: REPRICE }
+    const finalParams: Params = { salaryScale: best.salaryScale, sponsorK: best.sponsorK, tier1Mult: 1.25, tier2Mult: 1, maintenanceOn: false, repriceAtStart: REPRICE, salaryCompression: COMPRESSION }
     console.info(`  salary scale ${finalParams.salaryScale.toFixed(3)}   sponsorK ${finalParams.sponsorK.toFixed(3)}   tier 1.25 / 1.00`)
     const SEEDS = ["phase3r-calibration", "phase3r-seed-b", "phase3r-seed-c"]
     const seedEvals: Evaluation[] = []
@@ -933,7 +1013,7 @@ async function main() {
     // 5. CONTRADICTION CHECK - the PREVIOUS audit's recommendation
     // ------------------------------------------------------------------
     console.info("\n=== 5. CONTRADICTION CHECK: s=0.81, k=0.50, tier 1.25 (the previous recommendation) ===")
-    const previous: Params = { salaryScale: 0.81, sponsorK: 0.5, tier1Mult: 1.25, tier2Mult: 1, maintenanceOn: false, repriceAtStart: REPRICE }
+    const previous: Params = { salaryScale: 0.81, sponsorK: 0.5, tier1Mult: 1.25, tier2Mult: 1, maintenanceOn: false, repriceAtStart: REPRICE, salaryCompression: 0 }
     printHorizons("PREVIOUS RECOMMENDATION, COMBINED", evaluate(traj, previous, HORIZONS))
     console.info("  the same pair with maintenance above 10,600 activated (no club has expanded, so it is a no-op today):")
     printHorizons("PREVIOUS + MAINTENANCE", evaluate(traj, { ...previous, maintenanceOn: true }, HORIZONS))
@@ -995,7 +1075,7 @@ async function main() {
           Math.round(BASE_MATCH_COST + COST_PER_CAPACITY * calculateStadiumCapacity(seatsSample) + COST_PER_SPECTATOR * attendance)) *
           HOME_PER_SEASON -
         AWAY_TRAVEL * AWAY_PER_SEASON
-      const wage = squad.reduce((s, p) => s + Math.round(canonicalWage(p) * finalParams.salaryScale), 0) * WEEKS_PER_SEASON
+      const wage = squad.reduce((s, p) => s + transformWage(canonicalWage(p), finalParams.salaryScale, finalParams.salaryCompression), 0) * WEEKS_PER_SEASON
       const mean = squad.reduce((s, p) => s + p.overall, 0) / squad.length
       const net = gate - wage + sponsorT2Season
       console.info(
@@ -1017,7 +1097,7 @@ async function main() {
           Math.round(BASE_MATCH_COST + COST_PER_CAPACITY * calculateStadiumCapacity(seatsSample) + COST_PER_SPECTATOR * attendance)) *
           HOME_PER_SEASON -
         AWAY_TRAVEL * AWAY_PER_SEASON
-      const wageWeek = medianSquad.reduce((sum, pl) => sum + Math.round(canonicalWage(pl) * finalParams.salaryScale), 0)
+      const wageWeek = medianSquad.reduce((sum, pl) => sum + transformWage(canonicalWage(pl), finalParams.salaryScale, finalParams.salaryCompression), 0)
       const breakEvenWeek = (gate + sponsorT2Season) / WEEKS_PER_SEASON
       console.info(
         `\n  MANAGERIAL HEADROOM for the median club: weekly wage ${fmt(wageWeek)}, break-even weekly wage ` +
@@ -1056,8 +1136,8 @@ async function main() {
     const cheapest = squads[Math.floor(squads.length / 2)].reduce((a, b) => (a.overall < b.overall ? a : b))
     console.info(
       `\n  RELEASE, allowed to take the balance below zero (R8): a median club's cheapest player` +
-        ` costs ${fmt(Math.round(canonicalWage(cheapest) * finalParams.salaryScale))} once and removes` +
-        ` ${fmt(Math.round(canonicalWage(cheapest) * finalParams.salaryScale) * WEEKS_PER_SEASON)} of wage per season.` +
+        ` costs ${fmt(transformWage(canonicalWage(cheapest), finalParams.salaryScale, finalParams.salaryCompression))} once and removes` +
+        ` ${fmt(transformWage(canonicalWage(cheapest), finalParams.salaryScale, finalParams.salaryCompression) * WEEKS_PER_SEASON)} of wage per season.` +
         `  Payback in weeks: 1. The roster floor of 16 and the positional minimums remain the binding constraint.`
     )
 
