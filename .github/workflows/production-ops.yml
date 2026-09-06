@@ -41,12 +41,41 @@ on:
           - prod:payroll:activation-check
           - prod:render:autodeploy:off
           - prod:backup:create
-          - prod:backup:prune:execute
           - prod:deploy:safe
       branch_ids:
-        description: "prod:backup:prune only - explicit comma-separated Neon branch ids to prune. Leave empty for an inventory + recommendation. There is no wildcard."
+        description: "prod:backup:prune only - explicit comma-separated Neon branch ids to inspect. This workflow can never DELETE a backup; see the note below."
         required: false
         type: string
+
+# ---------------------------------------------------------------------------
+# BACKUP DELETION IS NOT AVAILABLE FROM THIS WORKFLOW. DELIBERATELY.
+#
+# prod:backup:prune:execute permanently deletes Neon branches, which Neon
+# cannot undo and this project keeps no copy of. It used to be a dropdown
+# option whose only gate was "branch_ids must be non-empty" - and whoever
+# dispatches the workflow supplies branch_ids in the same dispatch, so the
+# gate was satisfied by the same action it was supposed to restrain. That is
+# how backups came to be deleted by an automated caller rather than by a
+# person who had read the plan.
+#
+# The obvious fix - a GitHub Environment with required reviewers on the
+# destructive job - is unavailable here: environment protection rules need
+# Pro/Team/Enterprise on a PRIVATE repository, and this one is private on a
+# personal account. So the capability is REMOVED rather than guarded, which
+# does not depend on a billing plan: deletion now requires a human running the
+# script in their own shell with NEON_API_KEY and PRODUCTION_WRITE_CONFIRM
+# present. An automated caller has neither.
+#
+# prod:backup:prune (no :execute) STAYS, and stays in the read-only job below,
+# where PRODUCTION_WRITE_CONFIRM is never in scope - so it cannot delete even
+# if asked to. It prints the full plan: branch ids, names, ages, which newer
+# recovery points supersede each one, and how many would remain.
+#
+# If the account is ever upgraded, restore the job WITH
+# `environment: production-backup-destructive` and required reviewers. That is
+# strictly stronger than this, because it is enforced runner-side and cannot
+# be satisfied by the dispatcher.
+# ---------------------------------------------------------------------------
 
 # Secrets come ONLY from this repository's GitHub Secrets
 # (Settings > Secrets and variables > Actions): RENDER_API_KEY,
@@ -59,20 +88,19 @@ on:
 
 jobs:
   # ---------------------------------------------------------------------
-  # Every read-only production command. The four commands that mutate
-  # Production - prod:deploy:safe, prod:render:autodeploy:off,
-  # prod:backup:create and prod:backup:prune:execute - are deliberately
-  # excluded here; each gets its own job below, because
-  # PRODUCTION_WRITE_CONFIRM must never be in scope for a read-only run.
-  # prod:backup:prune (no :execute) IS read-only and belongs here: without
-  # the confirmation in scope it cannot delete even if asked to.
+  # Every read-only production command. The three commands that mutate
+  # Production - prod:deploy:safe, prod:render:autodeploy:off and
+  # prod:backup:create - are deliberately excluded here; each gets its own job
+  # below, because PRODUCTION_WRITE_CONFIRM must never be in scope for a
+  # read-only run. prod:backup:prune (no :execute) IS read-only and belongs
+  # here: without the confirmation in scope it cannot delete even if asked to,
+  # and :execute is no longer reachable from this workflow at all.
   # ---------------------------------------------------------------------
   read-only:
     if: >-
       github.event.inputs.command != 'prod:deploy:safe' &&
       github.event.inputs.command != 'prod:render:autodeploy:off' &&
-      github.event.inputs.command != 'prod:backup:create' &&
-      github.event.inputs.command != 'prod:backup:prune:execute'
+      github.event.inputs.command != 'prod:backup:create'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -160,47 +188,6 @@ jobs:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
           PRODUCTION_WRITE_CONFIRM: I_UNDERSTAND_THIS_CHANGES_PRODUCTION
         run: npm run prod:backup:create
-
-  # ---------------------------------------------------------------------
-  # prod:backup:prune:execute only. DESTRUCTIVE: permanently deletes Neon
-  # backup branches, which Neon cannot undo and this project keeps no copy
-  # of. It runs ONLY with an explicit branch_ids allowlist - the step below
-  # refuses before npm is invoked when that input is empty, and the script
-  # itself refuses a wildcard anyway.
-  #
-  # Run prod:backup:prune (the read-only job) FIRST and read its plan. The
-  # ids you paste here should be the ones that dry run printed.
-  # ---------------------------------------------------------------------
-  backup-prune-execute:
-    if: github.event.inputs.command == 'prod:backup:prune:execute'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - run: npm ci
-
-      - name: Refuse an empty allowlist
-        env:
-          BRANCH_IDS: ${{ github.event.inputs.branch_ids }}
-        run: |
-          if [ -z "$BRANCH_IDS" ]; then
-            echo "REFUSED: prod:backup:prune:execute requires an explicit branch_ids allowlist."
-            echo "Run prod:backup:prune first to get the plan, then paste those ids in."
-            exit 1
-          fi
-          echo "Allowlist: $BRANCH_IDS"
-
-      - name: Run prod:backup:prune:execute
-        env:
-          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
-          PRUNE_BRANCH_IDS: ${{ github.event.inputs.branch_ids }}
-          PRODUCTION_WRITE_CONFIRM: I_UNDERSTAND_THIS_CHANGES_PRODUCTION
-        run: npm run prod:backup:prune:execute
 
   # ---------------------------------------------------------------------
   # prod:deploy:safe only. PRODUCTION_WRITE_CONFIRM is set ONLY in this

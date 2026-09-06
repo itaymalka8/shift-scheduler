@@ -51,8 +51,10 @@
     "prod:economy:confirm": "tsx scripts/production/economy-confirmation.ts",
     "prod:economy:recalibrate": "tsx scripts/production/economy-recalibration.ts",
     "prod:economy:activation": "tsx scripts/production/check-phase3r-activation.ts",
+    "prod:economy:baseline": "tsx scripts/production/economy-baseline.ts",
     "prod:economy:regression": "tsx scripts/production/economy-runtime-regression.ts",
     "proof:economy": "tsx scripts/proof/economy-proof.ts",
+    "proof:linearization": "tsx scripts/proof/linearization-proof.ts",
     "proof:mutations": "tsx scripts/proof/mutation-suite.ts",
     "prod:payroll:activation-check": "tsx scripts/production/check-payroll-activation.ts"
   },

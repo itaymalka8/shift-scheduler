@@ -107,6 +107,9 @@ async function main() {
   const { buildMatchSnapshot } = await import("../../src/lib/match/engine/build-snapshot")
   const { calculateMatchStadiumRevenue } = await import("../../src/lib/stadium/attendance")
   const { calculateHomeMatchExpenses } = await import("../../src/lib/economy/match-expenses")
+  const { resetProofDatabase } = await import("./reset")
+  const { acquireEconomyHistoryShared, appendTeamEconomicState } = await import("../../src/lib/economy/state-history")
+  const { lockTeamRoster } = await import("../../src/lib/players/roster")
 
   void appPrisma
 
@@ -120,14 +123,14 @@ async function main() {
     // SEED. Six clubs, two divisions, one season, real squads.
     // ------------------------------------------------------------------
     console.info("Seeding...")
-    // Order matters: children before parents, and every table the proof
-    // touches, so a re-run starts from the same place rather than from
-    // whatever the last run left.
-    await prisma.$executeRawUnsafe(`
-      TRUNCATE TABLE "FinancialTransaction", "StadiumConstructionJob", "Stadium", "LineupSlot",
-        "PlayerMatchStats", "MatchEvent", "Fixture", "DivisionTeam", "Division", "Player",
-        "Season", "Team", "User" RESTART IDENTITY CASCADE
-    `)
+    // DROP AND RE-MIGRATE, not TRUNCATE. TeamEconomicState refuses TRUNCATE at
+    // the database level - economic history is append-only, and that guard has
+    // to cover the one verb that row-level DELETE triggers do not see. Dropping
+    // the schema is not deleting rows, so no guard is consulted, and the reset
+    // is stronger: every proof run now also replays the migrations from nothing.
+    await prisma.$disconnect()
+    await resetProofDatabase(url)
+    await prisma.$connect()
 
     const season = await prisma.season.create({
       data: { countryCode: "IL", number: 1, createdAt: new Date(BOUNDARY.getTime() - 30 * 24 * 3600 * 1000) },
@@ -161,7 +164,41 @@ async function main() {
       })
       clubs.push({ id: team.id, isBot, tier })
     }
-    console.info(`  ${clubs.length} clubs, ${await prisma.player.count()} players\n`)
+    // THE SEASON'S OPENING LEAGUE FIXTURE. A season is tier-effective from the
+    // instant its football begins, so a season with divisions and membership
+    // but no LEAGUE fixture has no effective tiers at all - every club falls to
+    // the entry tier. That is the rule working, not a defect, and it is why
+    // this fixture exists: a real season has kicked off long before its first
+    // sponsor week, and the proof has to model a league that is actually being
+    // played rather than one that only exists on paper.
+    //
+    // Unplayed and past-dated: nothing in this proof scans for due fixtures,
+    // and section 12 creates its own fixture to simulate.
+    await prisma.fixture.create({
+      data: {
+        divisionId: tier1.id,
+        matchday: 1,
+        homeTeamId: clubs[0].id,
+        awayTeamId: clubs[1].id,
+        stage: "LEAGUE",
+        scheduledAt: new Date(BOUNDARY.getTime() - 25 * 24 * 3600 * 1000),
+      },
+    })
+
+    // THE BASELINE, exactly as Production does it: after the squads exist and
+    // strictly before the activation boundary. These clubs were inserted
+    // directly rather than through the registration path, so none of them has
+    // economic history yet - and without it every settlement below would fail
+    // closed, which is itself the correct behaviour and is asserted further
+    // down. Production runs prod:economy:baseline for the same reason.
+    for (const club of clubs) {
+      await prisma.$transaction(async (tx) => {
+        await acquireEconomyHistoryShared(tx)
+        await lockTeamRoster(tx, club.id)
+        await appendTeamEconomicState(tx, { teamId: club.id, reason: "baseline" })
+      })
+    }
+    console.info(`  ${clubs.length} clubs, ${await prisma.player.count()} players, ${clubs.length} baseline history rows\n`)
 
     // ------------------------------------------------------------------
     console.info("=== 1. SALARY REPRICING, PERSISTED ===")
@@ -385,13 +422,43 @@ async function main() {
       `${historicalSponsor.length} row(s) unchanged`
     )
 
+    // MEMBERSHIP ALONE DOES NOT MOVE THE MONEY, and this is the defect the
+    // first-LEAGUE-fixture authority exists to fix.
+    //
+    // Season 2's row and its complete membership now exist, but season 2 has
+    // not kicked off - exactly the state the offseason leaves the league in
+    // between PROMOTION_RELEGATION and CREATE_NEXT. Under the old
+    // Season.createdAt authority, a sponsor week settled in this interval would
+    // already have paid this club at its NEW tier, for football it had not yet
+    // played. It must still be paid on season 1's tiers.
+    const WEEK_5B = new Date(WEEK_5.getTime() + MS_PER_WEEK)
+    const beforeKickoff = await settleSponsorWeek(WEEK_5B)
+    const preKickoffAward = beforeKickoff.charges.find((c) => c.teamId === mover)?.amount ?? 0
+    const lastOldAward = historicalSponsor[historicalSponsor.length - 1]?.amount ?? 0
+    check(
+      preKickoffAward === lastOldAward,
+      "a season that exists but has not kicked off does NOT change tiers yet",
+      `${lastOldAward} -> ${preKickoffAward} (unchanged while season 2 has no LEAGUE fixture)`
+    )
+
+    // Season 2 kicks off. NOW its tiers govern.
     const WEEK_6 = new Date(WEEK_5.getTime() + 2 * MS_PER_WEEK)
+    await prisma.fixture.create({
+      data: {
+        divisionId: season2Tier1.id,
+        matchday: 1,
+        homeTeamId: clubs[0].id,
+        awayTeamId: clubs[1].id,
+        stage: "LEAGUE",
+        scheduledAt: new Date(WEEK_6.getTime() - 24 * 3600 * 1000),
+      },
+    })
     const afterPromotion = await settleSponsorWeek(WEEK_6)
     const moverAward = afterPromotion.charges.find((c) => c.teamId === mover)?.amount ?? 0
     const oldAward = historicalSponsor[historicalSponsor.length - 1]?.amount ?? 0
     check(
       moverAward > oldAward,
-      "the club's FUTURE sponsor reflects its new tier",
+      "once season 2 has kicked off, the club's FUTURE sponsor reflects its new tier",
       `${oldAward} in tier 2 -> ${moverAward} in tier 1`
     )
 

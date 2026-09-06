@@ -38,6 +38,7 @@ import { evaluateActivationReadiness } from "../../src/lib/production/payroll-ac
 import { SALARY_SCALE, SALARY_COMPRESSION, SALARY_COMPRESSION_NORMALISER } from "../../src/lib/economy/salary-curve"
 import { SPONSOR_COEFFICIENT, SPONSOR_TIER_MULTIPLIER } from "../../src/lib/economy/config"
 import { toSeatCounts } from "../../src/lib/stadium/config"
+import { teamsWithoutEconomicHistory, teamsWithHistoryStartingAtOrAfter } from "../../src/lib/economy/state-history"
 
 async function main() {
   console.info("=== prod:economy:activation ===")
@@ -145,6 +146,40 @@ async function main() {
       prisma.player.count({ where: { teamId: { not: null }, careerStatus: "ACTIVE" } }),
     ])
     console.info(`  clubs: ${teams}   active owned players to be repriced on the first tick: ${activePlayers}`)
+
+    // === STATE-HISTORY COVERAGE - FAILS CLOSED =============================
+    //
+    // From Phase 3R onward the sponsor settlement and every fixture's crowd are
+    // priced from TeamEconomicState as of the instant being settled, and that
+    // read fails closed: a club with no eligible row throws rather than being
+    // priced from current state. So a club without history is not a degraded
+    // settlement, it is a settlement that cannot happen - and discovering that
+    // during the first calibrated week would leave the whole league unsettled.
+    //
+    // Two things have to be true, and "some rows exist" is neither of them:
+    // every club must have history at all, and every club's history must BEGIN
+    // strictly before the boundary. A club baselined after activation would
+    // leave the activation instant itself unreconstructible.
+    console.info("\n=== STATE-HISTORY COVERAGE ===")
+    const [clubCount, withoutHistory, startingLate] = await Promise.all([
+      prisma.team.count(),
+      teamsWithoutEconomicHistory(prisma),
+      teamsWithHistoryStartingAtOrAfter(prisma, PHASE_3R_ACTIVATION_START),
+    ])
+    console.info(`  clubs: ${clubCount}   clubs with no economic history: ${withoutHistory.length}`)
+    for (const id of withoutHistory.slice(0, 10)) console.info(`    NO HISTORY ${id}`)
+    for (const id of startingLate.slice(0, 10)) console.info(`    HISTORY STARTS AT/AFTER THE BOUNDARY ${id}`)
+    record(
+      withoutHistory.length === 0,
+      `every club has economic history (${clubCount - withoutHistory.length}/${clubCount})`
+    )
+    record(
+      startingLate.length === 0,
+      `every club's history begins strictly before ${PHASE_3R_ACTIVATION_START.toISOString()}`
+    )
+    if (withoutHistory.length > 0 || startingLate.length > 0) {
+      console.info("  Run prod:economy:baseline before activation - see scripts/production/economy-baseline.ts")
+    }
 
     const failed = checks.filter((check) => !check.ok)
     console.info(`\nPHASE 3R ACTIVATION CHECK: ${failed.length === 0 ? "PASS" : "FAIL"}`)
