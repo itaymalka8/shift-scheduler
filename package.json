@@ -47,6 +47,7 @@
     "prod:season:next-verify": "tsx scripts/production/verify-next-season.ts",
     "prod:economy:audit": "tsx scripts/production/economy-audit.ts",
     "prod:economy:model": "tsx scripts/production/economy-model-audit.ts",
+    "prod:economy:calibrate": "tsx scripts/production/economy-calibration.ts",
     "prod:payroll:activation-check": "tsx scripts/production/check-payroll-activation.ts"
   },
   "dependencies": {
