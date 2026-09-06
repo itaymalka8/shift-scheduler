@@ -608,53 +608,67 @@ async function main() {
       return { q, o, gate, payroll, net: gate - payroll + sponsorSeason }
     }
     console.info(`  reference club: ${refSquad.length} players, mean Overall ${mean.toFixed(2)}, capacity ${fmt(calculateStadiumCapacity(refSeats))}`)
-    console.info(`  equivalent-quality squads (the n players closest to the squad mean are kept):`)
+
+    // TRULY EQUIVALENT SQUADS. Selecting "the n real players closest to the
+    // mean" does NOT hold quality constant - the real distribution's low tail
+    // sits further from the mean than its high tail, so shrinking the squad
+    // RAISES its average and the table then measures a quality change wearing a
+    // size change's clothes. Every player here is instead synthesised at the
+    // squad's own mean Overall, so the average is identical at every size by
+    // construction and ONLY headcount varies.
+    const uniformOverall = Math.round(mean)
+    const uniform = (n: number): SimPlayer[] =>
+      Array.from({ length: n }, () => ({
+        overall: uniformOverall,
+        age: 26,
+        potential: uniformOverall,
+        primaryPosition: "CM",
+        attributes: {},
+      }))
+    console.info(`  equivalent-quality squads: every player synthesised at Overall ${uniformOverall}, age 26, CM.`)
     console.info(
       `    ${"size".padEnd(6)}${"meanOVR".padStart(9)}${"quality".padStart(9)}${"occupancy".padStart(11)}` +
-        `${"season gate".padStart(13)}${"season payroll".padStart(16)}${"NET".padStart(13)}${"vs full".padStart(13)}`
+        `${"season gate".padStart(13)}${"season payroll".padStart(16)}${"NET".padStart(13)}${"vs 22".padStart(13)}`
     )
     let netBaseline: number | null = null
-    for (const size of [22, 21, 20, 19, 18, 17, 16].filter((n) => n <= refSquad.length)) {
-      const kept = [...refSquad].sort((a, b) => Math.abs(a.overall - mean) - Math.abs(b.overall - mean)).slice(0, size)
-      const r = seasonOf(kept)
+    for (const size of [22, 21, 20, 19, 18, 17, 16]) {
+      const r = seasonOf(uniform(size))
       if (netBaseline === null) netBaseline = r.net
-      const m = kept.reduce((s, p) => s + p.overall, 0) / kept.length
       console.info(
-        `    ${String(size).padEnd(6)}${m.toFixed(2).padStart(9)}${fmt(r.q).padStart(9)}${r.o.toFixed(4).padStart(11)}` +
+        `    ${String(size).padEnd(6)}${uniformOverall.toFixed(2).padStart(9)}${fmt(r.q).padStart(9)}${r.o.toFixed(4).padStart(11)}` +
           `${fmt(r.gate).padStart(13)}${fmt(-r.payroll).padStart(16)}${fmt(r.net).padStart(13)}${fmt(r.net - (netBaseline ?? r.net)).padStart(13)}`
       )
     }
 
-    console.info(`\n  RELEASING ONE PLAYER - the quality term must never PAY for an empty slot:`)
+    console.info(`\n  RELEASING ONE PLAYER FROM A FULL SQUAD - the boundary case is Overall ${REPLACEMENT_OVERALL}.`)
+    console.info(`  Arithmetically the quality change is exactly (${REPLACEMENT_OVERALL} - releasedOverall), so it is`)
+    console.info(`  ZERO at the replacement level, positive below it and negative above it: an empty slot`)
+    console.info(`  is never valued ABOVE the replacement player it stands in for. Measured:`)
     console.info(
       `    ${"released OVR".padEnd(14)}${"d quality".padStart(11)}${"d gate/season".padStart(15)}${"wage saved/season".padStart(19)}` +
         `${"d NET/season".padStart(14)}${"profitable?".padStart(13)}`
     )
-    const base = seasonOf(refSquad)
-    const pickNear = (target: number) =>
-      [...refSquad].sort((a, b) => Math.abs(a.overall - target) - Math.abs(b.overall - target))[0]
-    const probes = [
-      ["below 40", pickNear(30)],
-      ["equal 40", pickNear(REPLACEMENT_OVERALL)],
-      ["above 40", pickNear(65)],
-      ["well above", pickNear(85)],
-    ] as [string, SimPlayer][]
-    for (const [label, victim] of probes) {
-      const after = seasonOf(refSquad.filter((p) => p !== victim))
+    // The victim is SYNTHESISED at each probe Overall and swapped into the real
+    // squad's weakest slot, because the reference club happens to carry nobody
+    // near 40 - picking "the nearest real player" silently tested 28 twice.
+    const weakest = [...refSquad].sort((a, b) => a.overall - b.overall)[0]
+    for (const v of [28, 39, REPLACEMENT_OVERALL, 41, 53, 65, 86]) {
+      const victim: SimPlayer = { overall: v, age: 26, potential: v, primaryPosition: "CM", attributes: {} }
+      const withVictim = [...refSquad.filter((p) => p !== weakest), victim]
+      const before = seasonOf(withVictim)
+      const after = seasonOf(withVictim.filter((p) => p !== victim))
       const wageSaved = repriceFromCanonicalInputs(victim) * WEEKS_PER_SEASON
       console.info(
-        `    ${`${label} (OVR ${victim.overall})`.padEnd(14)}${fmt(after.q - base.q).padStart(11)}${fmt(after.gate - base.gate).padStart(15)}` +
-          `${fmt(wageSaved).padStart(19)}${fmt(after.net - base.net).padStart(14)}` +
-          `${(after.net - base.net > 0 ? "YES" : "no").padStart(13)}`
+        `    ${`OVR ${v}`.padEnd(14)}${fmt(after.q - before.q).padStart(11)}${fmt(after.gate - before.gate).padStart(15)}` +
+          `${fmt(wageSaved).padStart(19)}${fmt(after.net - before.net).padStart(14)}` +
+          `${(after.net - before.net > 0 ? "YES" : "no").padStart(13)}`
       )
     }
-    // The break-even Overall: below it a release pays, above it a release costs.
     const gatePerQualityPoint =
       QUALITY_INFLUENCE * (fullGate - COST_PER_SPECTATOR * calculateStadiumCapacity(refSeats)) * HOME_PER_SEASON
     let breakEven = REPLACEMENT_OVERALL
     for (let v = REPLACEMENT_OVERALL; v <= 100; v++) {
-      const sample = pickNear(v)
-      const wage = repriceFromCanonicalInputs({ ...sample, overall: v }) * WEEKS_PER_SEASON
+      const wage = repriceFromCanonicalInputs({ overall: v, age: 26, potential: v, primaryPosition: "CM" }) * WEEKS_PER_SEASON
       if ((v - REPLACEMENT_OVERALL) * gatePerQualityPoint >= wage) {
         breakEven = v
         break
@@ -662,7 +676,7 @@ async function main() {
     }
     console.info(
       `    gate value of one quality point: ${fmt(gatePerQualityPoint)}/season.  BREAK-EVEN Overall = ${breakEven}:` +
-        ` releasing a player rated ${breakEven} or better COSTS the club money.`
+        ` releasing a player rated ${breakEven} or better costs the club money outright.`
     )
 
     // ==================================================================
