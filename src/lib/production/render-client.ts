@@ -228,6 +228,32 @@ export function readCronDetails(raw: Record<string, unknown>): RenderCronDetails
   return { schedule, command }
 }
 
+/**
+ * A service's build and start commands. Render nests them under
+ * serviceDetails (webs put buildCommand under serviceDetails.envSpecificDetails
+ * on some API iterations, so both known locations are checked). Null - never a
+ * guess - when neither shape matches, so a drift check comparing two nulls
+ * reports "unreadable", not "unchanged".
+ */
+export interface RenderServiceCommands {
+  buildCommand: string | null
+  startCommand: string | null
+}
+
+export function readServiceCommands(raw: Record<string, unknown>): RenderServiceCommands {
+  const serviceDetails = (raw.serviceDetails && typeof raw.serviceDetails === "object" ? raw.serviceDetails : {}) as Record<string, unknown>
+  const envSpecific = (serviceDetails.envSpecificDetails && typeof serviceDetails.envSpecificDetails === "object"
+    ? serviceDetails.envSpecificDetails
+    : {}) as Record<string, unknown>
+  const pick = (key: string): string | null => {
+    if (typeof serviceDetails[key] === "string") return serviceDetails[key] as string
+    if (typeof envSpecific[key] === "string") return envSpecific[key] as string
+    if (typeof raw[key] === "string") return raw[key] as string
+    return null
+  }
+  return { buildCommand: pick("buildCommand"), startCommand: pick("startCommand") }
+}
+
 /** A web service's public URL lives under serviceDetails.url on the full service object. Returns null (never guesses) when the shape doesn't match. */
 export function readServiceUrl(raw: Record<string, unknown>): string | null {
   const serviceDetails = (raw.serviceDetails && typeof raw.serviceDetails === "object" ? raw.serviceDetails : {}) as Record<string, unknown>
@@ -264,9 +290,22 @@ export async function getDeploy(client: RenderClient, serviceId: string, deployI
   return readDeploySummary(raw)
 }
 
-/** Triggers a new deploy of the service's currently connected branch (an empty body deploys latest, per Render's documented Deploys API). */
-export async function createDeploy(client: RenderClient, serviceId: string): Promise<RenderDeploySummary> {
-  const raw = await renderFetch<unknown>(client, `/services/${serviceId}/deploys`, { method: "POST", body: "{}" })
+/**
+ * Triggers a new deploy. With no commitId the service's currently connected
+ * branch tip is deployed (an empty body deploys latest, per Render's
+ * documented Deploys API).
+ *
+ * commitId PINS THE DEPLOY, AND IS WEB-ONLY. Render's Deploys API accepts
+ * commitId for services built from a repo, but explicitly does NOT support it
+ * for Cron Jobs. Callers deploying a Cron Job must omit it - passing it there
+ * would either be ignored (a pin that silently is not one) or rejected, and
+ * both are worse than the honest branch-tip deploy plus an after-the-fact
+ * commit assertion. See render-source-migration.ts for how the Cron path
+ * closes that gap.
+ */
+export async function createDeploy(client: RenderClient, serviceId: string, commitId?: string): Promise<RenderDeploySummary> {
+  const body = commitId ? JSON.stringify({ commitId }) : "{}"
+  const raw = await renderFetch<unknown>(client, `/services/${serviceId}/deploys`, { method: "POST", body })
   return readDeploySummary(raw)
 }
 
@@ -341,5 +380,45 @@ export async function setEnvVar(client: RenderClient, serviceId: string, key: st
   await renderFetch<unknown>(client, `/services/${serviceId}/env-vars/${encodeURIComponent(key)}`, {
     method: "PUT",
     body: JSON.stringify({ value }),
+  })
+}
+
+/**
+ * MUTATES a service's connected git source (repo + branch) via Render's
+ * documented Update Service endpoint (PATCH /services/:id).
+ *
+ * THE BODY CARRIES EXACTLY TWO KEYS - repo and branch - and this function
+ * builds it from its own two parameters rather than accepting a caller-supplied
+ * patch object. That is the same discipline as setServiceAutoDeploy above, and
+ * it matters more here: Render's PATCH is a partial update in which a provided
+ * null or empty value UNSETS the field. A generic patch surface would make it
+ * possible to clear a build command, a start command or a cron schedule by
+ * passing the wrong shape, and those are exactly the fields a source migration
+ * must not touch. There is no way to reach this endpoint from this codebase
+ * with any third field in the payload.
+ *
+ * IT DOES NOT DEPLOY. Render documents that configuration changes made through
+ * the Update Service API do not deploy on their own - a separate call to the
+ * Deploys API is required - and that this holds regardless of the service's
+ * autoDeploy setting. The caller is still expected to VERIFY that no deploy
+ * appeared rather than trust it: see render-source-migration.ts, which snapshots
+ * the newest deploy id before the PATCH and refuses if a newer one exists after.
+ *
+ * Both parameters are required. There is deliberately no "change the repo but
+ * leave the branch" form: a repo whose branch was not also confirmed is a
+ * service pointing somewhere nobody verified.
+ */
+export async function updateServiceSource(
+  client: RenderClient,
+  serviceId: string,
+  repo: string,
+  branch: string
+): Promise<Record<string, unknown>> {
+  if (!repo || !branch) {
+    throw new RenderApiError("updateServiceSource requires a non-empty repo and branch - a blank value would UNSET the field.")
+  }
+  return renderFetch<Record<string, unknown>>(client, `/services/${serviceId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ repo, branch }),
   })
 }

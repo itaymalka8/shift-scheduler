@@ -30,6 +30,7 @@
     "prod:backup:create": "tsx scripts/production/backup-create.ts",
     "prod:backup:prune": "tsx scripts/production/backup-prune.ts",
     "prod:backup:prune:execute": "tsx scripts/production/backup-prune.ts --execute",
+    "prod:render:source-migrate": "tsx scripts/production/render-source-migrate.ts",
     "prod:deploy:safe": "tsx scripts/production/deploy-safe.ts",
     "prod:ops:provision-token": "tsx scripts/production/provision-ops-token.ts",
     "prod:ops:preflight": "tsx scripts/production/ops-check.ts preflight",

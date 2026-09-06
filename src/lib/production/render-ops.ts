@@ -40,7 +40,10 @@ import {
   RENDER_DEPLOY_FAILURE_STATUSES,
   RENDER_DEPLOY_SUCCESS_STATUSES,
   getEnvVar,
+  listEnvVars,
+  readServiceCommands,
   setEnvVar,
+  updateServiceSource,
   readServiceAutoDeploy,
   readServiceSource,
   setServiceAutoDeploy,
@@ -52,6 +55,7 @@ import {
 } from "./render-client"
 import { resolveCronServiceId, resolveWebServiceId } from "./render-discovery"
 import { assertProductionWriteConfirmed } from "./write-guard"
+import { RENDER_SOURCE_MIGRATION, buildServiceSourcePatch, type ServiceConfigSnapshot } from "./render-source-migration"
 
 export type { AutoDeployState, RenderDeploySummary, RenderServiceDetail, RenderServiceSource, RenderServiceSummary }
 
@@ -265,4 +269,81 @@ export async function setWebServiceEnvVar(key: string, value: string, env: Recor
   const client = createRenderClient(env)
   const id = await resolveWebServiceId(client, env)
   await setEnvVar(client, id, key, value)
+}
+
+/**
+ * Read-only. Everything the one-time source migration needs to prove about a
+ * service, in one reading: identity, connected source, Auto Deploy, both
+ * commands, the cron schedule where there is one, the NAMES of its env vars,
+ * and the id of its newest deploy.
+ *
+ * ENV VAR VALUES ARE NEVER READ INTO THE RETURNED OBJECT. Only names. A
+ * migration needs to prove nothing was lost, and a name proves that; a value
+ * in a returned object is a value that can end up in a log.
+ */
+export async function getServiceConfigSnapshot(
+  serviceId: string,
+  env: Record<string, string | undefined> = process.env
+): Promise<ServiceConfigSnapshot> {
+  const client = createRenderClient(env)
+  const raw = await getServiceRaw(client, serviceId)
+  const commands = readServiceCommands(raw)
+  const envVars = await listEnvVars(client, serviceId)
+  const deploys = await clientListDeploys(client, serviceId, 1)
+  return {
+    id: String(raw.id ?? serviceId),
+    ...readServiceSource(raw),
+    autoDeploy: readServiceAutoDeploy(raw),
+    buildCommand: commands.buildCommand,
+    startCommand: commands.startCommand,
+    schedule: readCronDetails(raw).schedule,
+    envVarNames: envVars.map((v) => v.key).sort(),
+    latestDeployId: deploys[0]?.id ?? null,
+  }
+}
+
+/**
+ * MUTATES Production: repoints ONE existing Render service at a different
+ * repository and branch. Requires PRODUCTION_WRITE_CONFIRM.
+ *
+ * NARROWED TO THE APPROVED MIGRATION. The service id must be one of the two in
+ * RENDER_SOURCE_MIGRATION and the destination must be that contract's repo and
+ * branch - there is deliberately no way to point an arbitrary service at an
+ * arbitrary repo through this function. A general capability would outlive this
+ * one-time migration and be exercised almost never, which is the shape of
+ * capability this project removes rather than guards.
+ *
+ * It does not deploy: Render's Update Service API does not deploy on its own,
+ * regardless of autoDeploy. The caller still verifies that no deploy appeared.
+ */
+export async function migrateServiceSource(
+  serviceId: string,
+  repo: string,
+  branch: string,
+  env: Record<string, string | undefined> = process.env
+): Promise<void> {
+  assertProductionWriteConfirmed(env)
+  const allowed = [RENDER_SOURCE_MIGRATION.webServiceId, RENDER_SOURCE_MIGRATION.cronServiceId] as readonly string[]
+  if (!allowed.includes(serviceId)) {
+    throw new Error(`Source migration refused: ${serviceId} is not one of the two services in the approved migration contract.`)
+  }
+  if (repo !== RENDER_SOURCE_MIGRATION.toRepo || branch !== RENDER_SOURCE_MIGRATION.branch) {
+    throw new Error(`Source migration refused: only ${RENDER_SOURCE_MIGRATION.toRepo} @ ${RENDER_SOURCE_MIGRATION.branch} is approved.`)
+  }
+  const patch = buildServiceSourcePatch(repo, branch)
+  await updateServiceSource(createRenderClient(env), serviceId, patch.repo, patch.branch)
+}
+
+/**
+ * MUTATES Production: triggers a deploy of one service. commitId PINS it and is
+ * WEB ONLY - Render does not support commitId for Cron Jobs, so the cron caller
+ * omits it and asserts the created deploy's commit afterwards instead.
+ */
+export async function triggerServiceDeploy(
+  serviceId: string,
+  commitId: string | undefined,
+  env: Record<string, string | undefined> = process.env
+): Promise<RenderDeploySummary> {
+  assertProductionWriteConfirmed(env)
+  return createDeploy(createRenderClient(env), serviceId, commitId)
 }
