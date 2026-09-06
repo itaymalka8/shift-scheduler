@@ -238,10 +238,12 @@ async function main() {
             `${week.maintenance.teamsExempt} at or below the starting ground, total ${week.maintenance.totalCharged}`
         )
       }
-      console.info(
-        `Payroll ${week.weekKey}: ${week.payroll.teamsCharged}/${week.payroll.eligibleTeams} club(s) charged, ` +
-          `${week.payroll.teamsAlreadySettled} already settled, total ${week.payroll.totalCharged}`
-      )
+      if (week.payroll) {
+        console.info(
+          `Payroll ${week.weekKey}: ${week.payroll.teamsCharged}/${week.payroll.eligibleTeams} club(s) charged, ` +
+            `${week.payroll.teamsAlreadySettled} already settled, total ${week.payroll.totalCharged}`
+        )
+      }
     }
     if (settlement.weeksSettled.length === 0) {
       console.info(`Weekly settlement: nothing due (${settlement.weeksAlreadyComplete} week(s) already complete)`)

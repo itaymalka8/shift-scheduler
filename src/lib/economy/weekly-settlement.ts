@@ -50,7 +50,7 @@ import { calculateSponsorIncome, sponsorReferenceId, type SponsorClub } from "./
 import { calculateWeeklyMaintenance, maintenanceReferenceId } from "./maintenance"
 import { repriceLeagueSalaries, type RepricingResult } from "./salary-repricing"
 import { readSeasonTiersAsOf } from "./season-tier"
-import { isPayrollDueForTeam, payrollWeekKey, payrollWindow } from "./payroll-clock"
+import { isPayrollDueForTeam, payrollReferenceId, payrollWeekKey, payrollWindow } from "./payroll-clock"
 import { settlePayrollWeek, type PayrollWeekResult } from "./payroll"
 import { seatsAsOf } from "@/lib/stadium/as-of"
 import { toSeatCounts, type SeatCounts } from "@/lib/stadium/config"
@@ -94,7 +94,8 @@ export interface WeeklySettlementWeek {
   era: "legacy" | "phase3r"
   sponsor: SponsorWeekResult | null
   maintenance: MaintenanceWeekResult | null
-  payroll: PayrollWeekResult
+  /** Null when the week's wages were already settled and no transaction was opened. */
+  payroll: PayrollWeekResult | null
 }
 
 export interface WeeklySettlementResult {
@@ -363,27 +364,98 @@ export async function settleWeeklyEconomy(now: Date = new Date()): Promise<Weekl
     totalMaintenanceCharged: 0,
     totalPayrollCharged: 0,
   }
+  if (window.instants.length === 0) return result
 
-  for (const instant of window.instants) {
+  // THE IDLE TICK MUST STAY CHEAP, and that is a hard requirement rather than
+  // a nicety: this runs every two minutes forever, and the healthy case is
+  // that every week in the look-back window is already settled. Opening a
+  // transaction and taking an advisory lock for each settlement of each of
+  // twenty-six candidate weeks would be seventy-eight transactions to discover
+  // there is nothing to do - the exact shape of the defect Phase 3P removed
+  // from payroll.
+  //
+  // So the whole window is answered with THREE reads, and a settlement is
+  // opened only for a week that genuinely needs one.
+  const weekKeys = window.instants.map((instant) => payrollWeekKey(instant))
+  const referenceIds = weekKeys.flatMap((weekKey) => [
+    sponsorReferenceId(weekKey),
+    maintenanceReferenceId(weekKey),
+    payrollReferenceId(weekKey),
+  ])
+  const [teams, settled, expandedGrounds] = await Promise.all([
+    prisma.team.findMany({ select: { id: true, createdAt: true } }),
+    prisma.financialTransaction.findMany({
+      where: { referenceId: { in: referenceIds } },
+      select: { teamId: true, referenceId: true },
+    }),
+    // Which clubs could owe upkeep AT ALL. Today this is zero of sixty, so the
+    // maintenance settlement is skipped outright rather than opening a
+    // transaction to charge nobody. A club that expands appears here and the
+    // skip stops applying.
+    prisma.stadium.findMany({
+      select: { teamId: true, regularSeats: true, coveredSeats: true, premiumSeats: true, vipSeats: true },
+    }),
+  ])
+
+  const settledByReference = new Map<string, Set<string>>()
+  for (const row of settled) {
+    const bucket = settledByReference.get(row.referenceId) ?? new Set<string>()
+    bucket.add(row.teamId)
+    settledByReference.set(row.referenceId, bucket)
+  }
+  const owesUpkeep = new Set(
+    expandedGrounds
+      .filter((ground) => calculateWeeklyMaintenance(toSeatCounts(ground)).total > 0)
+      .map((ground) => ground.teamId)
+  )
+
+  /** Is every club that would get a row for this reference already carrying one? */
+  const complete = (referenceId: string, population: readonly { id: string }[]): boolean => {
+    if (population.length === 0) return true
+    const done = settledByReference.get(referenceId) ?? new Set<string>()
+    return population.every((team) => done.has(team.id))
+  }
+
+  for (let i = 0; i < window.instants.length; i++) {
+    const instant = window.instants[i]
+    const weekKey = weekKeys[i]
     const era = economyEraAt(instant)
+    const eligible = teams.filter((team) => isPayrollDueForTeam(instant, team))
 
     // Fail-fast and strictly ordered. Any throw propagates out of the runner,
     // leaves the week incomplete, and is what the season-lifecycle gate reads.
-    const sponsor = era === "phase3r" ? await settleSponsorWeek(instant) : null
-    const maintenance = era === "phase3r" ? await settleMaintenanceWeek(instant) : null
-    const payroll = await settlePayrollWeek(instant)
+    //
+    // Each `complete` check is a read the caller already did - it opens no
+    // transaction and takes no lock. It is a fast path, not an authority: the
+    // settlements below re-derive their own already-settled set under their own
+    // lock, so a stale read here can only cost a wasted transaction, never a
+    // double charge.
+    const sponsor =
+      era === "phase3r" && !complete(sponsorReferenceId(weekKey), eligible)
+        ? await settleSponsorWeek(instant)
+        : null
+    const maintenance =
+      era === "phase3r" &&
+      owesUpkeep.size > 0 &&
+      !complete(
+        maintenanceReferenceId(weekKey),
+        eligible.filter((team) => owesUpkeep.has(team.id))
+      )
+        ? await settleMaintenanceWeek(instant)
+        : null
+    const payroll = !complete(payrollReferenceId(weekKey), eligible) ? await settlePayrollWeek(instant) : null
 
     const didWork =
-      (sponsor?.teamsCredited ?? 0) > 0 || (maintenance?.teamsCharged ?? 0) > 0 || payroll.teamsCharged > 0
+      (sponsor?.teamsCredited ?? 0) > 0 || (maintenance?.teamsCharged ?? 0) > 0 || (payroll?.teamsCharged ?? 0) > 0
     if (!didWork) {
       result.weeksAlreadyComplete++
       continue
     }
 
-    result.weeksSettled.push({ weekKey: payrollWeekKey(instant), instant, era, sponsor, maintenance, payroll })
+    result.weeksSettled.push({ weekKey, instant, era, sponsor, maintenance, payroll })
     result.totalSponsorCredited += sponsor?.totalCredited ?? 0
     result.totalMaintenanceCharged += maintenance?.totalCharged ?? 0
-    result.totalPayrollCharged += payroll.totalCharged
+    result.totalPayrollCharged += payroll?.totalCharged ?? 0
   }
 
   return result

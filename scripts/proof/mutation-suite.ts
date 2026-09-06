@@ -88,15 +88,15 @@ const MUTATIONS: Mutation[] = [
   {
     name: "sponsor is paid retroactively for weeks before the activation boundary",
     file: "src/lib/economy/weekly-settlement.ts",
-    from: '    const sponsor = era === "phase3r" ? await settleSponsorWeek(instant) : null',
-    to: "    const sponsor = await settleSponsorWeek(instant)",
+    from: '      era === "phase3r" && !complete(sponsorReferenceId(weekKey), eligible)',
+    to: "      !complete(sponsorReferenceId(weekKey), eligible)",
     catcher: "src/lib/economy/phase-3r-activation.test.ts",
   },
   {
     name: "maintenance is charged retroactively for weeks before the activation boundary",
     file: "src/lib/economy/weekly-settlement.ts",
-    from: '    const maintenance = era === "phase3r" ? await settleMaintenanceWeek(instant) : null',
-    to: "    const maintenance = await settleMaintenanceWeek(instant)",
+    from: '      era === "phase3r" &&\n      owesUpkeep.size > 0 &&',
+    to: "      owesUpkeep.size > 0 &&",
     catcher: "src/lib/economy/phase-3r-activation.test.ts",
   },
   {

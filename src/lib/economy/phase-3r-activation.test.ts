@@ -102,12 +102,23 @@ describe("no historical catch-up", () => {
   it("settles sponsor and maintenance only for weeks at or after the boundary", () => {
     const settlement = read("src", "lib", "economy", "weekly-settlement.ts")
     const runner = settlement.slice(settlement.indexOf("export async function settleWeeklyEconomy"))
-    // Both new settlements are gated on the era of the week being settled.
-    expect(runner).toContain('era === "phase3r" ? await settleSponsorWeek(instant) : null')
-    expect(runner).toContain('era === "phase3r" ? await settleMaintenanceWeek(instant) : null')
+    // Both new settlements are gated on the era of the week being settled. The
+    // gate is the FIRST condition in each, before any completeness fast path,
+    // so a pre-boundary week is refused on era rather than on happening to
+    // look settled.
+    const sponsorCall = runner.slice(runner.indexOf("const sponsor ="), runner.indexOf("const maintenance ="))
+    const maintenanceCall = runner.slice(runner.indexOf("const maintenance ="), runner.indexOf("const payroll ="))
+    expect(sponsorCall).toContain('era === "phase3r" &&')
+    expect(sponsorCall).toContain("settleSponsorWeek(instant)")
+    expect(sponsorCall).toContain(": null")
+    expect(maintenanceCall).toContain('era === "phase3r" &&')
+    expect(maintenanceCall).toContain("settleMaintenanceWeek(instant)")
+    expect(maintenanceCall).toContain(": null")
     // Payroll is NOT gated on the 3R boundary - it has its own, older one, and
     // a pre-3R week must still pay its wages exactly as it does today.
-    expect(runner).toContain("await settlePayrollWeek(instant)")
+    const payrollCall = runner.slice(runner.indexOf("const payroll ="), runner.indexOf("const didWork"))
+    expect(payrollCall).toContain("await settlePayrollWeek(instant)")
+    expect(payrollCall).not.toContain("phase3r")
   })
 
   it("has no path that back-dates a settlement to a pre-boundary week", () => {
