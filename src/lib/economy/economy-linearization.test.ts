@@ -61,10 +61,23 @@ const APPENDERS = [
 ] as const
 
 describe("THE ECONOMY HISTORY LOCK: both modes, both sides", () => {
+  it("every appender actually CALLS the append, not merely imports it", () => {
+    // Deliberately a CALL check rather than an identifier check. The negative
+    // mutation suite caught the weaker version: replacing the call with
+    // `void appendTeamEconomicState` left the identifier in the file, so an
+    // assertion that only looked for the name passed while a release stopped
+    // recording that the club's wage bill had fallen.
+    for (const [name, source] of APPENDERS) {
+      const calls = code(source).match(/\bappendTeamEconomicState\(\s*(tx|db)\b/g) ?? []
+      expect(`${name}: ${calls.length > 0}`).toBe(`${name}: true`)
+    }
+  })
+
   it("appenders take the lock SHARED, never exclusive", () => {
     expect(code(STATE_HISTORY)).toContain("pg_advisory_xact_lock_shared(hashtext(")
     for (const [name, source] of APPENDERS) {
-      expect(`${name}: ${code(source).includes("acquireEconomyHistoryShared(")}`).toBe(`${name}: true`)
+      const shared = code(source).match(/\bacquireEconomyHistoryShared\(\s*(tx|db)\b/g) ?? []
+      expect(`${name}: ${shared.length > 0}`).toBe(`${name}: true`)
       expect(`${name}: ${code(source).includes("acquireEconomyHistoryExclusive(")}`).toBe(`${name}: false`)
     }
   })
@@ -72,8 +85,8 @@ describe("THE ECONOMY HISTORY LOCK: both modes, both sides", () => {
   it("settlement reads take the lock EXCLUSIVE", () => {
     // The two transactions that price an instant from history: the weekly
     // sponsor settlement, and a fixture's own simulation.
-    expect(code(SETTLEMENT)).toContain("acquireEconomyHistoryExclusive(tx)")
-    expect(code(SIMULATE)).toContain("acquireEconomyHistoryExclusive(tx)")
+    expect(code(SETTLEMENT)).toMatch(/await acquireEconomyHistoryExclusive\(tx\)/)
+    expect(code(SIMULATE)).toMatch(/await acquireEconomyHistoryExclusive\(tx\)/)
   })
 
   it("one key, so shared and exclusive actually exclude each other", () => {
@@ -118,12 +131,14 @@ describe("THE ACTIVATION LOCK: no mixed salary state", () => {
       ["player development / retirement", read("src", "lib", "seasons", "player-lifecycle.ts")],
     ] as const
     for (const [name, source] of SALARY_WRITERS) {
-      expect(`${name}: ${code(source).includes("acquirePhase3RActivationShared(")}`).toBe(`${name}: true`)
+      // A call, not a mention - see the appender check above for why.
+      const calls = code(source).match(/\bacquirePhase3RActivationShared\(\s*(tx|db)\b/g) ?? []
+      expect(`${name}: ${calls.length > 0}`).toBe(`${name}: true`)
     }
   })
 
   it("the repricing transaction holds it EXCLUSIVE", () => {
-    expect(code(SETTLEMENT)).toContain("acquirePhase3RActivationExclusive(tx)")
+    expect(code(SETTLEMENT)).toMatch(/await acquirePhase3RActivationExclusive\(tx\)/)
   })
 
   it("repricing stays inside the transaction that writes the marker", () => {
