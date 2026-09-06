@@ -33,7 +33,6 @@
 import { createProductionClient } from "../../src/lib/production/client"
 import { printProductionBanner } from "../../src/lib/production/report"
 import { ProductionSafetyError } from "../../src/lib/production/env-guard"
-import { SeededRandom } from "../../src/lib/match/engine/rng"
 import {
   SEAT_TYPES,
   TICKET_PRICES,
@@ -42,21 +41,22 @@ import {
   type SeatCounts,
 } from "../../src/lib/stadium/config"
 import { calculateStadiumCapacity } from "../../src/lib/stadium/metrics"
-import { calculateUncompressedPlayerSalary } from "../../src/lib/economy/salary"
-import { extractPlayerAttributes, type PlayerAttributes } from "../../src/lib/players/attributes"
-import { developPlayer, rollRetirement } from "../../src/lib/seasons/player-development"
-import { generateFallbackPlayer, FALLBACK_OVERALL_MIN } from "../../src/lib/players/fallback-generator"
-import {
-  countRoster,
-  planAdditions,
-  isResolvableWithinCap,
-  countsAfterAdditions,
-  rosterGroupOf,
-} from "../../src/lib/players/roster-floor"
+import { FALLBACK_OVERALL_MIN } from "../../src/lib/players/fallback-generator"
 import { MAX_ACTIVE_ROSTER_SIZE } from "../../src/lib/players/roster"
-import { generateYouthProspects } from "../../src/lib/youth/generate"
-import { PROSPECTS_PER_INTAKE, MAX_PROMOTIONS_PER_INTAKE } from "../../src/lib/youth/config"
-import { DEFAULT_GAME_BALANCE_CONFIG } from "../../src/lib/match/engine/config"
+import {
+  AWAY_PER_SEASON,
+  HOME_PER_SEASON,
+  WEEKS_PER_SEASON,
+  buildTrajectory,
+  canonicalWage,
+  fixturesInWeek,
+  median,
+  type ClubMeta,
+  type SeasonClubState,
+  toSimPlayer,
+  type SimPlayer,
+  type Trajectory,
+} from "./economy-projection"
 
 // ================= FROZEN BY DECISION =======================================
 const SALARY_COMPRESSION = 0.5
@@ -73,16 +73,12 @@ const PREFERRED_BAND = 10
 const FINE_SENSITIVITY_LEAGUE_PER_SEASON = 900_000
 
 // --- Calendar and match-day constants, as measured in the Phase 3R audit -----
-const HOME_PER_SEASON = 19
-const AWAY_PER_SEASON = 19
-const WEEKS_PER_SEASON = 13
 const AWAY_TRAVEL = 10_000
 const BASE_MATCH_COST = 10_000
 const COST_PER_CAPACITY = 0.5
 const COST_PER_SPECTATOR = 3
 const QUALITY_INFLUENCE = 0.0015
 const BASE_OCCUPANCY = 0.62
-const RANDOM_VARIANCE = 0.12
 const RESERVE_WEEKS = 4
 
 function fmt(n: number): string {
@@ -91,9 +87,6 @@ function fmt(n: number): string {
 function pct(sorted: number[], q: number): number {
   if (sorted.length === 0) return 0
   return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))]
-}
-function median(values: number[]): number {
-  return pct([...values].sort((a, b) => a - b), 0.5)
 }
 function gini(values: number[]): number {
   const floor = Math.min(0, ...values)
@@ -149,18 +142,10 @@ function weeklyMaintenance(seats: SeatCounts): number {
   return cost
 }
 
-function fixturesInWeek(total: number, week: number): number {
-  return Math.floor((total * week) / WEEKS_PER_SEASON) - Math.floor((total * (week - 1)) / WEEKS_PER_SEASON)
-}
 
 // ================= THE SALARY AUTHORITY =====================================
-// Canonical inputs, and only these: overall, age, potential, primaryPosition.
-interface SalaryInputs {
-  overall: number
-  age: number
-  potential: number
-  primaryPosition: string
-}
+// Canonical inputs, and only these: overall, age, potential, primaryPosition -
+// see economy-projection.ts, which owns canonicalWage.
 
 let compressionNormaliser = 1
 
@@ -172,131 +157,11 @@ function transformWage(canonical: number, scale: number): number {
       Math.pow(Math.max(1, canonical), 1 - SALARY_COMPRESSION)
   )
 }
-function canonicalWage(p: SalaryInputs): number {
-  return calculateUncompressedPlayerSalary(p)
-}
 
 // ================= THE PROJECTION ===========================================
-
-interface SimPlayer extends SalaryInputs {
-  attributes: PlayerAttributes
-}
-interface ClubMeta {
-  id: string
-  isBot: boolean
-  ultras: boolean
-  startTier: number
-  startBalance: number
-  seats: SeatCounts
-}
-interface SeasonClubState {
-  canonicalWages: number[]
-  quality: number
-  squadSize: number
-  averageOverall: number
-  tier: number
-  noise: number[]
-  fines: number
-}
-interface Trajectory {
-  seasons: SeasonClubState[][]
-  neutrals: number[]
-}
-
-function rollSquad(players: SimPlayer[], clubId: string, seasonNumber: number, rng: SeededRandom): SimPlayer[] {
-  const survivors: SimPlayer[] = []
-  for (const player of players) {
-    if (rollRetirement(player.age, rng)) continue
-    const d = developPlayer(
-      { age: player.age, potential: player.potential, primaryPosition: player.primaryPosition, attributes: player.attributes },
-      rng
-    )
-    survivors.push({
-      age: player.age + 1,
-      potential: player.potential,
-      primaryPosition: player.primaryPosition,
-      overall: Math.min(player.potential, player.overall + Math.max(0, d.overall - d.currentOverall)),
-      attributes: d.attributes,
-    })
-  }
-  const prospects = generateYouthProspects(`sim-${seasonNumber}`, clubId, PROSPECTS_PER_INTAKE)
-    .slice()
-    .sort((a, b) => b.overall - a.overall || b.potential - a.potential)
-  let promoted = 0
-  for (const prospect of prospects) {
-    if (promoted >= MAX_PROMOTIONS_PER_INTAKE) break
-    const after = countsAfterAdditions(countRoster(survivors), [rosterGroupOf(prospect.primaryPosition)])
-    if (after.total > MAX_ACTIVE_ROSTER_SIZE || !isResolvableWithinCap(after)) break
-    survivors.push({
-      age: prospect.age,
-      potential: prospect.potential,
-      primaryPosition: prospect.primaryPosition,
-      overall: prospect.overall,
-      attributes: extractPlayerAttributes(prospect as unknown as Record<string, unknown>),
-    })
-    promoted++
-  }
-  const counts = countRoster(survivors)
-  if (!isResolvableWithinCap(counts)) return survivors
-  for (const [slot, group] of planAdditions(counts).entries()) {
-    const g = generateFallbackPlayer({ seasonId: `sim-${seasonNumber}`, teamId: clubId, slotIndex: slot, group })
-    survivors.push({
-      age: g.age,
-      potential: g.potential,
-      primaryPosition: g.primaryPosition,
-      overall: g.overall,
-      attributes: extractPlayerAttributes(g as unknown as Record<string, unknown>),
-    })
-  }
-  return survivors
-}
-
-function buildTrajectory(clubs: ClubMeta[], squads: SimPlayer[][], seasons: number, seed: string): Trajectory {
-  const rng = new SeededRandom(seed)
-  const live = squads.map((sq) => sq.map((p) => ({ ...p, attributes: { ...p.attributes } })))
-  const tiers = clubs.map((c) => c.startTier)
-  const out: SeasonClubState[][] = []
-  const neutrals: number[] = []
-
-  for (let season = 1; season <= seasons; season++) {
-    const row: SeasonClubState[] = []
-    for (let i = 0; i < clubs.length; i++) {
-      const players = live[i]
-      const noise: number[] = []
-      for (let f = 0; f < HOME_PER_SEASON; f++) noise.push((rng.next() * 2 - 1) * RANDOM_VARIANCE)
-      let fines = 0
-      if (clubs[i].ultras) {
-        const { crowd } = DEFAULT_GAME_BALANCE_CONFIG
-        for (let f = 0; f < HOME_PER_SEASON; f++) {
-          if (rng.next() < crowd.ultrasIncidentBaseChance) {
-            fines += Math.round((crowd.incidentFineMin + rng.next() * (crowd.incidentFineMax - crowd.incidentFineMin)) / 1000) * 1000
-          }
-        }
-      }
-      row.push({
-        canonicalWages: players.map(canonicalWage),
-        quality: teamQuality(players),
-        squadSize: players.length,
-        averageOverall: players.length ? players.reduce((s, p) => s + p.overall, 0) / players.length : 0,
-        tier: tiers[i],
-        noise,
-        fines,
-      })
-    }
-    out.push(row)
-    neutrals.push(median(row.map((st) => st.quality)))
-
-    for (let i = 0; i < clubs.length; i++) live[i] = rollSquad(live[i], clubs[i].id, season, rng)
-    const key = (i: number) => new SeededRandom(`${seed}-${season}-${clubs[i].id}`).next()
-    const up = clubs.map((_, i) => i).filter((i) => tiers[i] === 1).sort((a, b) => key(a) - key(b))
-    const down = clubs.map((_, i) => i).filter((i) => tiers[i] === 2).sort((a, b) => key(a) - key(b))
-    for (let n = 0; n < 4 && n < up.length && n < down.length; n++) {
-      tiers[up[n]] = 2
-      tiers[down[n]] = 1
-    }
-  }
-  return { seasons: out, neutrals }
-}
+// Types, the season roll and the trajectory builder all live in
+// economy-projection.ts, shared with the runtime regression so that both ask
+// their question of the identical trajectory.
 
 interface Horizon {
   season: number
@@ -480,13 +345,7 @@ async function main() {
     const byTeam = new Map<string, SimPlayer[]>()
     for (const row of playerRows) {
       const list = byTeam.get(row.teamId!) ?? []
-      list.push({
-        age: row.age,
-        potential: row.potential,
-        primaryPosition: row.primaryPosition,
-        overall: row.overall,
-        attributes: extractPlayerAttributes(row as unknown as Record<string, unknown>),
-      })
+      list.push(toSimPlayer(row))
       byTeam.set(row.teamId!, list)
     }
     const clubs: ClubMeta[] = teams.map((t) => ({
@@ -601,7 +460,7 @@ async function main() {
     // TASK 2. NARROW SALARY-SCALE CALIBRATION
     // ==================================================================
     console.info("\n=== 2. NARROW CALIBRATION - salary scale only, three calibration seeds ===")
-    const calTraj = CALIBRATION_SEEDS.map((seed) => ({ seed, traj: buildTrajectory(clubs, squads, 20, seed) }))
+    const calTraj = CALIBRATION_SEEDS.map((seed) => ({ seed, traj: buildTrajectory(clubs, squads, 20, seed, teamQuality) }))
     const worstAcross = (scale: number, sink = false) =>
       Math.max(...calTraj.map(({ traj }) => run(clubs, traj, scale, sink).worstDeviation))
     // The suggested window is 0.720-0.740. It is searched at fine resolution AND
@@ -654,7 +513,7 @@ async function main() {
       printSeed(`${seed}  [calibration]`, r)
     }
     for (const seed of HOLDOUT_SEEDS) {
-      const r = run(clubs, buildTrajectory(clubs, squads, 20, seed), FROZEN_SCALE, false)
+      const r = run(clubs, buildTrajectory(clubs, squads, 20, seed, teamQuality), FROZEN_SCALE, false)
       allRuns.push({ seed, kind: "held out", result: r })
       printSeed(`${seed}  [HELD OUT]`, r)
     }
@@ -712,7 +571,7 @@ async function main() {
       console.info(`    ${"seed".padEnd(26)}${"dev5".padStart(9)}${"dev10".padStart(9)}${"dev20".padStart(9)}${"worst instant".padStart(16)}${"neg@20".padStart(8)}`)
       let sinkOk = true
       for (const { seed, kind } of allRuns) {
-        const traj = calTraj.find((c) => c.seed === seed)?.traj ?? buildTrajectory(clubs, squads, 20, seed)
+        const traj = calTraj.find((c) => c.seed === seed)?.traj ?? buildTrajectory(clubs, squads, 20, seed, teamQuality)
         const r = run(clubs, traj, FROZEN_SCALE, true)
         for (const h of r.horizons) if (h.deviation < -HARD_BAND) sinkOk = false
         console.info(
