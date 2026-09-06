@@ -48,6 +48,15 @@ async function main() {
     const latestCronDeploy = await getLatestDeploy(cron.id)
     if (latestCronDeploy) {
       console.info(`  latest run/deploy: ${latestCronDeploy.status} @ ${latestCronDeploy.createdAt ?? "unknown time"}`)
+      // THE COMMIT THE CRON IS ACTUALLY RUNNING, printed for the same reason
+      // the web service's is: the cron is what settles money, and "the deploy
+      // succeeded" says nothing about which code it built. With Auto Deploy
+      // OFF it only rebuilds when a deploy is triggered - and prod:deploy:safe
+      // triggers the WEB service, relying on the suspend/resume cycle to bring
+      // the cron along. That is an inference; this line is the measurement, and
+      // a post-deploy check compares it to the web service's commit rather than
+      // assuming the two match.
+      console.info(`  commit: ${latestCronDeploy.commitId ?? "unknown"} - ${latestCronDeploy.commitMessage ?? ""}`)
     } else {
       console.info("  latest run/deploy: (none found)")
     }
