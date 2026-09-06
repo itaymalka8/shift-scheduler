@@ -73,9 +73,9 @@ async function main() {
     console.info(`  tier multipliers     ${SPONSOR_TIER_MULTIPLIER[1]} / ${SPONSOR_TIER_MULTIPLIER[2]}\n`)
 
     const checks: { ok: boolean; label: string }[] = []
-    const record = (ok: boolean, label: string) => {
+    const record = (ok: boolean, label: string, detail?: string) => {
       checks.push({ ok, label })
-      console.info(`  ${ok ? "PASS" : "FAIL"}  ${label}`)
+      console.info(`  ${ok ? "PASS" : "FAIL"}  ${label}${detail ? ` - ${detail}` : ""}`)
     }
 
     console.info("=== BOUNDARY SHAPE ===")
@@ -160,6 +160,69 @@ async function main() {
     // every club must have history at all, and every club's history must BEGIN
     // strictly before the boundary. A club baselined after activation would
     // leave the activation instant itself unreconstructible.
+    // === MIGRATION 23 INTEGRITY, FROM THE POSTGRESQL CATALOG ==============
+    //
+    // READ ONLY, AND DELIBERATELY SO. The destructive behaviour - that UPDATE,
+    // DELETE and TRUNCATE are actually refused - is proven on disposable
+    // PostgreSQL by scripts/proof/linearization-proof.ts, where breaking things
+    // is the point. Firing those statements at Production to watch them fail
+    // would be running a destructive probe against real economic history and
+    // trusting a trigger to save it. This asks the catalog what exists instead:
+    // if the triggers are present and enabled, and the proof shows what enabled
+    // triggers do, the guarantee holds without touching a row.
+    console.info("\n=== MIGRATION 23 INTEGRITY (catalog, read only) ===")
+    const [tableRows, fkRows, uniqueRows, indexRows, triggerRows] = await Promise.all([
+      prisma.$queryRaw<{ n: bigint }[]>`
+        SELECT COUNT(*)::bigint AS n FROM pg_class
+         WHERE relname = 'TeamEconomicState' AND relkind = 'r'`,
+      prisma.$queryRaw<{ confdeltype: string }[]>`
+        SELECT confdeltype FROM pg_constraint WHERE conname = 'TeamEconomicState_teamId_fkey'`,
+      prisma.$queryRaw<{ indexdef: string }[]>`
+        SELECT indexdef FROM pg_indexes
+         WHERE tablename = 'TeamEconomicState' AND indexname = 'TeamEconomicState_teamId_version_key'`,
+      prisma.$queryRaw<{ indexdef: string }[]>`
+        SELECT indexdef FROM pg_indexes
+         WHERE tablename = 'TeamEconomicState'
+           AND indexname = 'TeamEconomicState_teamId_effectiveAt_version_idx'`,
+      prisma.$queryRaw<{ tgname: string; tgenabled: string }[]>`
+        SELECT tgname, tgenabled FROM pg_trigger
+         WHERE tgrelid = '"TeamEconomicState"'::regclass AND NOT tgisinternal
+         ORDER BY tgname`,
+    ])
+
+    record(Number(tableRows[0]?.n ?? 0) === 1, "TeamEconomicState table exists")
+    // 'r' is RESTRICT. 'c' would be CASCADE - economic history following a club
+    // into oblivion is exactly what this FK exists to stop.
+    record(
+      fkRows[0]?.confdeltype === "r",
+      "FK TeamEconomicState.teamId -> Team.id is ON DELETE RESTRICT",
+      `confdeltype=${fkRows[0]?.confdeltype ?? "missing"}`
+    )
+    record(
+      (uniqueRows[0]?.indexdef ?? "").includes("UNIQUE") && (uniqueRows[0]?.indexdef ?? "").includes('"version"'),
+      "UNIQUE(teamId, version) exists - the per-club total-order authority"
+    )
+    // The ORDER matters, not just the columns: the as-of read seeks to
+    // (teamId, T) and walks BACKWARDS, so both sorts must be DESC or the walk
+    // is a scan.
+    const asOfDef = indexRows[0]?.indexdef ?? ""
+    record(
+      /\("teamId",\s*"effectiveAt"\s+DESC,\s*"version"\s+DESC\)/.test(asOfDef),
+      "as-of index is (teamId, effectiveAt DESC, version DESC)",
+      asOfDef || "missing"
+    )
+    const triggersByName = new Map(triggerRows.map((row) => [row.tgname, row.tgenabled]))
+    for (const [name, verb] of [
+      ["TeamEconomicState_no_update", "UPDATE"],
+      ["TeamEconomicState_no_delete", "DELETE"],
+      ["TeamEconomicState_no_truncate", "TRUNCATE"],
+    ] as const) {
+      const enabled = triggersByName.get(name)
+      // tgenabled 'O' = enabled for origin-and-local, the normal enabled state.
+      // 'D' would be DISABLED - present in the catalog and doing nothing.
+      record(enabled === "O", `${verb} protection trigger exists and is ENABLED`, `${name} tgenabled=${enabled ?? "missing"}`)
+    }
+
     console.info("\n=== STATE-HISTORY COVERAGE ===")
     const [clubCount, withoutHistory, startingLate] = await Promise.all([
       prisma.team.count(),
