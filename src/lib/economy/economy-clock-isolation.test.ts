@@ -257,9 +257,17 @@ describe("CRON ORDER: payroll before the season roll, stadium first", () => {
       settlement.indexOf("export async function settleMaintenanceWeek")
     )
     const reprice = sponsorWeek.indexOf("repriceLeagueSalaries(tx, instant)")
-    const readWages = sponsorWeek.indexOf("weeklySalary: true")
+    // The wage bill now comes from TeamEconomicState as of the week's own
+    // instant rather than from live Player rows, so the ordering that matters
+    // is repricing -> append the crossing's history rows -> read history. All
+    // three still happen in this one transaction, and repricing is still first.
+    const appendStates = sponsorWeek.indexOf("appendRepricingStates(tx, eligibleIds, instant)")
+    const readWages = sponsorWeek.indexOf("economicStatesAsOf(tx, eligibleIds, instant)")
     expect(reprice).toBeGreaterThan(-1)
-    expect(reprice).toBeLessThan(readWages)
+    expect(appendStates).toBeGreaterThan(reprice)
+    expect(readWages).toBeGreaterThan(appendStates)
+    // And it must not have quietly gone back to reading live wages.
+    expect(sponsorWeek).not.toContain("weeklySalary: true")
   })
 })
 
@@ -443,10 +451,18 @@ describe("EVERY PHASE 3R SETTLEMENT HAS THE SIX PROPERTIES A MONEY WRITER NEEDS"
   it("reads the tier from season membership as of the instant, never from live season state", () => {
     // Season.isActive moves when the orchestrator advances, so a settlement
     // running a minute later could read a different season and pay a different
-    // sponsor for the same closed week. Season.createdAt is immutable.
-    expect(code(SEASON_TIER)).toContain("createdAt: { lte: instant }")
+    // sponsor for the same closed week.
     expect(code(SEASON_TIER)).not.toContain("isActive")
     expect(code(SEASON_TIER)).toContain("divisionTeam.findMany")
+
+    // And the season is chosen by its FIRST LEAGUE FIXTURE, not by
+    // Season.createdAt. Both are immutable, but only the fixture is sporting
+    // truth: the offseason writes N+1's row and its whole membership at
+    // PROMOTION_RELEGATION and its fixtures only later, so a createdAt rule
+    // paid N+1's post-promotion tiers for weeks still being played in N.
+    expect(code(SEASON_TIER)).not.toContain("createdAt: { lte: instant }")
+    expect(code(SEASON_TIER)).toContain(`f."stage" = 'LEAGUE'`)
+    expect(code(SEASON_TIER)).toContain('MIN(f."scheduledAt") <=')
   })
 
   it("settlement never rolls attendance, and the match never rolls it twice", () => {

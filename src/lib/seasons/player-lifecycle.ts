@@ -6,6 +6,9 @@ import { calculatePlayerMarketValue } from "@/lib/players/market-value"
 import { calculateAuthoritativeSalary } from "@/lib/economy/salary"
 import { removePlayerFromSquad } from "@/lib/transfers/squad-cleanup"
 import { lockPlayerRow } from "@/lib/players/locks"
+import { lockTeamRoster } from "@/lib/players/roster"
+import { acquireEconomyHistoryShared, appendTeamEconomicState } from "@/lib/economy/state-history"
+import { acquirePhase3RActivationShared } from "@/lib/economy/activation-lock"
 import { SeasonLifecycleError } from "./errors"
 import { developPlayer, developmentSeed, retirementSeed, rollRetirement } from "./player-development"
 
@@ -84,8 +87,15 @@ export async function runPlayerSeasonLifecycle(
   tx: Prisma.TransactionClient,
   input: PlayerSeasonLifecycleInput
 ): Promise<PlayerSeasonLifecycleResult> {
-  // 1. Player row lock, first statement in the transaction - the shared
-  // lock-ordering root (see lockPlayerRow).
+  // 0. THE ECONOMY HISTORY LOCK, first statement of the transaction - ahead of
+  // the Player row lock, because activation repricing holds this lock
+  // EXCLUSIVE and then takes Player row locks of its own. Same global
+  // first-lock as Transfer Purchase, Release, Youth Promotion and Squad
+  // Replenishment.
+  await acquirePhase3RActivationShared(tx)
+  await acquireEconomyHistoryShared(tx)
+
+  // 1. Player row lock - the shared lock-ordering root (see lockPlayerRow).
   const locked = await lockPlayerRow(tx, input.playerId)
   if (!locked) {
     throw new SeasonLifecycleError("PLAYER_NOT_FOUND", `No such player: ${input.playerId}`)
@@ -194,10 +204,32 @@ export async function runPlayerSeasonLifecycle(
 
   await tx.player.update({ where: { id: player.id }, data: updateData })
 
-  // 5. The ledger row, last, inside the same transaction.
+  // 5. The ledger row, inside the same transaction.
   await tx.playerSeasonLifecycle.create({
     data: { seasonId: input.seasonId, playerId: player.id },
   })
+
+  // 6. ECONOMIC HISTORY, last. Development rewrites `overall` AND
+  // `weeklySalary`; retirement clears `teamId` and flips `careerStatus`. Every
+  // one of those is an input to a club's payroll or its attendance quality, so
+  // a lifecycle pass is the single largest aggregate mover in the game and the
+  // one that most needs to leave a record.
+  //
+  // The club is locked here and nowhere earlier, because this transaction
+  // reaches a club only through the player it is processing - a free agent
+  // (teamId null) belongs to none, and a retiring player's old club is still
+  // the one whose bill just fell. lockTeamRoster is what makes the append's
+  // MAX(version)+1 race-free, so it has to be held before the append and after
+  // we know which club, if any, is involved.
+  if (oldTeamId) {
+    if (!(await lockTeamRoster(tx, oldTeamId))) {
+      throw new SeasonLifecycleError("PLAYER_NOT_FOUND", `No such team: ${oldTeamId}`)
+    }
+    await appendTeamEconomicState(tx, {
+      teamId: oldTeamId,
+      reason: retired ? "retirement" : "development",
+    })
+  }
 
   return {
     playerId: player.id,

@@ -41,6 +41,8 @@
 import type { Prisma } from "@/generated/prisma"
 import { prisma } from "@/lib/prisma"
 import { lockTeamRoster, MAX_ACTIVE_ROSTER_SIZE, pickAvailableShirtNumber } from "@/lib/players/roster"
+import { acquireEconomyHistoryShared, appendTeamEconomicState } from "@/lib/economy/state-history"
+import { acquirePhase3RActivationShared } from "@/lib/economy/activation-lock"
 import { repairTeamLineup, checkTeamLineup } from "@/lib/players/lineup-repair"
 import { generateFallbackPlayer } from "@/lib/players/fallback-generator"
 import { judgeTeamRoster, type RosterInvariantFailure } from "./roster-invariant"
@@ -130,6 +132,11 @@ export async function replenishTeamSquad(
 ): Promise<TeamReplenishmentResult> {
   return prisma.$transaction(
     async (tx) => {
+      // 0. THE ECONOMY HISTORY LOCK, before the club lock - the global
+      // first-lock every appender and every settlement takes, in one order.
+      await acquirePhase3RActivationShared(tx)
+      await acquireEconomyHistoryShared(tx)
+
       // 1. THE CLUB'S ROSTER AUTHORITY. The same helper Transfer Purchase and
       // Youth Promotion take, and deliberately a WRITE rather than a
       // FOR UPDATE - a lock that produces no new row version does not raise a
@@ -231,6 +238,12 @@ export async function replenishTeamSquad(
         },
         select: { id: true },
       })
+
+      // 9. ECONOMIC HISTORY, last of all. Fallback players are real wages on a
+      // real bill - at or near SALARY_MIN, and at Overall bands that sit at or
+      // just above replacement level - so the club's payroll and its crowd
+      // both moved, and a later settlement must be able to see that they did.
+      await appendTeamEconomicState(tx, { teamId, reason: "replenishment" })
 
       return { teamId, alreadyCompleted: false, ownedBefore: before.total, generated: plan.length, ownedAfter: after.total }
     },

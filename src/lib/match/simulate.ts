@@ -7,11 +7,13 @@ import { assertFixtureLineupsLegal, MatchPreflightError } from "./lineup-preflig
 import { settlePriorConsequences } from "./consequence-service"
 import { lockTeamSquads } from "@/lib/players/locks"
 import { lockTeamRosters } from "@/lib/players/roster"
+import { acquireEconomyHistoryExclusive } from "@/lib/economy/state-history"
 import { calculateHomeMatchExpenses, calculateAwayTravelCost } from "@/lib/economy/match-expenses"
 import { createFinancialTransaction } from "@/lib/economy/service"
 import { simulateMatch } from "./engine/engine"
 import { buildMatchSnapshot } from "./engine/build-snapshot"
-import { generateMatchSeed, SeededRandom } from "./engine/rng"
+import { SeededRandom } from "./engine/rng"
+import { ensureFixtureSeed } from "./fixture-seed"
 import { DEFAULT_GAME_BALANCE_CONFIG } from "./engine/config"
 import { rollFanIncident, fanIncidentFine } from "./engine/crowd"
 import { canGoToShootout, hasNeutralFinances, isNeutralVenue } from "./competition"
@@ -105,7 +107,24 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
     )
   }
 
-  const seed = fixture.matchSeed ?? generateMatchSeed()
+  // THE SEED IS COMMITTED BEFORE THE MATCH IS SIMULATED, in its own short
+  // transaction, and this is a correctness fix rather than a tidy-up.
+  //
+  // matchSeed used to be written only in the same update that stores the
+  // score, so an attempt that rolled back left it null - and the retry drew a
+  // BRAND NEW random seed. The same fixture, replayed, produced a different
+  // crowd and a different result, with nothing recording that the first draw
+  // had ever existed. Committing it up front makes the draw a fact about the
+  // fixture instead of a fact about which attempt happened to succeed.
+  //
+  // `AND "matchSeed" IS NULL` is what makes it idempotent AND race-free. Two
+  // workers both issue the UPDATE; the row lock lets one through, and the
+  // loser - re-evaluating its WHERE against the newly committed row under READ
+  // COMMITTED, or retrying after 40001 under SERIALIZABLE - matches nothing,
+  // updates zero rows, and reads back the winner's seed. Without the predicate
+  // the second write would simply overwrite the first and the two would
+  // diverge. No schema change: the column already exists and is nullable.
+  const seed = await ensureFixtureSeed(fixtureId, fixture.matchSeed)
   // A championship match - a two-club decider or any playoff fixture - is
   // played on neutral turf: neither club gets the home multiplier or the home
   // crowd. Everything else about the match (the engine, its probabilities,
@@ -157,6 +176,14 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
     // THE SQUADS ARE NOW FROZEN. Nothing can sell, release or retire a player
     // of either club until this transaction ends.
     await lockTeamSquads(tx, teamIds)
+    // THE ECONOMY HISTORY LOCK, EXCLUSIVE and taken before every Team and
+    // Player row lock below. This transaction prices a crowd from
+    // TeamEconomicState as of kickoff, and an append committing mid-read is
+    // exactly the case where what this settlement saw and what a later replay
+    // sees could differ. Taking it first also keeps this out of any cycle with
+    // activation repricing, which holds it exclusive and then locks Player rows.
+    await acquireEconomyHistoryExclusive(tx)
+
     await lockTeamRosters(tx, teamIds)
 
     // FAIL CLOSED BEFORE ANYTHING IS SIMULATED. Both clubs are repaired

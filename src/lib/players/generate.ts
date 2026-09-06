@@ -6,6 +6,8 @@ import { SECONDARY_POSITIONS, type PlayerPosition } from "./positions"
 import { calculatePlayerMarketValue } from "./market-value"
 import { calculateAuthoritativeSalary, salaryAuthorityAt } from "@/lib/economy/salary"
 import { DEFAULT_SALARY_CONFIG, INITIAL_SQUAD_SALARY_RANGE, type SalaryConfig } from "@/lib/economy/config"
+import { acquireEconomyHistoryShared, appendTeamEconomicState } from "@/lib/economy/state-history"
+import { acquirePhase3RActivationShared } from "@/lib/economy/activation-lock"
 import { generateAttributesForTargetOverall } from "./attribute-generation"
 import { calculatePositionOverall } from "./overall"
 import { POSITION_ATTRIBUTE_WEIGHTS } from "./position-weights"
@@ -285,13 +287,27 @@ function scaleSquadSalariesToRange(
 /**
  * Creates a full squad for a team and picks a recommended starting XI in
  * DEFAULT_FORMATION so the team never starts with an empty pitch.
+ *
+ * TAKES A TRANSACTION, NOT A CLIENT, and that is now load-bearing rather than
+ * stylistic: a squad is 22 players' worth of wage bill and attendance quality,
+ * so the club's economic history row has to commit with them or the league has
+ * a club whose aggregates moved with nothing recording it. `reason` is
+ * "registration" because that is this function's only remaining caller path -
+ * a brand-new club, whether a signup or a seeded bot.
  */
 export async function generateSquad(
-  db: DbClient,
+  db: Prisma.TransactionClient,
   teamId: string,
   at: Date = new Date(),
   config: SquadGenerationConfig = DEFAULT_SQUAD_GENERATION_CONFIG
 ): Promise<void> {
+  // THE ECONOMY LOCKS FIRST, before generateInitialSquad below - because that
+  // call is where each wage's CURVE is chosen, and choosing it outside the lock
+  // is exactly the interleaving that lets a legacy-priced player land in an
+  // already-calibrated league (see economy/activation-lock.ts).
+  await acquirePhase3RActivationShared(db)
+  await acquireEconomyHistoryShared(db)
+
   const squad = generateInitialSquad(at, config)
 
   // Batched into a single round trip each (instead of one per player/slot -
@@ -315,4 +331,12 @@ export async function generateSquad(
     where: { id: teamId },
     data: { formation: DEFAULT_FORMATION, mentality: "balanced", tempo: "normal", pressing: "normal", width: "balanced" },
   })
+
+  // THE CLUB'S FIRST ECONOMIC ROW, in the same transaction as its first
+  // players. A club can no more exist without economic history than without a
+  // squad - both are established here, or neither is. The team.update above
+  // has already taken the Team row's write lock, which is the same lock
+  // lockTeamRoster takes, so the MAX(version)+1 inside the append is
+  // serialised for this club exactly as it is for every other appender.
+  await appendTeamEconomicState(db, { teamId, reason: "registration" })
 }

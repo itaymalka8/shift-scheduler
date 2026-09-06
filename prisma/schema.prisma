@@ -115,6 +115,7 @@ model Team {
   replenishments        SquadReplenishment[]
   youthIntakes          YouthIntake[]
   eras                  TeamEra[]
+  economicStates        TeamEconomicState[]
 }
 
 enum KitType {
@@ -1358,4 +1359,102 @@ model SquadReplenishment {
   // The exactly-once key. One decision per club per season, enforced by the
   // database rather than by a count that two workers could both read.
   @@unique([seasonId, teamId])
+}
+
+/**
+ * ONE CLUB'S ECONOMIC AGGREGATES AT ONE INSTANT - APPEND ONLY.
+ * WHY THIS TABLE EXISTS. Sponsor income is settled at a weekly boundary and
+ * attendance at a fixture's own kickoff, but both were read from the LIVE
+ * Player table at whatever moment the job happened to run. A settlement that
+ * was delayed - a Cron outage, a rolled-back transaction - therefore priced an
+ * instant using rosters that had moved since. Measured on the shipped code:
+ * nothing in the schema could reconstruct Player.overall, weeklySalary, teamId
+ * or careerStatus as they stood at a past instant, so "what was this league
+ * worth at T" had no answer once anybody transferred, released or promoted.
+ * WHY HISTORY RATHER THAN A PER-WEEK SNAPSHOT. A snapshot has to be written AT
+ * the instant it describes, which is exactly what an outage prevents: the job
+ * that finally runs at T+30 can only observe post-mutation state and would
+ * store it under T, manufacturing a durable record of something that was never
+ * true. Append-only history needs no foreknowledge of T. It records CHANGES,
+ * and every instant lies between two changes, so "as of T" is answerable for
+ * any T after this table starts - including T's that nobody anticipated.
+ * THE ROWS ARE THE ECONOMY'S MEMORY. Everything else about a club can be read
+ * from its current row; this cannot, and that is the whole point.
+ */
+model TeamEconomicState {
+  id String @id @default(cuid())
+
+  /**
+   * RESTRICT, matching TeamEra and SquadReplenishment. Note the transitive
+   * path this closes: Team.userId is onDelete Cascade from User, so deleting a
+   * User would otherwise delete the Team and take its economic history with
+   * it. This blocks that whole chain, exactly as a club's era history does.
+   */
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Restrict)
+
+  /**
+   * THE ECONOMIC LINEARIZATION POINT - not a commit timestamp, and the
+   * difference matters. PostgreSQL cannot tell a transaction its own commit
+   * time (the value does not exist until the commit record is written), so no
+   * column can hold one without a mutable second pass, which this table
+   * forbids. What makes the ordering authoritative is not this value on its
+   * own but the goalx:economy:history lock: appenders hold it SHARED, settlement
+   * reads hold it EXCLUSIVE, and this timestamp is taken from the DATABASE
+   * clock only after that lock has established the order. So a mutation that
+   * linearizes before a settlement for T is visible to it, and one that
+   * linearizes after is stamped after T - see src/lib/economy/state-history.ts.
+   * Never an application clock, never a caller-supplied time. The single
+   * exception is the Phase 3R activation crossing, whose effective instant is
+   * the committed constant PHASE_3R_ACTIVATION_START rather than whenever the
+   * Cron happened to fire.
+   */
+  effectiveAt DateTime
+
+  /**
+   * THE PER-CLUB TIE-BREAK, and it is not optional. clock_timestamp() advances
+   * between statements but is evaluated ONCE per statement, so any batched
+   * append - a development pass, a repricing group, a multi-prospect promotion -
+   * produces identical timestamps by construction. Ordering by `id` would be
+   * worse than useless: cuid is random, so it would impose an order unrelated
+   * to what happened. Allocated as MAX(version)+1 under the club's own
+   * lockTeamRoster write-lock, which is why no two appends can race for it.
+   */
+  version Int
+
+  /**
+   * SUM(weeklySalary) over the club's ACTIVE owned players at effectiveAt.
+   */
+  weeklyPayroll Int
+
+  /**
+   * 22*40 + SUM(max(overall-40,0)) over the same set - the attendance floor-plus-surplus rule.
+   */
+  attendanceQuality Int
+
+  /**
+   * Which subsystem appended this row. AUDIT ONLY - no formula reads it. It
+   * exists so a later investigation can ask "what moved this club's payroll"
+   * without inferring it from timestamps, and so the negative mutation suite
+   * can assert each path appends under its own name, which is how a forgotten
+   * appender gets caught.
+   */
+  reason String
+
+  /**
+   * When the row was INSERTED, deliberately distinct from effectiveAt. The two
+   * differ for the activation crossing - createdAt is when the Cron ran,
+   * effectiveAt is the domain instant - and that difference is precisely what
+   * an auditor needs to see.
+   */
+  createdAt DateTime @default(now())
+
+  /**
+   * The total-order authority. A forgotten lock becomes a P2002 here rather than a silent duplicate.
+   */
+  @@unique([teamId, version])
+  /**
+   * The as-of query path: seek to (teamId, T), walk back, take the first row.
+   */
+  @@index([teamId, effectiveAt(sort: Desc), version(sort: Desc)])
 }

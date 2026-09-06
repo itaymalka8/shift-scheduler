@@ -94,7 +94,15 @@ function makeTx(): Prisma.TransactionClient {
     },
     $executeRaw: (strings: TemplateStringsArray) => {
       const sql = strings.join("?")
-      trace.push(sql.includes('"Team"') ? "LOCK:Team" : "LOCK:other")
+      // Advisory locks are their own class and must be distinguishable: they
+      // are taken BEFORE any row lock, so lumping them in with "other" would
+      // hide the very ordering this file exists to police.
+      const name = sql.includes("pg_advisory")
+        ? "LOCK:advisory"
+        : sql.includes('"Team"')
+          ? "LOCK:Team"
+          : "LOCK:other"
+      trace.push(name)
       return Promise.resolve(1)
     },
     player: {
@@ -173,9 +181,33 @@ import { purchaseTransferListing } from "@/lib/transfers/purchase"
 /** Every operation that must never precede the Player lock. */
 const ORDERED_AFTER = ["listing.", "lineupSlot.", "team.", "financial.", "player.update", "LOCK:Team"]
 
+/**
+ * THE ORDER IS NOW: advisory locks -> Player row -> Team rows -> everything else.
+ *
+ * The advisory locks (goalx:phase3r:activation, goalx:economy:history) moved to
+ * the front for a concrete reason rather than tidiness. Activation repricing
+ * holds them EXCLUSIVE and then issues player.updateMany, which takes Player
+ * ROW locks. A transaction that grabbed a Player row before asking for an
+ * advisory lock would wait on repricing while repricing waited on it - a real
+ * 40P01 between the crossing and any ordinary transfer. One global first-lock
+ * removes that whole class, exactly as putting Player first removed the
+ * Retirement/Release deadlock this file was originally written for.
+ */
 function assertPlayerLockFirst() {
   expect(trace.length).toBeGreaterThan(1)
-  expect(trace[0]).toBe("LOCK:Player")
+
+  const firstRowLock = trace.findIndex((op) => op === "LOCK:Player" || op === "LOCK:Team")
+  expect(firstRowLock).toBeGreaterThan(-1)
+
+  // Everything before the first ROW lock must be an advisory lock - no read,
+  // no write, nothing that could take a row lock of its own.
+  for (const op of trace.slice(0, firstRowLock)) {
+    expect(op).toBe("LOCK:advisory")
+  }
+
+  // And the first row lock taken is still the Player's.
+  expect(trace[firstRowLock]).toBe("LOCK:Player")
+
   const lockIndex = trace.indexOf("LOCK:Player")
   for (const [i, op] of trace.entries()) {
     if (ORDERED_AFTER.some((prefix) => op.startsWith(prefix))) {

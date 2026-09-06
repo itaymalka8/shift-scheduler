@@ -17,6 +17,9 @@ import { DEFAULT_FORMATION, FORMATIONS, isFormationId } from "@/lib/players/form
 import { getSeasonStartMonday, computeMatchdayDate } from "@/lib/match/schedule"
 import { DEFAULT_STARTING_SEATS, toSeatColumns } from "@/lib/stadium/config"
 import { calculateAuthoritativeSalary } from "@/lib/economy/salary"
+import { acquireEconomyHistoryShared, appendTeamEconomicState } from "@/lib/economy/state-history"
+import { acquirePhase3RActivationShared } from "@/lib/economy/activation-lock"
+import { lockTeamRoster } from "@/lib/players/roster"
 import { calculatePlayerMarketValue } from "@/lib/players/market-value"
 import { calculatePlayerOverall } from "@/lib/players/overall"
 import { generateAttributesForTargetOverall } from "@/lib/players/attribute-generation"
@@ -48,7 +51,12 @@ function buildDivisionSeedData(tierConfig: LeagueTierConfig, nameIndex: number) 
     const n = nameIndex + i
     return {
       name,
-      squad: generateInitialSquad(new Date()),
+      // NO SQUAD HERE, deliberately. Generating one decides each player's wage,
+      // and that decision reads the salary era - so it has to happen under the
+      // activation lock, inside the transaction below. Computing wages out here
+      // and inserting them later is precisely the interleaving the lock exists
+      // to forbid (see economy/activation-lock.ts). Only the team's own
+      // metadata, which no economic rule reads, is built up front.
       team: {
         name,
         isBot: true,
@@ -95,6 +103,18 @@ async function seedDivisionTeams(
 
   await prisma.$transaction(
     async (tx) => {
+      // The two economy locks first, in the global order, before any row is
+      // written - so the era these squads are priced on cannot change under us
+      // and no settlement can read a half-seeded league.
+      await acquirePhase3RActivationShared(tx)
+      await acquireEconomyHistoryShared(tx)
+
+      // Squads generated HERE, under the activation lock, so the curve each
+      // wage is priced on is the one that is authoritative for this whole
+      // transaction. Pure CPU - a few tens of milliseconds for a division -
+      // against a 30s budget.
+      const squads = seedData.map(() => generateInitialSquad(new Date()))
+
       const teams = await tx.team.createManyAndReturn({
         data: seedData.map((d) => d.team),
         select: { id: true, createdAt: true },
@@ -126,7 +146,7 @@ async function seedDivisionTeams(
 
       const playerRows: (GeneratedPlayer & { teamId: string })[] = []
       teams.forEach((team, i) => {
-        for (const player of seedData[i].squad) playerRows.push({ teamId: team.id, ...player })
+        for (const player of squads[i]) playerRows.push({ teamId: team.id, ...player })
       })
 
       const created: { id: string; teamId: string; primaryPosition: string; secondaryPositions: string[]; overall: number; fitness: number; status: string }[] = []
@@ -179,6 +199,20 @@ async function seedDivisionTeams(
             scheduledAt: computeMatchdayDate(seasonStartMonday, f.matchday),
           })),
         })
+      }
+
+      // EVERY SEEDED CLUB IS BORN WITH ECONOMIC HISTORY, in the same
+      // transaction as its squad - the same rule a signup follows, so a club's
+      // origin never decides whether it can be settled later.
+      //
+      // No per-club lockTeamRoster here, and the reason is specific rather than
+      // an omission: these Team rows were created moments ago inside THIS
+      // transaction and are invisible to every other session until it commits,
+      // so no concurrent appender can be allocating a version for them. The
+      // shared economy lock is still taken, because the ordering contract
+      // applies to every appender without exception.
+      for (const team of teams) {
+        await appendTeamEconomicState(tx, { teamId: team.id, reason: "registration" })
       }
     },
     { timeout: 30000 }
@@ -323,43 +357,74 @@ async function backfillMissingGameData(seasonId: string): Promise<void> {
     // a 76-rated player stays roughly 76), then Overall itself is
     // recomputed from those attributes - never left as the old
     // independently-set number.
-    for (const player of team.players) {
+    // ONE SHORT TRANSACTION PER CLUB, not one per player and not one for the
+    // whole league. Both repairs below rewrite `overall` and `weeklySalary` -
+    // the two inputs of a club's economic aggregates - so the player writes and
+    // the club's history row have to commit together or the league gets a club
+    // whose payroll moved with nothing recording it. Per-club keeps this inside
+    // a pooler's patience, which is the constraint that made the original loop
+    // transaction-free in the first place.
+    const playersNeedingRepair = team.players.filter((player) => {
       const position = isPlayerPosition(player.primaryPosition) ? player.primaryPosition : "CM"
       const needsAttributes = position === "GK" ? player.reflexes == null : player.shooting == null
-      if (needsAttributes) {
-        const attributes = generateAttributesForTargetOverall(position, player.overall)
-        const overall = calculatePlayerOverall({ ...attributes, primaryPosition: position })
-        await prisma.player.update({
-          where: { id: player.id },
-          data: {
-            ...attributes,
-            overall,
-            marketValue: calculatePlayerMarketValue({
-              overall,
-              age: player.age,
-              potential: player.potential,
-              primaryPosition: position,
-              fitness: player.fitness,
-            }),
-            weeklySalary: calculateAuthoritativeSalary(
-              { overall, age: player.age, potential: player.potential, primaryPosition: position },
-              new Date()
-            ),
-          },
-        })
-      } else if (player.weeklySalary === 0) {
-        // Squads generated before player salaries existed (but after
-        // attributes) still carry the column's default of 0 - a real
-        // generated player's salary is always at least SALARY_MIN.
-        await prisma.player.update({
-          where: { id: player.id },
-          data: { weeklySalary: calculateAuthoritativeSalary(player, new Date()) },
-        })
-      }
+      return needsAttributes || player.weeklySalary === 0
+    })
+
+    if (playersNeedingRepair.length > 0) {
+      await prisma.$transaction(async (tx) => {
+        await acquirePhase3RActivationShared(tx)
+        await acquireEconomyHistoryShared(tx)
+        await lockTeamRoster(tx, team.id)
+
+        for (const player of playersNeedingRepair) {
+          const position = isPlayerPosition(player.primaryPosition) ? player.primaryPosition : "CM"
+          const needsAttributes = position === "GK" ? player.reflexes == null : player.shooting == null
+          if (needsAttributes) {
+            const attributes = generateAttributesForTargetOverall(position, player.overall)
+            const overall = calculatePlayerOverall({ ...attributes, primaryPosition: position })
+            await tx.player.update({
+              where: { id: player.id },
+              data: {
+                ...attributes,
+                overall,
+                marketValue: calculatePlayerMarketValue({
+                  overall,
+                  age: player.age,
+                  potential: player.potential,
+                  primaryPosition: position,
+                  fitness: player.fitness,
+                }),
+                weeklySalary: calculateAuthoritativeSalary(
+                  { overall, age: player.age, potential: player.potential, primaryPosition: position },
+                  new Date()
+                ),
+              },
+            })
+          } else {
+            // Squads generated before player salaries existed (but after
+            // attributes) still carry the column's default of 0 - a real
+            // generated player's salary is always at least SALARY_MIN.
+            await tx.player.update({
+              where: { id: player.id },
+              data: { weeklySalary: calculateAuthoritativeSalary(player, new Date()) },
+            })
+          }
+        }
+
+        // Last statement of the transaction, so the club's aggregates are read
+        // after every repair above and stamped as close to commit as possible.
+        await appendTeamEconomicState(tx, { teamId: team.id, reason: "seed_backfill" })
+      })
     }
 
     if (team.players.length === 0) {
-      await generateSquad(prisma, team.id)
+      // generateSquad writes 22 players AND the club's first economic row, so
+      // it needs a real transaction - passing the bare client would type-check
+      // (a PrismaClient satisfies TransactionClient structurally) and silently
+      // give up atomicity.
+      await prisma.$transaction(async (tx) => {
+        await generateSquad(tx, team.id)
+      })
     } else if (team.lineupSlots.length === 0) {
       // The lineup-slot schema changed (x/y -> slotIndex) and dropped old
       // rows - give any squad left without a starting XI a fresh one.

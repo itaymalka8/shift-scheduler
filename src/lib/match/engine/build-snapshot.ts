@@ -7,7 +7,9 @@ import { resolveFormationSlots } from "@/lib/players/formations"
 import { readSeatsAsOf } from "@/lib/stadium/actions"
 import { calculateStadiumCapacity } from "@/lib/stadium/metrics"
 import { resolveMatchAttendance } from "@/lib/stadium/match-attendance"
-import { readLeagueNeutralQuality } from "@/lib/stadium/neutral-quality"
+import { readLeagueNeutralQuality, readLeagueNeutralQualityAsOf } from "@/lib/stadium/neutral-quality"
+import { economicStateAsOf } from "@/lib/economy/state-history"
+import { phase3rIsActive } from "@/lib/economy/activation"
 import type { MatchSnapshot, SnapshotPlayer, SnapshotTeam } from "./snapshot"
 
 function toPosition(value: string): PlayerPosition {
@@ -126,7 +128,22 @@ export async function buildMatchSnapshot(
     where: { id: fixture.divisionId },
     select: { seasonId: true },
   })
-  const neutralQuality = await readLeagueNeutralQuality(db, division.seasonId)
+
+  // THE ECONOMIC INSTANT OF A FIXTURE IS ITS KICKOFF, never the moment the
+  // simulator got round to it. In the calibrated era both the home club's own
+  // quality and the league neutral come from TeamEconomicState as of that
+  // instant, so a match simulated thirty minutes late - or retried after a
+  // rollback - draws the crowd the squads of the day earned, not the crowd
+  // whoever transferred in the meantime would have drawn. Before the boundary
+  // the live read stays the authority, unchanged.
+  const economicInstant = fixture.scheduledAt ?? fixture.createdAt
+  const phase3r = phase3rIsActive(economicInstant)
+  const neutralQuality = phase3r
+    ? await readLeagueNeutralQualityAsOf(db, division.seasonId, economicInstant)
+    : await readLeagueNeutralQuality(db, division.seasonId)
+  const homeQuality = phase3r
+    ? (await economicStateAsOf(db, fixture.homeTeamId, economicInstant)).attendanceQuality
+    : undefined
 
   // THE ONLY ATTENDANCE ROLL THIS FIXTURE WILL EVER GET. Seeded from the
   // fixture's own matchSeed, and carried whole on the snapshot so settlement
@@ -140,7 +157,8 @@ export async function buildMatchSnapshot(
     homePlayers,
     seats,
     neutralQuality,
-    at: fixture.scheduledAt ?? fixture.createdAt,
+    homeQuality,
+    at: economicInstant,
   })
 
   return {

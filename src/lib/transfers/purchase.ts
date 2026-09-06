@@ -9,6 +9,7 @@ import { repairTeamLineup } from "@/lib/players/lineup-repair"
 import { ensureTransferWindowExists, getTransferWindowDefinition, isWithinTransferWindow } from "./window"
 import { lockPlayerRow } from "@/lib/players/locks"
 import { getActiveRosterCount, lockTeamRosters, MAX_ACTIVE_ROSTER_SIZE } from "@/lib/players/roster"
+import { acquireEconomyHistoryShared, appendTeamEconomicState } from "@/lib/economy/state-history"
 import { prisma } from "@/lib/prisma"
 
 export interface PurchaseTransferListingInput {
@@ -88,8 +89,20 @@ export async function purchaseTransferListing(input: PurchaseTransferListingInpu
   }
 
   return runSerializableTransaction(async (tx) => {
-    // 0. Player row lock FIRST, before the listing, lineup, team and
-    // financial rows below.
+    // 0. THE ECONOMY HISTORY LOCK, before every other lock this transaction
+    // takes - Player row included.
+    //
+    // It has to be first, and the reason is a concrete cycle rather than
+    // tidiness. Activation repricing holds this lock EXCLUSIVE and then issues
+    // player.updateMany, which takes Player row locks. If a purchase held a
+    // Player row and only then asked for this lock shared, the two would wait
+    // on each other forever. One global first-lock removes that whole class:
+    // economy history -> Team rows (ascending id) -> Player rows, for every
+    // appender and every settlement in the codebase.
+    await acquireEconomyHistoryShared(tx)
+
+    // 0b. Player row lock, before the listing, lineup, team and financial
+    // rows below.
     const locked = await lockPlayerRow(tx, discovery.playerId)
     if (!locked) {
       throw new TransferError("PLAYER_NOT_OWNED", `No such player: ${discovery.playerId}`)
@@ -290,6 +303,27 @@ export async function purchaseTransferListing(input: PurchaseTransferListingInpu
     // a club that bought a player because it was short is legal again the
     // moment the transfer commits.
     await repairTeamLineup(tx, input.buyingTeamId)
+
+    // 16. ECONOMIC HISTORY FOR BOTH CLUBS, last, so each row is computed after
+    // every roster write above and stamped as close to commit as this
+    // transaction can get.
+    //
+    // ASCENDING teamId ORDER, matching lockTeamRosters at step 6b. The locks
+    // are already held so no deadlock is possible here, but appending in the
+    // same order the locks were taken keeps one rule for the whole file rather
+    // than two that a later reader has to reconcile.
+    //
+    // BOTH SIDES MOVE. A transfer is the one mutation that changes two clubs'
+    // aggregates at once - the seller loses a wage and a quality contribution,
+    // the buyer gains them - so a single row would leave the other club's
+    // history claiming a squad it no longer has.
+    const [firstId, secondId] = [listing.sellingTeamId, input.buyingTeamId].sort()
+    for (const teamId of [firstId, secondId]) {
+      await appendTeamEconomicState(tx, {
+        teamId,
+        reason: teamId === listing.sellingTeamId ? "transfer_out" : "transfer_in",
+      })
+    }
 
     return {
       listingId: listing.id,

@@ -75,7 +75,19 @@ function makeTx(
   }
 
   const stub = {
-    $queryRaw: jest.fn(async () => [{ id: player.id }]),
+    // The lifecycle transaction now opens with two advisory locks (the Phase 3R
+    // activation lock and the economy-history lock) and closes by appending a
+    // TeamEconomicState row, so the stub has to answer raw SQL as well as the
+    // model calls. $executeRaw covers the advisory acquires and the club's
+    // roster lock; $queryRaw covers the player lock and the append's own
+    // INSERT ... RETURNING.
+    $executeRaw: jest.fn(async () => 1),
+    $queryRaw: jest.fn(async (strings: TemplateStringsArray) => {
+      const sql = strings.join("?")
+      if (sql.includes("TeamEconomicState")) return [{ version: 1, effectiveAt: new Date() }]
+      if (sql.includes("SUM(")) return [{ payroll: BigInt(0), surplus: BigInt(0) }]
+      return [{ id: player.id }]
+    }),
     playerSeasonLifecycle: {
       findUnique: jest.fn(async ({ where }: { where: { seasonId_playerId: { seasonId: string; playerId: string } } }) => {
         const key = `${where.seasonId_playerId.seasonId}:${where.seasonId_playerId.playerId}`

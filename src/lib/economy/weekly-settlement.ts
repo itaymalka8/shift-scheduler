@@ -49,6 +49,8 @@ import { economyEraAt } from "./activation"
 import { calculateSponsorIncome, sponsorReferenceId, type SponsorClub } from "./sponsor"
 import { calculateWeeklyMaintenance, maintenanceReferenceId } from "./maintenance"
 import { repriceLeagueSalaries, type RepricingResult } from "./salary-repricing"
+import { acquireEconomyHistoryExclusive, appendRepricingStates, economicStatesAsOf } from "./state-history"
+import { acquirePhase3RActivationExclusive } from "./activation-lock"
 import { readSeasonTiersAsOf } from "./season-tier"
 import { isPayrollDueForTeam, payrollReferenceId, payrollWeekKey, payrollWindow } from "./payroll-clock"
 import { settlePayrollWeek, type PayrollWeekResult } from "./payroll"
@@ -132,6 +134,24 @@ export async function settleSponsorWeek(instant: Date): Promise<SponsorWeekResul
 
   return prisma.$transaction(
     async (tx) => {
+      // 0. THE THREE LOCKS, in the one global order every other transaction
+      // uses: activation -> economy history -> this week's own key.
+      //
+      // ACTIVATION, EXCLUSIVE. Every salary writer in the codebase holds this
+      // SHARED while it decides which curve to price a player on, so taking it
+      // exclusive here means no player can be created or re-rated while
+      // repriceLeagueSalaries is scanning. Without it the crossing has a real
+      // race: a writer reads "not yet activated", the repricing scan passes it,
+      // and the writer then commits a legacy-priced player into an otherwise
+      // calibrated league - a mixed state with no way back except the next
+      // week's convergence. See economy/activation-lock.ts for the full
+      // ordering proof.
+      //
+      // ECONOMY HISTORY, EXCLUSIVE. This transaction READS history as of
+      // `instant`, and an append committing mid-read is exactly the case where
+      // the settlement's view and a later replay could disagree.
+      await acquirePhase3RActivationExclusive(tx)
+      await acquireEconomyHistoryExclusive(tx)
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${sponsorLockKey(weekKey)}))`
 
       // 1. THE LEAGUE GOES ON THE CURVE BEFORE ANY WAGE IS READ.
@@ -154,17 +174,41 @@ export async function settleSponsorWeek(instant: Date): Promise<SponsorWeekResul
       if (eligible.length === 0) return empty
       const eligibleIds = eligible.map((team) => team.id)
 
-      // 2. THE CANONICAL WAGE SNAPSHOT - one query, one instant, read AFTER
-      // the repricing above so the median is the calibrated league's median.
-      const players = await tx.player.findMany({
-        where: { teamId: { in: eligibleIds }, careerStatus: "ACTIVE" },
-        select: { teamId: true, weeklySalary: true },
-      })
-      const payrollByTeam = new Map<string, number>()
-      for (const player of players) {
-        if (!player.teamId) continue
-        payrollByTeam.set(player.teamId, (payrollByTeam.get(player.teamId) ?? 0) + player.weeklySalary)
+      // 1b. THE CROSSING'S OWN HISTORY ROWS, at the domain instant.
+      //
+      // Repricing has just changed what these clubs pay, and the sponsor
+      // calculation below reads HISTORY rather than live Player rows - so
+      // without this the week being settled would be priced from wages that
+      // predate the crossing, which is precisely the "sponsor at T reads
+      // pre-repricing history" state the contract forbids.
+      //
+      // effectiveAt = `instant`, not clock_timestamp(), and that is the single
+      // permitted domain timestamp in the whole appender surface. It is
+      // admissible because the value is (i) the settlement instant itself,
+      // derived from the committed PHASE_3R_ACTIVATION_START grid rather than
+      // supplied by any caller, (ii) identical for every club, and (iii) the
+      // exact instant this transaction is settling. No request, page or retry
+      // can influence it.
+      //
+      // In practice this fires once, at activation. Every other writer already
+      // prices through the same authority, so a later convergence run finds
+      // nothing to rewrite and appends nothing.
+      if (repricing.repriced > 0) {
+        await appendRepricingStates(tx, eligibleIds, instant)
       }
+
+      // 2. THE CANONICAL WAGE SNAPSHOT - from ECONOMIC HISTORY as of this
+      // week's own instant, never from live Player rows.
+      //
+      // This is the whole point of the state-history table. A settlement
+      // delayed by a Cron outage, or retried after a rollback, used to read
+      // whatever the rosters looked like when it finally ran; now it reads what
+      // they were at the instant it is settling, so a transfer at T+5 minutes
+      // cannot change what the league was worth at T. Fails closed: a club with
+      // no eligible row throws rather than being priced from current state.
+      const states = await economicStatesAsOf(tx, eligibleIds, instant)
+      const payrollByTeam = new Map<string, number>()
+      for (const [teamId, state] of states) payrollByTeam.set(teamId, state.weeklyPayroll)
 
       // 3. TIER, AS OF THIS WEEK'S OWN INSTANT - season-scoped membership, never
       // current Team state, so a club promoted next season does not retroactively

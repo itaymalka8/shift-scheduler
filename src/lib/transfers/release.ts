@@ -4,6 +4,8 @@ import { runSerializableTransaction } from "./retry"
 import { removePlayerFromSquad } from "./squad-cleanup"
 import { assertDepartureKeepsRosterLegal } from "./roster-guard"
 import { lockPlayerRow } from "@/lib/players/locks"
+import { lockTeamRoster } from "@/lib/players/roster"
+import { acquireEconomyHistoryShared, appendTeamEconomicState } from "@/lib/economy/state-history"
 
 export interface ReleasePlayerInput {
   /**
@@ -53,13 +55,35 @@ function referenceIdFor(playerId: string, stintNumber: number): string {
  */
 export async function releasePlayer(input: ReleasePlayerInput): Promise<ReleasePlayerResult> {
   return runSerializableTransaction(async (tx) => {
-    // 0. Player row lock FIRST - before the listing, lineup, team-role and
-    // ownership writes below. Shared with Retirement and the other transfer
-    // paths so none of them can deadlock against each other; see
-    // lockPlayerRow for the full ordering contract.
+    // 0. THE ECONOMY HISTORY LOCK, before every other lock here - the same
+    // global first-lock Transfer Purchase takes, for the same reason:
+    // activation repricing holds it EXCLUSIVE and then locks Player rows, so a
+    // transaction that grabbed a Player row before asking for this one could
+    // wait on repricing while repricing waits on it.
+    await acquireEconomyHistoryShared(tx)
+
+    // 0b. Player row lock - before the Team lock below and before the listing,
+    // lineup, team-role and ownership writes. Shared with Retirement and the
+    // other transfer paths so none of them can deadlock against each other;
+    // see lockPlayerRow for the full ordering contract.
     const locked = await lockPlayerRow(tx, input.playerId)
     if (!locked) {
       throw new TransferError("PLAYER_NOT_OWNED", `No such player: ${input.playerId}`)
+    }
+
+    // 0c. THE CLUB LOCK, AFTER the player's. Release did not take this before,
+    // because it only ever needed the player's own row. It needs it now: the
+    // economic history append allocates version = MAX(version)+1 for this club,
+    // and that allocation is only race-free under the club's Team row
+    // write-lock.
+    //
+    // Player BEFORE Team, not the other way round, and the order is not
+    // arbitrary: Transfer Purchase takes them in exactly that order. Reversing
+    // it here would let a release hold the seller's Team row while waiting for
+    // a player a concurrent purchase already holds, and the purchase wait for
+    // that same Team row - the 40P01 this contract exists to prevent.
+    if (!(await lockTeamRoster(tx, input.teamId))) {
+      throw new TransferError("PLAYER_NOT_OWNED", `No such team: ${input.teamId}`)
     }
 
     // 1. Re-read the player inside this transaction, under the lock - never
@@ -182,6 +206,12 @@ export async function releasePlayer(input: ReleasePlayerInput): Promise<ReleaseP
       // no-opped underneath us.
       throw new TransferError("TRANSFER_CONFLICT", `Unexpected duplicate release ledger entry for ${referenceId}`)
     }
+
+    // 10. ECONOMIC HISTORY, last. The club just lost a wage and this player's
+    // above-replacement contribution to its attendance quality; without this
+    // row a settlement replayed for any later instant would still price the
+    // club as though he were in the squad.
+    await appendTeamEconomicState(tx, { teamId: input.teamId, reason: "release" })
 
     return { playerId: player.id, stintNumber: player.stintNumber, alreadyProcessed: false }
   })

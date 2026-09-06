@@ -38,6 +38,7 @@
  */
 import type { Prisma, PrismaClient } from "@/generated/prisma"
 import { ATTENDANCE_QUALITY_FLOOR, REPLACEMENT_OVERALL, calculateLeagueNeutralQuality } from "./attendance-quality"
+import { economicStatesAsOf } from "@/lib/economy/state-history"
 
 type DbClient = PrismaClient | Prisma.TransactionClient
 
@@ -63,4 +64,33 @@ export async function readLeagueNeutralQuality(db: DbClient, seasonId: string): 
     GROUP BY dt."teamId"
   `
   return calculateLeagueNeutralQuality(rows.map((row) => ATTENDANCE_QUALITY_FLOOR + Number(row.surplus)))
+}
+
+/**
+ * THE LEAGUE NEUTRAL AS OF AN INSTANT, from economic history.
+ *
+ * The same median as readLeagueNeutralQuality, over the same season-scoped
+ * DivisionTeam membership - but every club's quality is read from
+ * TeamEconomicState at `instant` rather than from live Player rows.
+ *
+ * That is the whole difference, and it is the point: a fixture simulated late,
+ * or retried after a rollback, used to be judged against whatever the rest of
+ * the league looked like when the job finally ran. Now it is judged against
+ * what the league was at kickoff, so a transfer elsewhere in the division
+ * cannot retroactively change how many people came to this match.
+ *
+ * Fails closed through economicStatesAsOf: a member club with no eligible row
+ * throws rather than being quietly dropped from the median, which would shift
+ * it for everyone.
+ */
+export async function readLeagueNeutralQualityAsOf(
+  db: DbClient,
+  seasonId: string,
+  instant: Date
+): Promise<number> {
+  const members = await db.divisionTeam.findMany({ where: { seasonId }, select: { teamId: true } })
+  if (members.length === 0) return ATTENDANCE_QUALITY_FLOOR
+
+  const states = await economicStatesAsOf(db, members.map((m) => m.teamId), instant)
+  return calculateLeagueNeutralQuality([...states.values()].map((state) => state.attendanceQuality))
 }

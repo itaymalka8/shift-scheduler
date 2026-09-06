@@ -5,6 +5,8 @@ import { calculatePlayerMarketValue } from "@/lib/players/market-value"
 import { calculateAuthoritativeSalary } from "@/lib/economy/salary"
 import { extractPlayerAttributes } from "@/lib/players/attributes"
 import { getAvailableRosterSlots, lockTeamRoster, pickAvailableShirtNumber } from "@/lib/players/roster"
+import { acquireEconomyHistoryShared, appendTeamEconomicState } from "@/lib/economy/state-history"
+import { acquirePhase3RActivationShared } from "@/lib/economy/activation-lock"
 import { countRoster, countsAfterAdditions, isResolvableWithinCap, rosterGroupOf } from "@/lib/players/roster-floor"
 import { YouthError } from "./errors"
 import { MAX_PROMOTIONS_PER_INTAKE } from "./config"
@@ -73,7 +75,14 @@ export async function runPromoteYouthProspect(
     throw new YouthError("PROSPECT_NOT_PENDING", `Prospect ${prospect.id} is ${prospect.status}`)
   }
 
-  // 2. Team row lock, through the same helper Transfer Purchase uses, then
+  // 2. THE ECONOMY HISTORY LOCK, before the club lock - the global first-lock
+  // shared with Transfer Purchase, Release and every settlement, so activation
+  // repricing (which holds it EXCLUSIVE and then locks Player rows) can never
+  // deadlock against a promotion.
+  await acquirePhase3RActivationShared(tx)
+  await acquireEconomyHistoryShared(tx)
+
+  // 2b. Team row lock, through the same helper Transfer Purchase uses, then
   // the roster count - never counted before the lock is held.
   if (!(await lockTeamRoster(tx, intake.teamId))) {
     throw new YouthError("TEAM_NOT_FOUND", `No such team: ${intake.teamId}`)
@@ -186,6 +195,11 @@ export async function runPromoteYouthProspect(
       data: { status: "EXPIRED" },
     })
   }
+
+  // ECONOMIC HISTORY, last. A promoted prospect is a new wage on the bill and,
+  // above replacement level, a new contribution to the crowd - both of which a
+  // settlement replayed for a later instant has to see.
+  await appendTeamEconomicState(tx, { teamId: intake.teamId, reason: "youth_promotion" })
 
   return {
     prospectId: prospect.id,
