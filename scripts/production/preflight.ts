@@ -15,6 +15,7 @@ import { ProductionSafetyError } from "../../src/lib/production/env-guard"
 import { findDuplicateActiveSeasons } from "../../src/lib/production/duplicate-active-seasons"
 import { QA_MATCHDAY } from "../../src/lib/production/qa-residue"
 import { expectedFixtureCount, judgeLeagueStructure } from "../../src/lib/production/league-structure"
+import { PAYROLL_AUTOMATION_START, PHASE_3R_ACTIVATION_START } from "../../src/lib/economy/config"
 
 interface MigrationRow {
   migration_name: string
@@ -276,6 +277,30 @@ async function main() {
     }
     for (const f of nextUnplayed) {
       lines.push(`  next unplayed: matchday ${f.matchday} @ ${f.scheduledAt?.toISOString() ?? "unscheduled"}`)
+    }
+
+    // --- Economic activation boundaries ---------------------------------
+    // Printed on EVERY preflight, not only on the deploy that turns them on:
+    // a boundary is a promise about a future instant, and the cheapest way to
+    // notice it has silently passed is to see it on every run.
+    lines.push(
+      `Payroll activation:  ${PAYROLL_AUTOMATION_START.toISOString()} (${
+        now.getTime() >= PAYROLL_AUTOMATION_START.getTime() ? "PASSED" : "future"
+      })`
+    )
+    const phase3rPassed = now.getTime() >= PHASE_3R_ACTIVATION_START.getTime()
+    lines.push(
+      `Phase 3R activation: ${PHASE_3R_ACTIVATION_START.toISOString()} (${phase3rPassed ? "PASSED" : "future"})`
+    )
+    if (phase3rPassed) {
+      // Only a WARNING here, never an error: once Phase 3R is genuinely live
+      // the boundary is history and must not be moved. The fail-closed
+      // decision belongs to prod:economy:activation, which can tell the two
+      // situations apart by looking for settled sponsor rows.
+      warnings.push(
+        "The Phase 3R activation boundary has passed. If the calibrated economy is not live yet, " +
+          "run prod:economy:activation - it fails closed and will say so."
+      )
     }
 
     // --- QA residue ---------------------------------------------------
