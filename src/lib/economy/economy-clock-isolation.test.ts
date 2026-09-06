@@ -44,6 +44,8 @@ const ECONOMY_PAGE = read("src", "app", "economy", "page.tsx")
 const STADIUM_PAGE = read("src", "app", "stadium", "page.tsx")
 const STADIUM_ACTIONS = read("src", "lib", "stadium", "actions.ts")
 const AS_OF = read("src", "lib", "stadium", "as-of.ts")
+const WEEKLY = read("src", "lib", "economy", "weekly-settlement.ts")
+const REPRICING = read("src", "lib", "economy", "salary-repricing.ts")
 const SIMULATE = read("src", "lib", "match", "simulate.ts")
 const SNAPSHOT = read("src", "lib", "match", "engine", "build-snapshot.ts")
 
@@ -332,23 +334,87 @@ describe("THE ECONOMY SERVICE IS STILL THE ONLY WRITER OF Team.balance", () => {
   })
 })
 
-describe("OUT OF SCOPE STAYS OUT", () => {
-  const everySource = [PAYROLL, CLOCK, CRON, STADIUM_ACTIONS, AS_OF, ECONOMY_PAGE, STADIUM_PAGE].join("\n")
+describe("PHASE 3R'S NEW WRITERS EXIST IN EXACTLY ONE PLACE", () => {
+  // Phase 3P's guard here was "no sponsor or maintenance writer exists at
+  // all". Phase 3R deliberately introduces both, so the guard changes shape
+  // rather than disappearing: they must exist in the weekly settlement and
+  // NOWHERE else. A second writer is how a club gets paid twice.
+  const notTheSettlement = [PAYROLL, CLOCK, STADIUM_ACTIONS, AS_OF, ECONOMY_PAGE, STADIUM_PAGE, SIMULATE, CRON].join("\n")
 
-  it("no stadium maintenance WRITER appeared", () => {
-    // /stadium still DISPLAYS calculateWeeklyMaintenance, and always has -
-    // showing a club what upkeep would cost is not charging it. What must not
-    // exist is a ledger row of that type, which is what this bans.
-    expect(everySource).not.toContain('type: "stadiumMaintenance"')
-    const settlers = [PAYROLL, CRON, code(STADIUM_ACTIONS)].join("\n")
-    expect(settlers).not.toContain("calculateWeeklyMaintenance")
+  it("the sponsor writer is in the weekly settlement and nowhere else", () => {
+    expect(WEEKLY).toContain('type: "sponsorIncome"')
+    expect(notTheSettlement).not.toContain('type: "sponsorIncome"')
   })
 
-  it("no sponsor income writer appeared", () => {
-    expect(everySource).not.toContain('type: "sponsorIncome"')
+  it("the maintenance writer is in the weekly settlement and nowhere else", () => {
+    // /stadium still DISPLAYS calculateWeeklyMaintenance, and always has -
+    // showing a club what upkeep would cost is not charging it. What must live
+    // in one place is the ledger row.
+    expect(WEEKLY).toContain('type: "stadiumMaintenance"')
+    expect(notTheSettlement).not.toContain('type: "stadiumMaintenance"')
+  })
+
+  it("the repricing writer is in one module, and writes no money at all", () => {
+    expect(REPRICING).toContain("data: { weeklySalary: target }")
+    expect(REPRICING).not.toContain("createFinancialTransaction")
+    expect(REPRICING).not.toContain("adjustClubBalance")
+    expect(notTheSettlement).not.toContain("repriceLeagueSalaries(")
   })
 
   it("no season prize or championship reward appeared", () => {
+    const everySource = [notTheSettlement, WEEKLY].join("\n")
     expect(everySource).not.toMatch(/prizeMoney|championshipReward|seasonPrize/)
+  })
+
+  it("no bankruptcy, loan, administration or rescue appeared anywhere in the economy", () => {
+    // Explicitly forbidden by the economic decision. The calibrated model
+    // permits rare negative balances; inventing a bailout would silently
+    // change the economy that was proven.
+    const everySource = [notTheSettlement, WEEKLY, REPRICING, SERVICE, BALANCE].join("\n")
+    expect(everySource).not.toMatch(/bankrupt/i)
+    expect(everySource).not.toMatch(/administration/i)
+    expect(everySource).not.toMatch(/\bloan\b/i)
+    expect(everySource).not.toMatch(/bailout|rescueFund|financialRescue/i)
+  })
+})
+
+describe("EVERY PHASE 3R SETTLEMENT HAS THE SIX PROPERTIES A MONEY WRITER NEEDS", () => {
+  const settlements = [
+    { name: "sponsor", referenceId: "sponsorReferenceId", lock: "goalx:sponsor:" },
+    { name: "maintenance", referenceId: "maintenanceReferenceId", lock: "goalx:maintenance:" },
+  ]
+
+  it.each(settlements)("$name has a per-week reference key", ({ referenceId }) => {
+    expect(WEEKLY).toContain(referenceId)
+  })
+
+  it.each(settlements)("$name takes a transaction-scoped advisory lock", ({ lock }) => {
+    expect(WEEKLY).toContain(lock)
+    expect(WEEKLY).toContain("pg_advisory_xact_lock")
+  })
+
+  it.each(settlements)("$name checks what is already settled before writing", ({ name }) => {
+    const section = WEEKLY.slice(
+      WEEKLY.indexOf(name === "sponsor" ? "settleSponsorWeek" : "settleMaintenanceWeek")
+    )
+    expect(section).toContain("financialTransaction.findMany")
+    expect(section).toContain("alreadySettled")
+  })
+
+  it("both write in ascending team id order, the project's documented lock order", () => {
+    expect(WEEKLY.match(/orderBy: \{ id: "asc" \}/g) ?? []).toHaveLength(2)
+  })
+
+  it("both go through the Economy Service and never touch the balance directly", () => {
+    expect(WEEKLY).toContain("createFinancialTransaction(")
+    expect(WEEKLY).not.toContain("adjustClubBalance")
+    expect(WEEKLY).not.toContain("team.update")
+  })
+
+  it("neither opts out of a negative balance - they are mandatory charges", () => {
+    // Sponsor is income and cannot push a club negative; maintenance is a
+    // mandatory cost and must be allowed to, exactly like wages. Neither may
+    // quietly acquire allowNegative:false and start refusing to settle.
+    expect(WEEKLY).not.toContain("allowNegative")
   })
 })
