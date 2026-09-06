@@ -140,6 +140,7 @@ interface SimClub {
 }
 
 interface SeasonLedger {
+  income: number
   gateRevenue: number
   homeExpense: number
   awayTravel: number
@@ -150,6 +151,7 @@ interface SeasonLedger {
 }
 
 const EMPTY_LEDGER = (): SeasonLedger => ({
+  income: 0,
   gateRevenue: 0,
   homeExpense: 0,
   awayTravel: 0,
@@ -171,6 +173,10 @@ export interface ProjectionOptions {
   humanReinvestFraction: number | null
   /** Reserve, in payroll weeks, a reinvesting club keeps back. */
   reserveWeeks: number
+  /** Flat NEW money credited to every club once per season. 0 = today. */
+  flatSeasonIncome?: number
+  /** Multiplier applied to flatSeasonIncome for tier 1 clubs (tier 2 keeps 1x). */
+  tier1IncomeMultiplier?: number
 }
 
 interface SeasonSnapshot {
@@ -238,6 +244,12 @@ function playSeason(club: SimClub, rng: SeededRandom, ledger: SeasonLedger, opts
   const travel = calculateAwayTravelCost("league") * AWAY_FIXTURES_PER_SEASON
   ledger.awayTravel += travel
   club.balance -= travel
+
+  const income = (opts.flatSeasonIncome ?? 0) * (club.tier === 1 ? (opts.tier1IncomeMultiplier ?? 1) : 1)
+  if (income > 0) {
+    ledger.income += income
+    club.balance += income
+  }
 
   const wages = seasonPayroll(club) * SEASON_PAYROLL_WEEKS
   ledger.wages += wages
@@ -360,7 +372,7 @@ function snapshot(season: number, clubs: SimClub[], ledger: SeasonLedger): Seaso
   const balances = clubs.map((c) => c.balance)
   const weekly = clubs.map((c) => seasonPayroll(c))
   const overalls = clubs.flatMap((c) => c.players.map((p) => p.overall)).sort((a, b) => a - b)
-  const created = ledger.gateRevenue
+  const created = ledger.gateRevenue + ledger.income
   const destroyed = ledger.homeExpense + ledger.awayTravel + ledger.fanFines + ledger.wages + ledger.maintenance + ledger.construction
   return {
     season,
@@ -401,13 +413,16 @@ function project(base: SimClub[], opts: ProjectionOptions, seed: string): Season
       for (const club of clubs) playSeason(club, rng, ledger, opts)
       for (const club of clubs) ledger.construction += reinvest(club, opts)
       for (const club of clubs) rollSquad(club, season, rng)
-      // Promotion and relegation, modelled exactly as Phase 3Q leaves it: the
-      // tier label moves, and NOTHING financial follows it. Four clubs swap
-      // labels each season; with no tier-dependent money the choice of which
-      // four cannot change any total, so the four lowest-balance tier 1 clubs
-      // are used as a stable, explainable stand-in for a league table.
-      const tier1 = clubs.filter((c) => c.tier === 1).sort((a, b) => a.balance - b.balance)
-      const tier2 = clubs.filter((c) => c.tier === 2).sort((a, b) => b.balance - a.balance)
+      // Promotion and relegation, modelled as Phase 3Q leaves it: the tier
+      // label moves and NOTHING financial follows it.
+      //
+      // WHICH four move is drawn from the season's own RNG, NEVER from a
+      // club's balance. Sorting by balance would quietly correlate tier with
+      // wealth and then the projection would "discover" a tier effect it had
+      // itself created - the exact opposite of what section 11 has to test.
+      const shuffleKey = (c: SimClub) => new SeededRandom(`${seed}-${season}-${c.id}`).next()
+      const tier1 = clubs.filter((c) => c.tier === 1).sort((a, b) => shuffleKey(a) - shuffleKey(b))
+      const tier2 = clubs.filter((c) => c.tier === 2).sort((a, b) => shuffleKey(a) - shuffleKey(b))
       for (let i = 0; i < 4 && i < tier1.length && i < tier2.length; i++) {
         tier1[i].tier = 2
         tier2[i].tier = 1
@@ -462,7 +477,7 @@ function printProjection(title: string, snapshots: SeasonSnapshot[], marks: numb
       `TIER1 med=${fmt(pct(t1, 0.5))}  TIER2 med=${fmt(pct(t2, 0.5))}`
   )
   console.info(
-    `    final season flows: gate=+${fmt(last.ledger.gateRevenue)} matchCost=-${fmt(last.ledger.homeExpense)} ` +
+    `    final season flows: gate=+${fmt(last.ledger.gateRevenue)} income=+${fmt(last.ledger.income)} matchCost=-${fmt(last.ledger.homeExpense)} ` +
       `travel=-${fmt(last.ledger.awayTravel)} wages=-${fmt(last.ledger.wages)} fines=-${fmt(last.ledger.fanFines)} ` +
       `maint=-${fmt(last.ledger.maintenance)} build=-${fmt(last.ledger.construction)}  ` +
       `NET=${fmt(last.created - last.destroyed)}`
@@ -692,6 +707,45 @@ async function main() {
       console.info(`  occupancy implied by STORED attendance: min=${occCost[0].toFixed(4)} med=${pct(occCost, 0.5).toFixed(4)} max=${occCost[occCost.length - 1].toFixed(4)} mean=${(occCost.reduce((s, v) => s + v, 0) / occCost.length).toFixed(4)}`)
     }
 
+    // LEDGER <-> FIXTURE RECONCILIATION. FinancialTransaction carries no
+    // foreign key to Fixture - the link is the referenceId string alone - so a
+    // fixture that is deleted (QA residue, a rebuilt schedule) leaves its
+    // money behind as an orphan row. That does not break balance
+    // conservation, but it does break "gate revenue equals matches played",
+    // which is exactly the reconciliation any future economic audit will run.
+    const matchRows = await prisma.financialTransaction.findMany({
+      where: { OR: [{ type: "matchRevenue" }, { type: "matchExpense" }, { type: "other" }] },
+      select: { type: true, amount: true, referenceId: true, teamId: true },
+    })
+    const allFixtureIds = new Set((await prisma.fixture.findMany({ select: { id: true } })).map((f) => f.id))
+    const playedFixtureIds = new Set(
+      (await prisma.fixture.findMany({ where: { playedAt: { not: null } }, select: { id: true } })).map((f) => f.id)
+    )
+    const MATCH_REF = /^MATCH_(.+?)_(HOME_REVENUE|HOME_EXPENSE|AWAY_TRAVEL|FAN_INCIDENT)$/
+    const referenced = new Map<string, { rows: number; amount: number }>()
+    let nonMatchRefs = 0
+    for (const row of matchRows) {
+      const match = MATCH_REF.exec(row.referenceId)
+      if (!match) {
+        nonMatchRefs++
+        continue
+      }
+      const bucket = referenced.get(match[1]) ?? { rows: 0, amount: 0 }
+      bucket.rows++
+      bucket.amount += row.amount
+      referenced.set(match[1], bucket)
+    }
+    const orphans = [...referenced.entries()].filter(([id]) => !allFixtureIds.has(id))
+    const unplayedButPaid = [...referenced.entries()].filter(([id]) => allFixtureIds.has(id) && !playedFixtureIds.has(id))
+    const playedButUnpaid = [...playedFixtureIds].filter((id) => !referenced.has(id))
+    console.info(`  match-referenced ledger rows:                  ${matchRows.length - nonMatchRefs} over ${referenced.size} fixture id(s)`)
+    console.info(`  ledger rows with a non-MATCH referenceId:      ${nonMatchRefs} (release costs live here)`)
+    console.info(`  ORPHAN fixtures (money exists, fixture gone):  ${orphans.length}`)
+    for (const [id, agg] of orphans.slice(0, 10)) console.info(`      ${id}  rows=${agg.rows} net=${fmt(agg.amount)}`)
+    console.info(`  fixtures paid but NOT marked played:           ${unplayedButPaid.length}`)
+    console.info(`  fixtures played but with NO ledger row:        ${playedButUnpaid.length}`)
+    for (const id of playedButUnpaid.slice(0, 10)) console.info(`      ${id}`)
+
     // Per-club matchday P&L so far.
     const revByTeam = new Map<string, number>()
     const expByTeam = new Map<string, number>()
@@ -822,6 +876,98 @@ async function main() {
     for (const [title, opts] of scenarios) {
       printProjection(title, project(base, opts, "phase3r-economy"), marks)
     }
+
+    // ==================================================================
+    // 9b. HOW MUCH NEW MONEY WOULD IT TAKE?
+    // ==================================================================
+    //
+    // Solved, never guessed. Two different questions, two different answers:
+    // the income that leaves the twenty-season money stock where it started,
+    // and the (larger) income that also keeps every club above zero the whole
+    // way. Both are reported per club per SEASON and per club per PAYROLL
+    // WEEK, because a sponsor design has to pick one of those clocks.
+    console.info("\n=== 9b. THE MEASURED FUNDING GAP ===")
+    const solve = (
+      label: string,
+      objective: (snapshots: SeasonSnapshot[]) => boolean,
+      maintenance: boolean
+    ): number => {
+      // objective(x) must be monotone in income: false below the answer, true
+      // at or above it. Bracket first, then bisect.
+      let low = 0
+      let high = 500_000
+      const opts = (income: number): ProjectionOptions => ({
+        seasons: 20,
+        maintenanceEnabled: maintenance,
+        humanReinvestFraction: null,
+        reserveWeeks: 0,
+        flatSeasonIncome: income,
+      })
+      let guard = 0
+      while (!objective(project(base, opts(high), "phase3r-economy")) && guard++ < 12) {
+        low = high
+        high *= 2
+      }
+      if (guard >= 12) {
+        console.info(`  ${label.padEnd(52)} not reachable below ${fmt(high)} per club per season`)
+        return high
+      }
+      for (let i = 0; i < 22; i++) {
+        const mid = (low + high) / 2
+        if (objective(project(base, opts(mid), "phase3r-economy"))) high = mid
+        else low = mid
+      }
+      console.info(
+        `  ${label.padEnd(52)} ${fmt(high).padStart(11)} /club/season  =  ${fmt(high / SEASON_PAYROLL_WEEKS).padStart(9)} /club/week` +
+          `  (league ${fmt(high * base.length)} /season)`
+      )
+      return high
+    }
+    const openingStock = base.reduce((s2, c) => s2 + c.balance, 0)
+    const gapNeutral = solve(
+      "income for ZERO 20-season drift",
+      (snap) => snap[snap.length - 1].totalMoney >= openingStock,
+      false
+    )
+    const gapSolvent = solve(
+      "income for NO club ever negative over 20 seasons",
+      (snap) => snap.every((x) => x.negatives === 0),
+      false
+    )
+    const gapSolventMaint = solve(
+      "...the same, WITH stadium maintenance activated",
+      (snap) => snap.every((x) => x.negatives === 0),
+      true
+    )
+    console.info(
+      `  as a share of the median club's SEASON payroll (${fmt(medianWeekly * SEASON_PAYROLL_WEEKS)}): ` +
+        `neutral=${(gapNeutral / (medianWeekly * SEASON_PAYROLL_WEEKS)).toFixed(2)}x  ` +
+        `solvent=${(gapSolvent / (medianWeekly * SEASON_PAYROLL_WEEKS)).toFixed(2)}x  ` +
+        `solvent+maint=${(gapSolventMaint / (medianWeekly * SEASON_PAYROLL_WEEKS)).toFixed(2)}x`
+    )
+    printProjection(
+      `E. TODAY + a flat ${fmt(gapSolvent)} per club per season (the solvency level)`,
+      project(base, { seasons: 20, maintenanceEnabled: false, humanReinvestFraction: null, reserveWeeks: 0, flatSeasonIncome: gapSolvent }, "phase3r-economy"),
+      marks
+    )
+    printProjection(
+      `F. THE SAME TOTAL, but tier 1 paid 2x tier 2 - does a pyramid create a rich-get-richer loop?`,
+      project(
+        base,
+        {
+          seasons: 20,
+          maintenanceEnabled: false,
+          humanReinvestFraction: null,
+          reserveWeeks: 0,
+          // 20 clubs at 2x + 40 at 1x = 80 shares over 60 clubs, so a 0.75
+          // base keeps the league-wide total identical to scenario E.
+          flatSeasonIncome: gapSolvent * 0.75,
+          tier1IncomeMultiplier: 2,
+        },
+        "phase3r-economy"
+      ),
+      marks
+    )
 
     // ==================================================================
     // 10. DRIFT
