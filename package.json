@@ -49,6 +49,7 @@
     "prod:economy:model": "tsx scripts/production/economy-model-audit.ts",
     "prod:economy:calibrate": "tsx scripts/production/economy-calibration.ts",
     "prod:economy:confirm": "tsx scripts/production/economy-confirmation.ts",
+    "prod:economy:recalibrate": "tsx scripts/production/economy-recalibration.ts",
     "prod:payroll:activation-check": "tsx scripts/production/check-payroll-activation.ts"
   },
   "dependencies": {

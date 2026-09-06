@@ -35,6 +35,7 @@ on:
           - prod:economy:model
           - prod:economy:calibrate
           - prod:economy:confirm
+          - prod:economy:recalibrate
           - prod:payroll:activation-check
           - prod:render:autodeploy:off
           - prod:backup:create
