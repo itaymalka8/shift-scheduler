@@ -27,13 +27,16 @@ const b3 = branch({ id: "br-old-3", name: "pre-deploy-goalx-2026-09-03-1838", cr
 const b4 = branch({ id: "br-keep-1", name: "pre-deploy-goalx-2026-09-04-0421", createdAt: "2026-09-04T04:21:00Z" })
 const b5 = branch({ id: "br-keep-2", name: "pre-deploy-goalx-2026-09-04-0721", createdAt: "2026-09-04T07:21:00Z" })
 const b6 = branch({ id: "br-keep-3", name: "pre-deploy-goalx-2026-09-04-1057", createdAt: "2026-09-04T10:57:00Z" })
+// Newer than every requested branch, older than every protected one: retained,
+// but NOT protected. The one position where a substitution is invisible to
+// counts, the protected set, and the request alike.
+const b7 = branch({ id: "br-middle", name: "pre-deploy-goalx-2026-09-03-2000", createdAt: "2026-09-03T20:00:00Z" })
 
-const ALL = [production, b2, b6, b1, b5, b3, b4]
+const ALL = [production, b2, b6, b1, b5, b7, b3, b4]
 const REQUESTED = [b1.id, b2.id, b3.id]
 
-function metadataOf(branches: NeonBranchSummary[]) {
-  return new Map(branches.map((b) => [b.id, { name: b.name, createdAt: b.createdAt, parentId: b.parentId }]))
-}
+/** A retained, NON-protected backup - the substitution case's subject. */
+const retainedNonProtected = b7
 
 /**
  * Mirrors exactly what scripts/production/backup-prune.ts does: plan from the
@@ -51,8 +54,7 @@ function digestOf(
     plan,
     requestedIds,
     minimumRetained: MINIMUM_RETAINED_BACKUPS,
-    totalBranchesBefore: branches.length,
-    branchMetadata: metadataOf(branches),
+    branches,
     ...over,
   }).digest
 }
@@ -65,7 +67,7 @@ describe("the plan digest is stable for an unchanged world", () => {
   it("is stable when the SAME branches arrive from Neon in a different order", () => {
     // Neon does not promise a list order. A reshuffled response is the same
     // world, so re-listing must not invalidate a plan a human is holding.
-    const shuffled = [b4, production, b6, b3, b1, b5, b2]
+    const shuffled = [b4, production, b6, b3, b7, b1, b5, b2]
     expect(digestOf(shuffled)).toBe(digestOf())
   })
 
@@ -115,8 +117,7 @@ describe("the plan digest moves when anything it binds moves", () => {
       plan: planBackupPrune({ branches: ALL, productionBranchId: PROD, requestedIds: REQUESTED }),
       requestedIds: [...REQUESTED, "br-vanished"],
       minimumRetained: MINIMUM_RETAINED_BACKUPS,
-      totalBranchesBefore: ALL.length,
-      branchMetadata: metadataOf(ALL),
+      branches: ALL,
     }).digest
     expect(withUnknown).not.toBe(baseline)
   })
@@ -132,8 +133,7 @@ describe("the plan digest moves when anything it binds moves", () => {
       plan: swapped,
       requestedIds: REQUESTED,
       minimumRetained: MINIMUM_RETAINED_BACKUPS,
-      totalBranchesBefore: ALL.length,
-      branchMetadata: metadataOf(ALL),
+      branches: ALL,
     }).digest
     expect(moved).not.toBe(baseline)
   })
@@ -146,8 +146,7 @@ describe("the plan digest moves when anything it binds moves", () => {
       plan: reversed,
       requestedIds: REQUESTED,
       minimumRetained: MINIMUM_RETAINED_BACKUPS,
-      totalBranchesBefore: ALL.length,
-      branchMetadata: metadataOf(ALL),
+      branches: ALL,
     }).digest
     expect(same).toBe(baseline)
   })
@@ -183,11 +182,156 @@ describe("the plan digest moves when anything it binds moves", () => {
       plan: planBackupPrune({ branches: ALL, productionBranchId: PROD, requestedIds: REQUESTED }),
       requestedIds: REQUESTED,
       minimumRetained: MINIMUM_RETAINED_BACKUPS,
-      totalBranchesBefore: ALL.length,
-      branchMetadata: metadataOf(ALL),
+      branches: ALL,
     })
     expect(canonical.schemaVersion).toBe(PRUNE_PLAN_SCHEMA_VERSION)
     expect(computePrunePlanDigest({ ...canonical, schemaVersion: canonical.schemaVersion + 1 })).not.toBe(baseline)
+  })
+})
+
+/**
+ * THE SAME-COUNT SUBSTITUTION CASE, which schema v1 did not cover.
+ *
+ * Bind only the requested ids, the protected ids and the COUNTS, and this
+ * whole block passes with an unchanged digest: the request is untouched, the
+ * newest three are untouched, the totals are untouched - and the account being
+ * deleted from is nonetheless not the account anyone reviewed.
+ */
+describe("the complete inventory is bound, not just its size", () => {
+  const baseline = digestOf()
+
+  it("swapping a retained NON-PROTECTED backup for a different one changes the digest", () => {
+    const substitute = branch({
+      id: "br-substitute",
+      name: "pre-deploy-goalx-2026-09-03-2001",
+      createdAt: "2026-09-03T20:01:00Z",
+    })
+    const swapped = [...ALL.filter((b) => b.id !== retainedNonProtected.id), substitute]
+
+    const before = planBackupPrune({ branches: ALL, productionBranchId: PROD, requestedIds: REQUESTED })
+    const after = planBackupPrune({ branches: swapped, productionBranchId: PROD, requestedIds: REQUESTED })
+
+    // Everything v1 bound is IDENTICAL across the swap...
+    expect(swapped.length).toBe(ALL.length)
+    expect(after.backups.length).toBe(before.backups.length)
+    expect(after.backupsAfter).toBe(before.backupsAfter)
+    expect(after.totalBranchesAfter).toBe(before.totalBranchesAfter)
+    expect(after.protectedBackups.map((b) => b.id).sort()).toEqual(before.protectedBackups.map((b) => b.id).sort())
+    expect(after.deletable.map((b) => b.id).sort()).toEqual(before.deletable.map((b) => b.id).sort())
+
+    // ...and the digest still moves, because the inventory itself is bound.
+    expect(digestOf(swapped)).not.toBe(baseline)
+  })
+
+  it("a retained non-protected backup merely DISAPPEARING changes the digest", () => {
+    expect(digestOf(ALL.filter((b) => b.id !== retainedNonProtected.id))).not.toBe(baseline)
+  })
+
+  it("changing metadata on a retained, non-requested backup changes the digest", () => {
+    for (const field of ["name", "createdAt", "parentId"] as const) {
+      const edited = ALL.map((b) =>
+        b.id === retainedNonProtected.id
+          ? {
+              ...b,
+              [field]:
+                field === "name"
+                  ? "pre-deploy-goalx-2026-09-03-2001"
+                  : field === "createdAt"
+                    ? "2026-09-03T20:01:00Z"
+                    : "br-some-other-parent",
+            }
+          : b
+      )
+      expect(digestOf(edited)).not.toBe(baseline)
+    }
+  })
+
+  it("changing metadata on a PROTECTED backup changes the digest", () => {
+    const edited = ALL.map((b) => (b.id === b6.id ? { ...b, createdAt: "2026-09-04T10:58:00Z" } : b))
+    expect(digestOf(edited)).not.toBe(baseline)
+  })
+
+  it("changing only the RETAINED SET changes the digest", () => {
+    // Same total branch count, same protected three, same inventory members -
+    // only which of them survive differs.
+    const shorter = digestOf(ALL, [b1.id, b2.id])
+    const longer = digestOf(ALL, REQUESTED)
+    expect(shorter).not.toBe(longer)
+
+    const plan = planBackupPrune({ branches: ALL, productionBranchId: PROD, requestedIds: REQUESTED })
+    const { canonical } = prunePlanDigest({
+      projectId: PROJECT,
+      plan,
+      requestedIds: REQUESTED,
+      minimumRetained: MINIMUM_RETAINED_BACKUPS,
+      branches: ALL,
+    })
+    expect(canonical.retainedBackupIds).toEqual([b4.id, b5.id, b6.id, b7.id].sort())
+    expect(computePrunePlanDigest({ ...canonical, retainedBackupIds: [b4.id, b5.id, b6.id] })).not.toBe(baseline)
+  })
+
+  it("a non-backup branch appearing, vanishing or being substituted changes the digest", () => {
+    const other = branch({ id: "br-scratch", name: "someones-scratch-branch", parentId: null })
+    expect(digestOf([...ALL, other])).not.toBe(baseline)
+
+    const withOther = [...ALL, other]
+    const substituted = [...ALL, branch({ id: "br-scratch-2", name: "someones-scratch-branch", parentId: null })]
+    expect(digestOf(substituted)).not.toBe(digestOf(withOther))
+  })
+
+  it("REORDERING the Neon response without changing its contents does NOT change the digest", () => {
+    // Every permutation of the same list is the same world.
+    const permutations = [
+      [b4, production, b6, b3, b7, b1, b5, b2],
+      [b6, b5, b4, b7, b3, b2, b1, production],
+      [production, b1, b2, b3, b7, b4, b5, b6],
+    ]
+    for (const p of permutations) {
+      expect(p.length).toBe(ALL.length)
+      expect(digestOf(p)).toBe(baseline)
+    }
+  })
+
+  it("binds every branch with its role and its requested/protected/retained flags", () => {
+    const { canonical } = prunePlanDigest({
+      projectId: PROJECT,
+      plan: planBackupPrune({ branches: ALL, productionBranchId: PROD, requestedIds: REQUESTED }),
+      requestedIds: REQUESTED,
+      minimumRetained: MINIMUM_RETAINED_BACKUPS,
+      branches: ALL,
+    })
+
+    expect(canonical.inventory.map((b) => b.branchId)).toEqual(ALL.map((b) => b.id).sort())
+    expect(canonical.inventory.find((b) => b.branchId === PROD)!.role).toBe("production")
+    expect(canonical.inventory.filter((b) => b.role === "backup")).toHaveLength(7)
+
+    const requested = canonical.inventory.find((b) => b.branchId === b1.id)!
+    expect(requested).toMatchObject({ requested: true, isProtected: false, retained: false, role: "backup" })
+
+    const protectedRow = canonical.inventory.find((b) => b.branchId === b6.id)!
+    expect(protectedRow).toMatchObject({ requested: false, isProtected: true, retained: true })
+
+    // Nothing outside the allowlist is ever marked for deletion.
+    expect(canonical.inventory.filter((b) => !b.retained).map((b) => b.branchId).sort()).toEqual([...REQUESTED].sort())
+  })
+
+  it("the serialization is injective - a separator inside a name cannot forge a row", () => {
+    const sneaky = ALL.map((b) =>
+      b.id === retainedNonProtected.id ? { ...b, name: `x|y;br-fake|fake|2026-01-01T00:00:00Z|null|backup` } : b
+    )
+    const plain = ALL.map((b) => (b.id === retainedNonProtected.id ? { ...b, name: "x" } : b))
+    expect(digestOf(sneaky)).not.toBe(digestOf(plain))
+    expect(digestOf(sneaky)).not.toBe(baseline)
+  })
+
+  it("stays deterministic and clock-free with the inventory bound", () => {
+    jest.useFakeTimers().setSystemTime(new Date("2028-06-01T12:34:56Z"))
+    try {
+      expect(digestOf()).toBe(baseline)
+      expect(digestOf([...ALL].reverse())).toBe(baseline)
+    } finally {
+      jest.useRealTimers()
+    }
   })
 })
 
@@ -198,8 +342,7 @@ describe("the canonical form is a structure, not console output", () => {
       plan: planBackupPrune({ branches: ALL, productionBranchId: PROD, requestedIds: REQUESTED }),
       requestedIds: REQUESTED,
       minimumRetained: MINIMUM_RETAINED_BACKUPS,
-      totalBranchesBefore: ALL.length,
-      branchMetadata: metadataOf(ALL),
+      branches: ALL,
     })
     const lines = serialiseCanonicalPrunePlan(canonical).split("\n").map((l) => l.split("=")[0])
     expect(lines).toEqual([
@@ -212,6 +355,8 @@ describe("the canonical form is a structure, not console output", () => {
       "requestedBranchIds",
       "requestedBranches",
       "protectedBackupIds",
+      "retainedBackupIds",
+      "inventory",
       "backupsAfter",
       "totalBranchesAfter",
     ])
@@ -223,21 +368,20 @@ describe("the canonical form is a structure, not console output", () => {
       plan: planBackupPrune({ branches: ALL, productionBranchId: PROD, requestedIds: REQUESTED }),
       requestedIds: REQUESTED,
       minimumRetained: MINIMUM_RETAINED_BACKUPS,
-      totalBranchesBefore: ALL.length,
-      branchMetadata: metadataOf(ALL),
+      branches: ALL,
     })
     expect(canonical.projectId).toBe(PROJECT)
     expect(canonical.productionBranchId).toBe(PROD)
     expect(canonical.minimumRetainedBackups).toBe(MINIMUM_RETAINED_BACKUPS)
     expect(canonical.totalBranchesBefore).toBe(ALL.length)
-    expect(canonical.backupsBefore).toBe(6)
+    expect(canonical.backupsBefore).toBe(7)
     expect(canonical.requestedBranchIds).toEqual(REQUESTED)
     expect(canonical.requestedBranches.map((b) => b.branchId)).toEqual(REQUESTED)
     expect(canonical.requestedBranches.map((b) => b.name)).toEqual([b1.name, b2.name, b3.name])
     expect(canonical.requestedBranches.map((b) => b.createdAt)).toEqual([b1.createdAt, b2.createdAt, b3.createdAt])
     expect(canonical.requestedBranches.every((b) => b.parentId === PROD)).toBe(true)
     expect(canonical.protectedBackupIds).toEqual([b4.id, b5.id, b6.id].sort())
-    expect(canonical.backupsAfter).toBe(3)
+    expect(canonical.backupsAfter).toBe(4)
     expect(canonical.totalBranchesAfter).toBe(ALL.length - REQUESTED.length)
   })
 
@@ -341,8 +485,8 @@ describe("the prune command's own shape", () => {
   it("recomputes the digest from the live inventory it just fetched, not from anything supplied", () => {
     // The plan digested is built from listBranches() output in this same run.
     expect(script).toMatch(/const \[project, production, branchesBefore\] = await Promise\.all\(/)
-    expect(script).toMatch(/branchMetadata = new Map\(\s*branchesBefore\.map/)
-    expect(script).toMatch(/prunePlanDigest\(\{[\s\S]*?totalBranchesBefore: branchesBefore\.length/)
+    // The WHOLE live list is handed to the digest, not a reduction of it.
+    expect(script).toMatch(/prunePlanDigest\(\{[\s\S]*?branches: branchesBefore,/)
   })
 
   it("returns without deleting on a refused gate", () => {

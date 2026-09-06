@@ -11,12 +11,23 @@
  * from a plan made yesterday looks identical to one made a second ago.
  *
  * The digest binds the ids to the WORLD THEY WERE CHOSEN IN: the project, the
- * production branch, the floor, the full inventory counts, each requested
- * branch's own metadata, the protected set, and the resulting counts. Execution
- * recomputes it from a fresh live inventory and refuses on any difference. So a
- * plan goes stale the moment anything relevant moves - a backup created, a
- * branch deleted by someone else, the floor changed in a deploy - and a stale
- * plan cannot be executed at all.
+ * production branch, the floor, the COMPLETE branch inventory, each requested
+ * branch's own metadata, the protected and retained sets, and the resulting
+ * counts. Execution recomputes it from a fresh live inventory and refuses on
+ * any difference. So a plan goes stale the moment anything relevant moves - a
+ * backup created, a branch deleted by someone else, the floor changed in a
+ * deploy - and a stale plan cannot be executed at all.
+ *
+ * WHY THE WHOLE INVENTORY AND NOT JUST THE COUNTS (schema v2). v1 bound the
+ * requested branches, the protected ids, and the before/after COUNTS. That
+ * left a same-count substitution uncovered: a retained, non-protected backup
+ * disappears and a different one appears, the total is unchanged, the newest-N
+ * are unchanged, and the three requested ids and their metadata are unchanged -
+ * so the digest matched while the inventory the human reviewed no longer
+ * existed. COUNTS ARE NOT IDENTITY. Every branch the API returned is now bound
+ * individually, with the role it plays in this plan, so any substitution,
+ * disappearance, appearance or metadata edit anywhere in the account moves the
+ * digest.
  *
  * WHY IT HASHES A CANONICAL STRUCTURE, NOT THE CONSOLE OUTPUT. Human-formatted
  * output carries incidental detail - column padding, a "3 day(s) ago", the
@@ -27,13 +38,16 @@
  */
 import { createHash } from "crypto"
 import type { BackupBranch, PrunePlan } from "./backup-prune"
+import type { NeonBranchSummary } from "./neon-client"
 
 /**
  * Bumped whenever the canonical shape changes. Part of the hashed payload, so
  * a plan produced by an older build cannot silently validate against a newer
  * one that means something different by the same fields.
+ *
+ * v1 -> v2: the complete branch inventory is bound, not just the counts.
  */
-export const PRUNE_PLAN_SCHEMA_VERSION = 1
+export const PRUNE_PLAN_SCHEMA_VERSION = 2
 
 /** One requested branch, as the digest sees it. */
 export interface CanonicalPruneBranch {
@@ -44,9 +58,34 @@ export interface CanonicalPruneBranch {
 }
 
 /**
+ * What a branch IS in this plan.
+ *
+ * "production" and "backup" are decided by the PLAN, never by the name alone -
+ * planBackupPrune resolves production through neon-discovery and requires a
+ * backup-shaped name AND a child-of-production parent. "other" is everything
+ * else on the project, bound because a branch appearing or vanishing changes
+ * the account the operator reviewed even when it was never a candidate.
+ */
+export type CanonicalBranchRole = "production" | "backup" | "other"
+
+export interface CanonicalInventoryBranch {
+  branchId: string
+  name: string
+  createdAt: string
+  parentId: string | null
+  role: CanonicalBranchRole
+  /** Named in the operator's allowlist. */
+  requested: boolean
+  /** One of the newest MINIMUM_RETAINED_BACKUPS backups - never deletable. */
+  isProtected: boolean
+  /** Still present after this plan executes. */
+  retained: boolean
+}
+
+/**
  * The exact structure that gets hashed. Field order here IS the serialization
  * order - see canonicalisePrunePlan, which builds the object key by key rather
- * than spreading, so the JSON is byte-stable across runs and machines.
+ * than spreading, so the output is byte-stable across runs and machines.
  */
 export interface CanonicalPrunePlan {
   schemaVersion: number
@@ -61,6 +100,13 @@ export interface CanonicalPrunePlan {
   requestedBranches: CanonicalPruneBranch[]
   /** Sorted by id, so the protected set is order-independent. */
   protectedBackupIds: string[]
+  /** Sorted by id. The backups that survive this plan. */
+  retainedBackupIds: string[]
+  /**
+   * EVERY branch the API returned, sorted by id. This is the field that makes
+   * the plan an IDENTITY rather than a shape.
+   */
+  inventory: CanonicalInventoryBranch[]
   backupsAfter: number
   totalBranchesAfter: number
 }
@@ -70,9 +116,8 @@ export interface CanonicalisePrunePlanInput {
   plan: PrunePlan
   requestedIds: string[]
   minimumRetained: number
-  totalBranchesBefore: number
-  /** Full live inventory, for each requested branch's own metadata. */
-  branchMetadata: Map<string, { name: string; createdAt: string; parentId: string | null }>
+  /** The FULL live branch list this plan was built from. */
+  branches: NeonBranchSummary[]
 }
 
 /**
@@ -83,28 +128,58 @@ export interface CanonicalisePrunePlanInput {
  * different readings, and the cheapest way to be sure a digest matches the plan
  * a person read is to make the plan's own sequence part of it.
  *
- * THE PROTECTED SET IS SORTED, equally deliberately. It is derived, not chosen:
- * it always means "the newest N", and its iteration order is an artefact of the
- * sort that produced it rather than anything an operator decided.
+ * EVERY DERIVED SET IS SORTED BY ID, equally deliberately. The protected set,
+ * the retained set and the inventory are not chosen by anyone: they are
+ * computed, and their order is an artefact of the sort that produced them or of
+ * whatever order Neon's API happened to answer in. Sorting by id - not by
+ * createdAt, not by name - keeps the order total and independent of every
+ * mutable field, so re-listing the same branches can never move the digest
+ * while any real change always does.
+ *
+ * THE TOTAL BRANCH COUNT IS DERIVED FROM THE INVENTORY, not passed alongside
+ * it. A count that could disagree with the list it summarises is a second
+ * source of truth, and the whole point of v2 is that there is one.
  */
 export function canonicalisePrunePlan({
   projectId,
   plan,
   requestedIds,
   minimumRetained,
-  totalBranchesBefore,
-  branchMetadata,
+  branches,
 }: CanonicalisePrunePlanInput): CanonicalPrunePlan {
+  const requestedSet = new Set(requestedIds)
+  const protectedSet = new Set(plan.protectedBackups.map((b: BackupBranch) => b.id))
+  const deletedSet = new Set(plan.deletable.map((b: BackupBranch) => b.id))
+  const backupSet = new Set(plan.backups.map((b: BackupBranch) => b.id))
+  const byId = new Map(branches.map((b) => [b.id, b]))
+
+  const inventory: CanonicalInventoryBranch[] = branches
+    .map((b) => ({
+      branchId: b.id,
+      name: b.name,
+      createdAt: b.createdAt,
+      parentId: b.parentId,
+      role: (b.id === plan.productionBranchId
+        ? "production"
+        : backupSet.has(b.id)
+          ? "backup"
+          : "other") as CanonicalBranchRole,
+      requested: requestedSet.has(b.id),
+      isProtected: protectedSet.has(b.id),
+      retained: !deletedSet.has(b.id),
+    }))
+    .sort((a, b) => a.branchId.localeCompare(b.branchId))
+
   return {
     schemaVersion: PRUNE_PLAN_SCHEMA_VERSION,
     projectId,
     productionBranchId: plan.productionBranchId,
     minimumRetainedBackups: minimumRetained,
-    totalBranchesBefore,
+    totalBranchesBefore: branches.length,
     backupsBefore: plan.backups.length,
     requestedBranchIds: [...requestedIds],
     requestedBranches: requestedIds.map((branchId) => {
-      const meta = branchMetadata.get(branchId)
+      const meta = byId.get(branchId)
       return {
         branchId,
         // An id the live inventory does not know is represented explicitly
@@ -116,10 +191,28 @@ export function canonicalisePrunePlan({
         parentId: meta?.parentId ?? null,
       }
     }),
-    protectedBackupIds: plan.protectedBackups.map((b: BackupBranch) => b.id).sort(),
+    protectedBackupIds: [...protectedSet].sort(),
+    retainedBackupIds: plan.backups
+      .map((b: BackupBranch) => b.id)
+      .filter((id) => !deletedSet.has(id))
+      .sort(),
+    inventory,
     backupsAfter: plan.backupsAfter,
     totalBranchesAfter: plan.totalBranchesAfter,
   }
+}
+
+/**
+ * Field escaping, so the serialization is INJECTIVE.
+ *
+ * Without it two different inventories could serialize to the same string by
+ * moving a separator into a branch name - one branch called "a|b" against two
+ * called "a" and "b". Nobody names a Neon branch that way on purpose, which is
+ * exactly why nobody would notice. The backslash is escaped first so the escape
+ * itself cannot be forged.
+ */
+function esc(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/\|/g, "\\p").replace(/;/g, "\\s").replace(/\n/g, "\\n")
 }
 
 /**
@@ -130,16 +223,33 @@ export function canonicalisePrunePlan({
 export function serialiseCanonicalPrunePlan(canonical: CanonicalPrunePlan): string {
   const parts: string[] = [
     `schemaVersion=${canonical.schemaVersion}`,
-    `projectId=${canonical.projectId}`,
-    `productionBranchId=${canonical.productionBranchId}`,
+    `projectId=${esc(canonical.projectId)}`,
+    `productionBranchId=${esc(canonical.productionBranchId)}`,
     `minimumRetainedBackups=${canonical.minimumRetainedBackups}`,
     `totalBranchesBefore=${canonical.totalBranchesBefore}`,
     `backupsBefore=${canonical.backupsBefore}`,
-    `requestedBranchIds=[${canonical.requestedBranchIds.join(",")}]`,
+    `requestedBranchIds=[${canonical.requestedBranchIds.map(esc).join(",")}]`,
     `requestedBranches=[${canonical.requestedBranches
-      .map((b) => `${b.branchId}|${b.name}|${b.createdAt}|${b.parentId ?? "null"}`)
+      .map((b) =>
+        [esc(b.branchId), esc(b.name), esc(b.createdAt), b.parentId === null ? "null" : esc(b.parentId)].join("|")
+      )
       .join(";")}]`,
-    `protectedBackupIds=[${canonical.protectedBackupIds.join(",")}]`,
+    `protectedBackupIds=[${canonical.protectedBackupIds.map(esc).join(",")}]`,
+    `retainedBackupIds=[${canonical.retainedBackupIds.map(esc).join(",")}]`,
+    `inventory=[${canonical.inventory
+      .map((b) =>
+        [
+          esc(b.branchId),
+          esc(b.name),
+          esc(b.createdAt),
+          b.parentId === null ? "null" : esc(b.parentId),
+          b.role,
+          b.requested ? "requested" : "-",
+          b.isProtected ? "protected" : "-",
+          b.retained ? "retained" : "deleted",
+        ].join("|")
+      )
+      .join(";")}]`,
     `backupsAfter=${canonical.backupsAfter}`,
     `totalBranchesAfter=${canonical.totalBranchesAfter}`,
   ]
@@ -199,7 +309,7 @@ export function evaluatePruneDigestGate(supplied: string | null, recomputed: str
       ok: false,
       code: "DIGEST_MISMATCH",
       message:
-        "The supplied plan digest does not match the plan computed from the CURRENT Neon inventory. Something relevant changed since the plan was reviewed - a backup created or removed, the branch set moved, the retention floor changed, or the id list was edited.",
+        "The supplied plan digest does not match the plan computed from the CURRENT Neon inventory. Something relevant changed since the plan was reviewed - a backup created, removed or substituted, a branch's metadata edited, the retention floor changed, or the id list edited.",
     }
   }
   return { ok: true, code: null, message: null }

@@ -25,8 +25,10 @@
  * --execute ALSO REQUIRES --plan-digest, the digest the dry run printed. It is
  * recomputed here from a freshly fetched inventory and compared before the
  * first delete, so a plan that has gone stale - a backup created since, a
- * branch removed by someone else, an edited id list - is refused rather than
- * carried out against a world nobody reviewed. See prune-digest.ts.
+ * branch removed or SUBSTITUTED by someone else, an edited id list - is refused
+ * rather than carried out against a world nobody reviewed. The digest binds the
+ * COMPLETE branch inventory, not just counts, so an equal-sized but different
+ * account does not pass. See prune-digest.ts.
  *
  * PRUNE_BRANCH_IDS / PRUNE_EXECUTE / PRUNE_SLOTS_TO_FREE / PRUNE_PLAN_DIGEST
  * are env equivalents of the flags, for the GitHub Actions path where passing
@@ -52,7 +54,11 @@ import {
 } from "../../src/lib/production/neon-ops"
 import { NeonCredentialsMissingError } from "../../src/lib/production/neon-client"
 import { assertProductionWriteConfirmed, ProductionWriteNotConfirmedError } from "../../src/lib/production/write-guard"
-import { evaluatePruneDigestGate, prunePlanDigest } from "../../src/lib/production/prune-digest"
+import {
+  PRUNE_PLAN_SCHEMA_VERSION,
+  evaluatePruneDigestGate,
+  prunePlanDigest,
+} from "../../src/lib/production/prune-digest"
 
 function describe(b: BackupBranch): string {
   return `${b.name} (${b.id}) created=${b.createdAt}`
@@ -146,21 +152,28 @@ async function main() {
     // recomputed here from scratch and compared to what they supplied. Both
     // paths run this identical code on identically fresh data, which is what
     // makes a stale plan detectable rather than merely unlikely.
-    const branchMetadata = new Map(
-      branchesBefore.map((b) => [b.id, { name: b.name, createdAt: b.createdAt, parentId: b.parentId }])
-    )
-    const { digest } = prunePlanDigest({
+    //
+    // branchesBefore is passed WHOLE, not reduced to the requested branches and
+    // some counts: the digest binds every branch on the project individually,
+    // so a same-count substitution anywhere in the account invalidates the plan.
+    const { canonical, digest } = prunePlanDigest({
       projectId: project.id,
       plan,
       requestedIds: args.branchIds,
       minimumRetained: MINIMUM_RETAINED_BACKUPS,
-      totalBranchesBefore: branchesBefore.length,
-      branchMetadata,
+      branches: branchesBefore,
     })
     console.info(`\nPLAN DIGEST: ${digest}`)
-    console.info(`  binds: schema v1, project, production branch, floor ${MINIMUM_RETAINED_BACKUPS}, ${branchesBefore.length} branches / ${plan.backups.length} backups before,`)
-    console.info(`         the ${args.branchIds.length} requested id(s) in order with their name/createdAt/parent, the ${plan.protectedBackups.length} protected id(s),`)
+    console.info(`  binds: schema v${PRUNE_PLAN_SCHEMA_VERSION}, project ${project.id}, production branch ${productionBranchId}, floor ${MINIMUM_RETAINED_BACKUPS},`)
+    console.info(`         the COMPLETE inventory - all ${canonical.inventory.length} branch(es), each with id/name/createdAt/parent and its role`)
+    console.info(`         (${canonical.inventory.filter((b) => b.role === "backup").length} backup, 1 production, ${canonical.inventory.filter((b) => b.role === "other").length} other) and its requested/protected/retained flags,`)
+    console.info(`         the ${args.branchIds.length} requested id(s) IN ORDER, the ${canonical.protectedBackupIds.length} protected id(s), the ${canonical.retainedBackupIds.length} retained backup id(s),`)
     console.info(`         and ${plan.backupsAfter} backups / ${plan.totalBranchesAfter} branches after.`)
+    console.info(`  RETAINED BACKUP IDS (bound individually, not just counted):`)
+    for (const id of canonical.retainedBackupIds) {
+      const row = canonical.inventory.find((b) => b.branchId === id)!
+      console.info(`    ${id}  ${row.name}${row.isProtected ? "  [protected]" : ""}`)
+    }
 
     if (!args.execute) {
       console.info("\nDRY RUN - NOTHING WAS DELETED.")
