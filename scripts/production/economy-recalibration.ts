@@ -42,7 +42,7 @@ import {
   type SeatCounts,
 } from "../../src/lib/stadium/config"
 import { calculateStadiumCapacity } from "../../src/lib/stadium/metrics"
-import { calculatePlayerSalary } from "../../src/lib/economy/salary"
+import { calculateUncompressedPlayerSalary } from "../../src/lib/economy/salary"
 import { extractPlayerAttributes, type PlayerAttributes } from "../../src/lib/players/attributes"
 import { developPlayer, rollRetirement } from "../../src/lib/seasons/player-development"
 import { generateFallbackPlayer, FALLBACK_OVERALL_MIN } from "../../src/lib/players/fallback-generator"
@@ -173,7 +173,7 @@ function transformWage(canonical: number, scale: number): number {
   )
 }
 function canonicalWage(p: SalaryInputs): number {
-  return calculatePlayerSalary(p)
+  return calculateUncompressedPlayerSalary(p)
 }
 
 // ================= THE PROJECTION ===========================================

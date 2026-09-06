@@ -4,7 +4,7 @@ import { DEFAULT_FORMATION, FORMATIONS } from "./formations"
 import { computeRecommendedLineup } from "./recommend"
 import { SECONDARY_POSITIONS, type PlayerPosition } from "./positions"
 import { calculatePlayerMarketValue } from "./market-value"
-import { calculatePlayerSalary } from "@/lib/economy/salary"
+import { calculateAuthoritativeSalary, salaryAuthorityAt } from "@/lib/economy/salary"
 import { DEFAULT_SALARY_CONFIG, INITIAL_SQUAD_SALARY_RANGE, type SalaryConfig } from "@/lib/economy/config"
 import { generateAttributesForTargetOverall } from "./attribute-generation"
 import { calculatePositionOverall } from "./overall"
@@ -115,7 +115,10 @@ function tierBand(tierId: PlayerTierId): { min: number; max: number } {
  * independently of each other so quality never correlates with position
  * (e.g. every goalkeeper being weak).
  */
-export function generateInitialSquad(config: SquadGenerationConfig = DEFAULT_SQUAD_GENERATION_CONFIG): GeneratedPlayer[] {
+export function generateInitialSquad(
+  at: Date,
+  config: SquadGenerationConfig = DEFAULT_SQUAD_GENERATION_CONFIG
+): GeneratedPlayer[] {
   const { quality, ageBands, marketValue } = config
   const positions = shuffle(buildPositionSlots(config))
   const tiers = buildTierSlots(config)
@@ -206,14 +209,25 @@ export function generateInitialSquad(config: SquadGenerationConfig = DEFAULT_SQU
       fitness: 100,
       status: "available" as const,
       marketValue: calculatePlayerMarketValue({ overall, age, potential, primaryPosition, fitness: 100 }, marketValue),
-      weeklySalary: calculatePlayerSalary({ overall, age, potential, primaryPosition }, DEFAULT_SALARY_CONFIG),
+      weeklySalary: calculateAuthoritativeSalary({ overall, age, potential, primaryPosition }, at, DEFAULT_SALARY_CONFIG),
       preferredFoot,
       nationality,
       shirtNumber: shirtNumbers[i],
     }
   })
 
-  scaleSquadSalariesToRange(squad, INITIAL_SQUAD_SALARY_RANGE, DEFAULT_SALARY_CONFIG)
+  // LEGACY ERA ONLY - and this is the second salary authority Phase 3R exists
+  // to delete. Rescaling a whole squad to hit a wage-bill band overrides the
+  // per-player curve with a per-squad one, which is exactly why a brand-new
+  // squad and the same squad one season later were priced by different rules:
+  // the season roll reprices from the curve and has never known about this
+  // band, so a squad's wage bill jumped the moment it was first rolled. The
+  // calibrated curve is now the level authority for both, so after activation
+  // there is nothing left for this to correct. It stays in force before the
+  // boundary because the pre-activation economy must not change at all.
+  if (salaryAuthorityAt(at) === "legacy") {
+    scaleSquadSalariesToRange(squad, INITIAL_SQUAD_SALARY_RANGE, DEFAULT_SALARY_CONFIG)
+  }
   return squad
 }
 
@@ -275,9 +289,10 @@ function scaleSquadSalariesToRange(
 export async function generateSquad(
   db: DbClient,
   teamId: string,
+  at: Date = new Date(),
   config: SquadGenerationConfig = DEFAULT_SQUAD_GENERATION_CONFIG
 ): Promise<void> {
-  const squad = generateInitialSquad(config)
+  const squad = generateInitialSquad(at, config)
 
   // Batched into a single round trip each (instead of one per player/slot -
   // up to ~34 sequential awaits before this) so seeding many teams in one

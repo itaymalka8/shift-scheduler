@@ -35,7 +35,7 @@ import {
   type SeatCounts,
 } from "../../src/lib/stadium/config"
 import { calculateStadiumCapacity } from "../../src/lib/stadium/metrics"
-import { calculatePlayerSalary } from "../../src/lib/economy/salary"
+import { calculateUncompressedPlayerSalary } from "../../src/lib/economy/salary"
 import { extractPlayerAttributes, type PlayerAttributes } from "../../src/lib/players/attributes"
 import { developPlayer, rollRetirement } from "../../src/lib/seasons/player-development"
 import { generateFallbackPlayer, FALLBACK_OVERALL_MIN } from "../../src/lib/players/fallback-generator"
@@ -179,7 +179,7 @@ function transformWage(canonical: number): number {
 
 /** THE NEW SALARY AUTHORITY, as a pure function of canonical inputs only. */
 function repriceFromCanonicalInputs(p: SalaryInputs): number {
-  return transformWage(calculatePlayerSalary(p))
+  return transformWage(calculateUncompressedPlayerSalary(p))
 }
 
 /** The WRONG implementation, kept only as the negative control in section 6. */
@@ -496,7 +496,7 @@ async function main() {
       seats: seatsOf.get(t.id) ?? { ...DEFAULT_STARTING_SEATS },
     }))
     const squads = clubs.map((c) => byTeam.get(c.id) ?? [])
-    const allCanonical = squads.flat().map((p) => calculatePlayerSalary(p))
+    const allCanonical = squads.flat().map((p) => calculateUncompressedPlayerSalary(p))
     const rawSum = allCanonical.reduce((a, b) => a + b, 0)
     const shapedSum = allCanonical.reduce(
       (a, w) => a + Math.pow(SALARY_PIVOT, SALARY_COMPRESSION) * Math.pow(Math.max(1, w), 1 - SALARY_COMPRESSION),
@@ -718,7 +718,7 @@ async function main() {
       const fourth = repriceFromCanonicalInputs(p)
       if (!(first === second && second === third && third === fourth)) mismatches++
       // NEGATIVE CONTROL: the forbidden implementation, applied twice.
-      const wrongOnce = repriceFromStoredWage(calculatePlayerSalary(p))
+      const wrongOnce = repriceFromStoredWage(calculateUncompressedPlayerSalary(p))
       const wrongTwice = repriceFromStoredWage(wrongOnce)
       if (wrongOnce !== wrongTwice) {
         driftExamples++

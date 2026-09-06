@@ -25,7 +25,7 @@ export function makeTestTeam(
   } = {}
 ): SnapshotTeam {
   const { qualityOffset = 0, formation = DEFAULT_FORMATION, fitness = 100 } = options
-  const squad = generateInitialSquad()
+  const squad = generateInitialSquad(new Date())
   const slots = [...FORMATIONS[isFormationId(formation) ? formation : DEFAULT_FORMATION]]
 
   const adjusted = squad.map((p) => {

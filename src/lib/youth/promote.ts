@@ -2,7 +2,7 @@ import type { Prisma } from "@/generated/prisma"
 import { prisma } from "@/lib/prisma"
 import { calculatePlayerOverall } from "@/lib/players/overall"
 import { calculatePlayerMarketValue } from "@/lib/players/market-value"
-import { calculatePlayerSalary } from "@/lib/economy/salary"
+import { calculateAuthoritativeSalary } from "@/lib/economy/salary"
 import { extractPlayerAttributes } from "@/lib/players/attributes"
 import { getAvailableRosterSlots, lockTeamRoster, pickAvailableShirtNumber } from "@/lib/players/roster"
 import { countRoster, countsAfterAdditions, isResolvableWithinCap, rosterGroupOf } from "@/lib/players/roster-floor"
@@ -148,7 +148,7 @@ export async function runPromoteYouthProspect(
       status: "available",
       shirtNumber: await pickAvailableShirtNumber(tx, intake.teamId),
       marketValue: calculatePlayerMarketValue({ ...rating, fitness: 100 }),
-      weeklySalary: calculatePlayerSalary(rating),
+      weeklySalary: calculateAuthoritativeSalary(rating, new Date()),
     },
     select: { id: true },
   })

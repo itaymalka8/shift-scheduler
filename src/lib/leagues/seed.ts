@@ -16,7 +16,7 @@ import { computeRecommendedLineup } from "@/lib/players/recommend"
 import { DEFAULT_FORMATION, FORMATIONS, isFormationId } from "@/lib/players/formations"
 import { getSeasonStartMonday, computeMatchdayDate } from "@/lib/match/schedule"
 import { DEFAULT_STARTING_SEATS, toSeatColumns } from "@/lib/stadium/config"
-import { calculatePlayerSalary } from "@/lib/economy/salary"
+import { calculateAuthoritativeSalary } from "@/lib/economy/salary"
 import { calculatePlayerMarketValue } from "@/lib/players/market-value"
 import { calculatePlayerOverall } from "@/lib/players/overall"
 import { generateAttributesForTargetOverall } from "@/lib/players/attribute-generation"
@@ -48,7 +48,7 @@ function buildDivisionSeedData(tierConfig: LeagueTierConfig, nameIndex: number) 
     const n = nameIndex + i
     return {
       name,
-      squad: generateInitialSquad(),
+      squad: generateInitialSquad(new Date()),
       team: {
         name,
         isBot: true,
@@ -341,7 +341,10 @@ async function backfillMissingGameData(seasonId: string): Promise<void> {
               primaryPosition: position,
               fitness: player.fitness,
             }),
-            weeklySalary: calculatePlayerSalary({ overall, age: player.age, potential: player.potential, primaryPosition: position }),
+            weeklySalary: calculateAuthoritativeSalary(
+              { overall, age: player.age, potential: player.potential, primaryPosition: position },
+              new Date()
+            ),
           },
         })
       } else if (player.weeklySalary === 0) {
@@ -350,7 +353,7 @@ async function backfillMissingGameData(seasonId: string): Promise<void> {
         // generated player's salary is always at least SALARY_MIN.
         await prisma.player.update({
           where: { id: player.id },
-          data: { weeklySalary: calculatePlayerSalary(player) },
+          data: { weeklySalary: calculateAuthoritativeSalary(player, new Date()) },
         })
       }
     }

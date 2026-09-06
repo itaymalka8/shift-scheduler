@@ -39,7 +39,7 @@ import { generateAttributesForTargetOverall } from "./attribute-generation"
 import { convergeToTargetOverall } from "./overall-converge"
 import { generatePlayerName } from "./names"
 import { calculatePlayerMarketValue } from "./market-value"
-import { calculatePlayerSalary } from "@/lib/economy/salary"
+import { calculateAuthoritativeSalary } from "@/lib/economy/salary"
 import { SECONDARY_POSITIONS, type PlayerPosition, type PositionGroup } from "./positions"
 import {
   BROAD_GROUP_POSITIONS,
@@ -146,6 +146,15 @@ export interface GeneratedFallbackPlayer extends PlayerAttributes {
 export interface GenerateFallbackInput extends FallbackSeedInput {
   /** Which roster group this slot exists to fill - decided by the deficit plan. */
   group: PositionGroup
+  /**
+   * The instant this player is being created for, which is what decides
+   * WHICH salary authority prices him - the pre-Phase-3R curve or the
+   * calibrated one. Defaults to now, which is correct for every runtime
+   * caller: a replacement player is created at the moment the deficit is
+   * found. It is an input rather than an assumption so a diagnostic can price
+   * a simulated player against a stated era instead of against the clock.
+   */
+  at?: Date
 }
 
 /**
@@ -218,6 +227,6 @@ export function generateFallbackPlayer(input: GenerateFallbackInput): GeneratedF
     // at or near SALARY_MIN and a value roughly an order of magnitude below a
     // real squad player's - which is the whole economic story.
     marketValue: calculatePlayerMarketValue({ overall, age, potential, primaryPosition, fitness: 100 }),
-    weeklySalary: calculatePlayerSalary({ overall, age, potential, primaryPosition }),
+    weeklySalary: calculateAuthoritativeSalary({ overall, age, potential, primaryPosition }, input.at ?? new Date()),
   }
 }

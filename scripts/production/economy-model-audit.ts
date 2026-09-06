@@ -16,7 +16,7 @@
  *
  * THE PROJECTION IMPORTS THE REAL FUNCTIONS - calculateAttendance,
  * calculateMatchStadiumRevenue, calculateHomeMatchExpenses,
- * calculateAwayTravelCost, calculatePlayerSalary, developPlayer,
+ * calculateAwayTravelCost, calculateUncompressedPlayerSalary, developPlayer,
  * rollRetirement, generateFallbackPlayer - so a rebalance of any config
  * constant changes this projection automatically, and a projection that
  * disagrees with the game is a bug in one of them rather than in a
@@ -46,7 +46,7 @@ import {
 import { calculateAttendance, calculateMatchStadiumRevenue } from "../../src/lib/stadium/attendance"
 import { calculateStadiumCapacity } from "../../src/lib/stadium/metrics"
 import { calculateHomeMatchExpenses, calculateAwayTravelCost } from "../../src/lib/economy/match-expenses"
-import { calculatePlayerSalary } from "../../src/lib/economy/salary"
+import { calculateUncompressedPlayerSalary } from "../../src/lib/economy/salary"
 import { calculateTeamTotalQuality } from "../../src/lib/players/quality"
 import { extractPlayerAttributes, type PlayerAttributes } from "../../src/lib/players/attributes"
 import { developPlayer, rollRetirement } from "../../src/lib/seasons/player-development"
@@ -286,7 +286,7 @@ function playSeason(club: SimClub, rng: SeededRandom, ledger: SeasonLedger, opts
  */
 function rollSquad(club: SimClub, seasonNumber: number, rng: SeededRandom, opts: ProjectionOptions): void {
   const wage = (p: { overall: number; age: number; potential: number; primaryPosition: string }) =>
-    Math.round(calculatePlayerSalary(p) * (opts.salaryMultiplier ?? 1))
+    Math.round(calculateUncompressedPlayerSalary(p) * (opts.salaryMultiplier ?? 1))
   const survivors: SimPlayer[] = []
   for (const player of club.players) {
     if (rollRetirement(player.age, rng)) continue

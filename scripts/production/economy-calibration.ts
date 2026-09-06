@@ -61,7 +61,7 @@ import {
   type SeatCounts,
 } from "../../src/lib/stadium/config"
 import { calculateStadiumCapacity } from "../../src/lib/stadium/metrics"
-import { calculatePlayerSalary } from "../../src/lib/economy/salary"
+import { calculateUncompressedPlayerSalary } from "../../src/lib/economy/salary"
 import { extractPlayerAttributes, type PlayerAttributes } from "../../src/lib/players/attributes"
 import { developPlayer, rollRetirement } from "../../src/lib/seasons/player-development"
 import { generateFallbackPlayer } from "../../src/lib/players/fallback-generator"
@@ -213,7 +213,7 @@ interface ClubMeta {
 }
 
 interface SeasonClubState {
-  /** Canonical per-player weekly wage at scale 1.0, from calculatePlayerSalary. */
+  /** Canonical per-player weekly wage at scale 1.0, from calculateUncompressedPlayerSalary. */
   canonicalWages: number[]
   /** Season 1 only: the wage rows Production actually holds today. */
   storedWages: number[] | null
@@ -304,7 +304,7 @@ function rollSquad(players: SimPlayer[], clubId: string, seasonNumber: number, r
 }
 
 function canonicalWage(p: SimPlayer): number {
-  return calculatePlayerSalary({ overall: p.overall, age: p.age, potential: p.potential, primaryPosition: p.primaryPosition })
+  return calculateUncompressedPlayerSalary({ overall: p.overall, age: p.age, potential: p.potential, primaryPosition: p.primaryPosition })
 }
 
 function buildTrajectory(

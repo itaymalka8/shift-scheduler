@@ -159,3 +159,38 @@ export const PAYROLL_AUTOMATION_START = new Date("2026-09-10T13:00:00.000Z")
  * be looked at by a person, not a backlog to be quietly charged.
  */
 export const PAYROLL_MAX_CATCHUP_WEEKS = 26
+
+/**
+ * THE PHASE 3R ACTIVATION BOUNDARY - the instant the calibrated economy
+ * becomes authoritative.
+ *
+ * Everything Phase 3R adds is gated on this one instant: the compressed
+ * salary curve, the one-time repricing of existing squads, weekly sponsor
+ * income, and weekly stadium maintenance. Before it, the league runs exactly
+ * as it runs today. At and after it, the calibrated model runs - all of it,
+ * together.
+ *
+ * SAME CONTRACT AS PAYROLL_AUTOMATION_START, FOR THE SAME REASONS. A
+ * committed literal rather than a database row, so it is explicit, identical
+ * for every club, survives a redeploy, and needs no migration. Deploy time is
+ * never read. START-LINE ACTIVATION: weeks that closed before this instant
+ * are permanently outside sponsor and maintenance and are never charged, so
+ * turning the new economy on cannot bill anybody for the past.
+ *
+ * IT MUST BE IN THE FUTURE WHEN THE DEPLOY LANDS. `prod:economy:activation`
+ * fails closed if it is not, and refuses the deploy. If a deploy slips past
+ * it, the rule is NOT to catch up: move the boundary to the next payroll
+ * boundary through a reviewed code change and deploy again.
+ *
+ * ON THE PAYROLL GRID ON PURPOSE. Sponsor, maintenance and payroll all settle
+ * at the same weekly instant, and the repricing runs in the same transaction
+ * ahead of them, so no settlement can ever see a half-converted league. That
+ * only works if this instant IS a payroll instant; phase-3r-activation.test.ts
+ * asserts that rather than trusting the date.
+ *
+ * PROVISIONAL UNTIL PRE-DEPLOYMENT. 2026-09-24T13:00:00.000Z is a Thursday at
+ * 13:00 UTC, two payroll weeks after autonomous payroll's own boundary. The
+ * final Production value is confirmed - and moved forward if the schedule has
+ * slipped - as the last step before deploying, not here.
+ */
+export const PHASE_3R_ACTIVATION_START = new Date("2026-09-24T13:00:00.000Z")

@@ -2,7 +2,7 @@ import type { Prisma } from "@/generated/prisma"
 import { OUTFIELD_ATTRIBUTES, type AttributeKey } from "@/lib/players/attributes"
 import { calculatePlayerOverall } from "@/lib/players/overall"
 import { calculatePlayerMarketValue } from "@/lib/players/market-value"
-import { calculatePlayerSalary } from "@/lib/economy/salary"
+import { calculateAuthoritativeSalary } from "@/lib/economy/salary"
 import { runPlayerSeasonLifecycle } from "./player-lifecycle"
 import { SeasonLifecycleError } from "./errors"
 
@@ -180,7 +180,7 @@ describe("runPlayerSeasonLifecycle - development and aging", () => {
       primaryPosition: "ST",
     }
     expect(written.marketValue).toBe(calculatePlayerMarketValue({ ...expectedRating, fitness: 100 }))
-    expect(written.weeklySalary).toBe(calculatePlayerSalary(expectedRating))
+    expect(written.weeklySalary).toBe(calculateAuthoritativeSalary(expectedRating, new Date()))
   })
 
   // D/E at the service boundary.

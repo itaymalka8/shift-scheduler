@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma"
 import { SeededRandom } from "@/lib/match/engine/rng"
 import { extractPlayerAttributes } from "@/lib/players/attributes"
 import { calculatePlayerMarketValue } from "@/lib/players/market-value"
-import { calculatePlayerSalary } from "@/lib/economy/salary"
+import { calculateAuthoritativeSalary } from "@/lib/economy/salary"
 import { removePlayerFromSquad } from "@/lib/transfers/squad-cleanup"
 import { lockPlayerRow } from "@/lib/players/locks"
 import { SeasonLifecycleError } from "./errors"
@@ -189,7 +189,7 @@ export async function runPlayerSeasonLifecycle(
       primaryPosition: player.primaryPosition,
     }
     updateData.marketValue = calculatePlayerMarketValue({ ...rating, fitness: player.fitness })
-    updateData.weeklySalary = calculatePlayerSalary(rating)
+    updateData.weeklySalary = calculateAuthoritativeSalary(rating, new Date())
   }
 
   await tx.player.update({ where: { id: player.id }, data: updateData })
