@@ -83,11 +83,17 @@ describe("ONE CLOCK: no page advances the economy", () => {
       expect(source).not.toContain("settlePayrollWeek")
       expect(source).not.toContain("completeStadiumConstruction")
       expect(source).not.toContain("settleDueStadiumConstructionForAll")
+      // Phase 3R gave the week two more settlers and one repricing. A page
+      // must not be able to reach any of them either.
+      expect(source).not.toContain("settleWeeklyEconomy")
+      expect(source).not.toContain("settleSponsorWeek")
+      expect(source).not.toContain("settleMaintenanceWeek")
+      expect(source).not.toContain("repriceLeagueSalaries")
     }
   })
 
   it("the scheduled job is the only caller of either settler", () => {
-    expect(CRON).toContain("settleDuePayroll()")
+    expect(CRON).toContain("settleWeeklyEconomy()")
     expect(CRON).toContain("settleDueStadiumConstructionForAll()")
   })
 })
@@ -193,7 +199,7 @@ describe("ONE LEAGUE-WIDE ROSTER SNAPSHOT PER PAYROLL WEEK", () => {
 describe("CRON ORDER: payroll before the season roll, stadium first", () => {
   const stadiumStep = CRON.indexOf("settleDueStadiumConstructionForAll()")
   const fixtures = CRON.indexOf("processDueFixtures()")
-  const payroll = CRON.indexOf("settleDuePayroll()")
+  const weekly = CRON.indexOf("settleWeeklyEconomy()")
   const seasons = CRON.indexOf("runSeasonEndOrchestratorForAllSeasons()")
 
   it("stadium completion runs before fixtures are played", () => {
@@ -201,16 +207,44 @@ describe("CRON ORDER: payroll before the season roll, stadium first", () => {
     expect(stadiumStep).toBeLessThan(fixtures)
   })
 
-  it("payroll runs after fixtures and BEFORE season lifecycle", () => {
-    expect(payroll).toBeGreaterThan(fixtures)
-    expect(payroll).toBeLessThan(seasons)
+  it("the weekly settlement runs after fixtures and BEFORE season lifecycle", () => {
+    expect(weekly).toBeGreaterThan(fixtures)
+    expect(weekly).toBeLessThan(seasons)
   })
 
-  it("season lifecycle is deferred when payroll is outstanding", () => {
-    expect(CRON).toContain("payrollOutstanding")
+  it("season lifecycle is deferred when ANY weekly settlement is outstanding", () => {
+    // Widened from payroll alone: the season roll retires players, moves clubs
+    // between divisions and rewrites salaries, which are inputs to the sponsor
+    // and the tier lookup as well as to the wage bill.
+    expect(CRON).toContain("weeklySettlementOutstanding")
     const guard = CRON.slice(CRON.indexOf("// --- C. Season lifecycle"))
-    expect(guard).toContain("if (payrollOutstanding)")
+    expect(guard).toContain("if (weeklySettlementOutstanding)")
     expect(guard).toContain("DEFERRED")
+  })
+
+  it("settles sponsor, then maintenance, then payroll - in the settlement itself", () => {
+    // The order lives in one function rather than in the cron's call sequence,
+    // so it is asserted where it is decided.
+    const settlement = code(read("src", "lib", "economy", "weekly-settlement.ts"))
+    const runner = settlement.slice(settlement.indexOf("export async function settleWeeklyEconomy"))
+    const sponsor = runner.indexOf("settleSponsorWeek(instant)")
+    const maintenance = runner.indexOf("settleMaintenanceWeek(instant)")
+    const payroll = runner.indexOf("settlePayrollWeek(instant)")
+    expect(sponsor).toBeGreaterThan(-1)
+    expect(sponsor).toBeLessThan(maintenance)
+    expect(maintenance).toBeLessThan(payroll)
+  })
+
+  it("reprices before it reads a wage bill, in the same transaction", () => {
+    const settlement = code(read("src", "lib", "economy", "weekly-settlement.ts"))
+    const sponsorWeek = settlement.slice(
+      settlement.indexOf("export async function settleSponsorWeek"),
+      settlement.indexOf("export async function settleMaintenanceWeek")
+    )
+    const reprice = sponsorWeek.indexOf("repriceLeagueSalaries(tx, instant)")
+    const readWages = sponsorWeek.indexOf("weeklySalary: true")
+    expect(reprice).toBeGreaterThan(-1)
+    expect(reprice).toBeLessThan(readWages)
   })
 })
 

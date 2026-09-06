@@ -194,3 +194,36 @@ export const PAYROLL_MAX_CATCHUP_WEEKS = 26
  * slipped - as the last step before deploying, not here.
  */
 export const PHASE_3R_ACTIVATION_START = new Date("2026-09-24T13:00:00.000Z")
+
+// --- Weekly sponsor income (Phase 3R) ----------------------------------------
+
+/**
+ * THE SPONSOR COEFFICIENT - the league's sponsor bill as a fraction of its
+ * MEDIAN weekly payroll. Calibrated jointly with the salary curve, not chosen:
+ * the two were solved together because they are the same lever seen from
+ * either side, and the exchange rate along the solution ridge is roughly
+ * +0.117 of salary scale per +0.10 of this. Frozen.
+ */
+export const SPONSOR_COEFFICIENT = 0.06
+
+/**
+ * TIER MULTIPLIERS - what a top-flight club's commercial pull is worth
+ * relative to a second-tier club's.
+ *
+ * These decide DISTRIBUTION and nothing else. The league-wide sponsor total is
+ * set by SPONSOR_COEFFICIENT alone, because every club's multiplier is divided
+ * by the league's MEAN multiplier before it is applied (see sponsor.ts). Without
+ * that normalisation, promoting clubs into tier 1 would quietly inflate the
+ * whole league's sponsor income, and the level constant would stop meaning what
+ * the calibration says it means.
+ */
+export const SPONSOR_TIER_MULTIPLIER: Readonly<Record<number, number>> = { 1: 1.25, 2: 1.0 }
+
+/**
+ * The multiplier for a club that is not a member of the season being settled -
+ * a brand-new signup between the season seed and its first fixture, say. The
+ * ENTRY tier, deliberately: a club with no division cannot be assumed to be in
+ * the top flight, and giving it the higher multiplier would make "not yet
+ * placed" the most commercially valuable state in the game.
+ */
+export const SPONSOR_DEFAULT_TIER = 2

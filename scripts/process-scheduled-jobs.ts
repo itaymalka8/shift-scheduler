@@ -73,7 +73,7 @@
  * Run with: npx tsx scripts/process-scheduled-jobs.ts
  */
 import { settleDueStadiumConstructionForAll } from "../src/lib/stadium/actions"
-import { settleDuePayroll } from "../src/lib/economy/payroll"
+import { settleWeeklyEconomy } from "../src/lib/economy/weekly-settlement"
 import { processDueFixtures } from "../src/lib/match/simulate"
 import { activateDueMatchConsequences } from "../src/lib/match/consequence-service"
 import { expireDueTransferListings } from "../src/lib/transfers/expiration"
@@ -85,9 +85,11 @@ async function main() {
   const failedSubsystems: string[] = []
 
   let stadiumJobsCompleted: number | null = null
-  let payrollWeeksSettled: number | null = null
+  let weeksSettled: number | null = null
+  let sponsorCredited: number | null = null
+  let maintenanceCharged: number | null = null
   let payrollCharged: number | null = null
-  let payrollOutstanding = false
+  let weeklySettlementOutstanding = false
   let seasonsDeferred = false
   let fixturesObserved: number | null = null
   let fixturesBlocked = 0
@@ -204,46 +206,73 @@ async function main() {
     console.error("Transfer listing expiration failed:", error)
   }
 
-  // --- B2. PAYROLL ---------------------------------------------------------
-  // Every club that owes wages for a closed payroll week pays them, league
-  // wide and atomically per week. Nothing before the activation boundary is
-  // ever charged; see src/lib/economy/payroll-clock.ts.
+  // --- B2. THE WEEKLY ECONOMIC SETTLEMENT ----------------------------------
+  // Everything the league owes and is owed at a closed weekly boundary, league
+  // wide, in one fixed order per week: reprice, then sponsor, then stadium
+  // maintenance, then payroll. Nothing before an activation boundary is ever
+  // charged - payroll's own boundary governs wages and the Phase 3R boundary
+  // governs sponsor and maintenance, so a week that closed before the
+  // calibrated economy existed is settled for wages alone.
   try {
-    const payroll = await settleDuePayroll()
-    payrollWeeksSettled = payroll.weeksSettled.length
-    payrollCharged = payroll.totalCharged
-    for (const week of payroll.weeksSettled) {
+    const settlement = await settleWeeklyEconomy()
+    weeksSettled = settlement.weeksSettled.length
+    sponsorCredited = settlement.totalSponsorCredited
+    maintenanceCharged = settlement.totalMaintenanceCharged
+    payrollCharged = settlement.totalPayrollCharged
+    for (const week of settlement.weeksSettled) {
+      if (week.sponsor) {
+        console.info(
+          `Sponsor ${week.weekKey}: ${week.sponsor.teamsCredited}/${week.sponsor.eligibleTeams} club(s) credited, ` +
+            `total ${week.sponsor.totalCredited}, league median payroll ${week.sponsor.medianWeeklyPayroll}`
+        )
+        const { repricing } = week.sponsor
+        console.info(
+          `Salary repricing ${week.weekKey}: ${repricing.repriced} repriced, ` +
+            `${repricing.alreadyCorrect}/${repricing.examined} already on the curve, ` +
+            `weekly bill ${repricing.weeklyBillBefore} -> ${repricing.weeklyBillAfter}`
+        )
+      }
+      if (week.maintenance) {
+        console.info(
+          `Maintenance ${week.weekKey}: ${week.maintenance.teamsCharged} club(s) charged, ` +
+            `${week.maintenance.teamsExempt} at or below the starting ground, total ${week.maintenance.totalCharged}`
+        )
+      }
       console.info(
-        `Payroll ${week.weekKey}: ${week.teamsCharged}/${week.eligibleTeams} club(s) charged, ` +
-          `${week.teamsAlreadySettled} already settled, total ${week.totalCharged}`
+        `Payroll ${week.weekKey}: ${week.payroll.teamsCharged}/${week.payroll.eligibleTeams} club(s) charged, ` +
+          `${week.payroll.teamsAlreadySettled} already settled, total ${week.payroll.totalCharged}`
       )
     }
-    if (payroll.weeksSettled.length === 0) {
-      console.info(`Payroll: nothing due (${payroll.weeksAlreadyComplete} week(s) already complete)`)
+    if (settlement.weeksSettled.length === 0) {
+      console.info(`Weekly settlement: nothing due (${settlement.weeksAlreadyComplete} week(s) already complete)`)
     }
     // A post-activation week older than the look-back window is an incident,
-    // not a backlog: say so loudly rather than let wages vanish quietly.
-    if (payroll.weeksOutsideWindow > 0) {
-      payrollOutstanding = true
-      failedSubsystems.push("payroll")
+    // not a backlog: say so loudly rather than let a week vanish quietly.
+    if (settlement.weeksOutsideWindow > 0) {
+      weeklySettlementOutstanding = true
+      failedSubsystems.push("weekly-settlement")
       console.error(
-        `Payroll: ${payroll.weeksOutsideWindow} post-activation week(s) fell outside the catch-up window and were NOT settled`
+        `Weekly settlement: ${settlement.weeksOutsideWindow} post-activation week(s) fell outside the catch-up window and were NOT settled`
       )
     }
   } catch (error) {
-    payrollOutstanding = true
-    failedSubsystems.push("payroll")
-    console.error("Payroll settlement failed:", error)
+    weeklySettlementOutstanding = true
+    failedSubsystems.push("weekly-settlement")
+    console.error("Weekly economic settlement failed:", error)
   }
 
   // --- C. Season lifecycle orchestration ----------------------------------
-  // DEFERRED WHEN PAYROLL IS OUTSTANDING. The orchestrator retires players and
-  // rewrites salaries; doing that while an already-due payroll week is still
-  // unsettled would change what that closed week costs when it retries two
-  // minutes from now. Wages are settled first or the roll waits a tick.
-  if (payrollOutstanding) {
+  // DEFERRED WHEN ANY WEEKLY SETTLEMENT IS OUTSTANDING. The orchestrator
+  // retires players, moves clubs between divisions and rewrites every
+  // surviving salary - all three of which are inputs to a settlement that has
+  // not happened yet. Letting it run while an already-due week is unsettled
+  // would mean the retry two minutes from now charged a different squad, paid
+  // a sponsor from a different median, or read a different tier for the same
+  // closed week. The gate is deliberately wider than payroll's was, because
+  // Phase 3R gave the week two more things to get wrong.
+  if (weeklySettlementOutstanding) {
     seasonsDeferred = true
-    console.error("Season lifecycle DEFERRED this tick: an already-due payroll week is outstanding")
+    console.error("Season lifecycle DEFERRED this tick: an already-due weekly settlement is outstanding")
   } else
   try {
     const report = await runSeasonEndOrchestratorForAllSeasons()
@@ -284,9 +313,11 @@ async function main() {
       `  Fixtures blocked (XI):     ${fixturesBlocked}`,
       `  Consequences (post-match): ${na(consequencesAppliedAfter)}`,
       `  Transfer listings expired: ${na(listingsExpired)}`,
-      `  Payroll weeks settled:     ${na(payrollWeeksSettled)}`,
+      `  Weekly settlements:        ${na(weeksSettled)}`,
+      `  Sponsor credited:          ${na(sponsorCredited)}`,
+      `  Maintenance charged:       ${na(maintenanceCharged)}`,
       `  Payroll charged:           ${na(payrollCharged)}`,
-      `  Active seasons checked:    ${seasonsDeferred ? "deferred (payroll outstanding)" : na(seasonsChecked)}`,
+      `  Active seasons checked:    ${seasonsDeferred ? "deferred (weekly settlement outstanding)" : na(seasonsChecked)}`,
       `  Season transitions:        ${na(seasonTransitions)}`,
       `  Season errors:             ${seasonErrors}`,
       `  Duration:                  ${Date.now() - startedAt}ms`,
