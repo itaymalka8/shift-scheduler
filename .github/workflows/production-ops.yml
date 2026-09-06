@@ -32,6 +32,7 @@ on:
           - prod:replenishment:verify
           - prod:season:next-verify
           - prod:economy:audit
+          - prod:economy:model
           - prod:payroll:activation-check
           - prod:render:autodeploy:off
           - prod:backup:create
