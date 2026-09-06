@@ -1,6 +1,7 @@
 import { Prisma } from "@/generated/prisma"
 import { prisma } from "@/lib/prisma"
 import { createFinancialTransaction, InsufficientFundsError } from "@/lib/economy/service"
+import { evaluateDiscretionarySpendForTeam } from "@/lib/economy/reserve"
 import {
   DEFAULT_STADIUM_CONFIG,
   DEFAULT_STARTING_SEATS,
@@ -16,6 +17,23 @@ import { seatsAsOf, type SeatsAsOfResult } from "./as-of"
 export class ConstructionInProgressError extends Error {
   constructor() {
     super("CONSTRUCTION_IN_PROGRESS")
+  }
+}
+
+/**
+ * The club has the money but may not commit it: spending would leave it unable
+ * to pay four weeks of its own wages. Deliberately its own error rather than
+ * InsufficientFundsError, because the two need different answers from a
+ * manager - find more money, or lower the wage bill. See economy/reserve.ts.
+ */
+export class OperatingReserveError extends Error {
+  constructor(
+    public readonly headroom: number,
+    public readonly required: number,
+    public readonly reserve: number
+  ) {
+    super("OPERATING_RESERVE_REACHED")
+    this.name = "OperatingReserveError"
   }
 }
 
@@ -113,6 +131,23 @@ export async function startStadiumConstruction(
       if (activeJob) throw new ConstructionInProgressError()
 
       const totalCost = calculateConstructionCost(seatsToAdd, config)
+
+      // THE FOUR-WEEK OPERATING RESERVE, before the job row exists. A stand is
+      // a discretionary commitment, so the same rule that governs a transfer
+      // governs this: a club may build only down to four weeks of its own
+      // current wage bill. Balance and wage bill are both read inside this
+      // serializable transaction, so the reserve this decision was made on is
+      // the reserve the club actually has when the money moves.
+      //
+      // Checked here rather than left to allowNegative below because they are
+      // different rules: allowNegative stops a club going below ZERO, the
+      // reserve stops it going below what it owes its players next month.
+      const team = await tx.team.findUniqueOrThrow({ where: { id: teamId }, select: { balance: true } })
+      const reserve = await evaluateDiscretionarySpendForTeam(tx, teamId, team.balance, totalCost)
+      if (!reserve.allowed) {
+        throw new OperatingReserveError(reserve.headroom, totalCost, reserve.reserve)
+      }
+
       const days = calculateConstructionTime(totalNew, config)
       const startedAt = new Date()
       const endsAt = new Date(startedAt.getTime() + days * 24 * 60 * 60 * 1000)

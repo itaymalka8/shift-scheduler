@@ -1,5 +1,6 @@
 import { createFinancialTransaction } from "@/lib/economy/service"
 import { InsufficientFundsError } from "@/lib/finance/balance"
+import { evaluateDiscretionarySpendForTeam } from "@/lib/economy/reserve"
 import { TransferError } from "./errors"
 import { runSerializableTransaction } from "./retry"
 import { removePlayerFromSquad } from "./squad-cleanup"
@@ -186,6 +187,30 @@ export async function purchaseTransferListing(input: PurchaseTransferListingInpu
       throw new TransferError(
         "INSUFFICIENT_FUNDS",
         `Team ${input.buyingTeamId} balance ${buyingTeam.balance} is insufficient for asking price ${listing.askingPrice}`
+      )
+    }
+
+    // 9b. THE FOUR-WEEK OPERATING RESERVE. Having the money is necessary and
+    // not sufficient: a club may commit only down to four weeks of its own
+    // current wage bill. Both numbers are read inside THIS transaction, under
+    // the player lock and both club locks taken above, so the squad cannot
+    // change between the wage bill this decision was made on and the purchase
+    // it authorises.
+    //
+    // Distinct from INSUFFICIENT_FUNDS on purpose - the money is there, but
+    // spending it would leave the club unable to pay the wages it has already
+    // committed to. A separate code because they need separate answers from a
+    // manager: find more money, or lower the wage bill.
+    const reserve = await evaluateDiscretionarySpendForTeam(
+      tx,
+      input.buyingTeamId,
+      buyingTeam.balance,
+      listing.askingPrice
+    )
+    if (!reserve.allowed) {
+      throw new TransferError(
+        "OPERATING_RESERVE_REACHED",
+        `Team ${input.buyingTeamId} may commit ${reserve.headroom} (balance ${reserve.balance} less a ${reserve.reserve} reserve on a ${reserve.weeklyPayroll} weekly wage bill); asking price is ${reserve.cost}`
       )
     }
 

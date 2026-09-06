@@ -899,6 +899,7 @@ const he = {
   "stadium.confirmButton": "אישור והתחלת בנייה",
 
   "stadium.insufficientFundsTitle": "אין מספיק כסף לביצוע השדרוג.",
+  "stadium.operatingReserveTitle": "השדרוג הזה יוריד את הקופה מתחת לרזרבה של ארבעה שבועות משכורות.",
   "stadium.currentBalance": "יתרה נוכחית",
   "stadium.missingAmount": "סכום חסר",
 
@@ -1083,6 +1084,7 @@ const he = {
   "transfers.purchaseErrorNoLongerAvailable": "השחקן הזה כבר אינו זמין לרכישה.",
   "transfers.purchaseErrorRosterFull": "הסגל שלכם מלא (מקסימום 22 שחקנים) - לא ניתן להוסיף שחקן נוסף.",
   "transfers.purchaseErrorInsufficientFunds": "אין מספיק כסף בקופה לביצוע הרכישה הזו.",
+  "transfers.purchaseErrorOperatingReserve": "הכסף קיים, אבל הרכישה תוריד את הקופה מתחת לרזרבה של ארבעה שבועות משכורות. אפשר למכור או לשחרר שחקן ולנסות שוב.",
   "transfers.purchaseErrorWindowClosed": "חלון ההעברות סגור כרגע - לא ניתן לבצע רכישות.",
   "transfers.purchaseErrorConflict": "העסקה השתנתה במקביל, נסו שוב.",
   "transfers.purchaseErrorCannotBuyOwn": "לא ניתן לקנות שחקן מהקבוצה שלכם.",
@@ -2041,6 +2043,7 @@ const en: LocaleDictionary = {
   "stadium.confirmButton": "Confirm and start construction",
 
   "stadium.insufficientFundsTitle": "Not enough money for this upgrade.",
+  "stadium.operatingReserveTitle": "This upgrade would take the club below its four-week wage reserve.",
   "stadium.currentBalance": "Current balance",
   "stadium.missingAmount": "Amount missing",
 
@@ -2225,6 +2228,7 @@ const en: LocaleDictionary = {
   "transfers.purchaseErrorNoLongerAvailable": "This player is no longer available for purchase.",
   "transfers.purchaseErrorRosterFull": "Your squad is full (maximum 22 players) - you can't add another player.",
   "transfers.purchaseErrorInsufficientFunds": "There isn't enough money in the bank for this purchase.",
+  "transfers.purchaseErrorOperatingReserve": "The money is there, but this purchase would take the club below its four-week wage reserve. Sell or release a player and try again.",
   "transfers.purchaseErrorWindowClosed": "The transfer window is currently closed - purchases aren't possible right now.",
   "transfers.purchaseErrorConflict": "This deal changed at the same time - please try again.",
   "transfers.purchaseErrorCannotBuyOwn": "You can't buy a player from your own club.",
@@ -3195,6 +3199,7 @@ const ar: LocaleDictionary = {
   "stadium.confirmButton": "تأكيد وبدء البناء",
 
   "stadium.insufficientFundsTitle": "لا يوجد مال كافٍ لتنفيذ هذه الترقية.",
+  "stadium.operatingReserveTitle": "هذه الترقية ستخفض الخزينة إلى ما دون احتياطي رواتب أربعة أسابيع.",
   "stadium.currentBalance": "الرصيد الحالي",
   "stadium.missingAmount": "المبلغ الناقص",
 
@@ -3379,6 +3384,7 @@ const ar: LocaleDictionary = {
   "transfers.purchaseErrorNoLongerAvailable": "هذا اللاعب لم يعد متاحًا للشراء.",
   "transfers.purchaseErrorRosterFull": "تشكيلتك مكتملة (الحد الأقصى 22 لاعبًا) - لا يمكن إضافة لاعب آخر.",
   "transfers.purchaseErrorInsufficientFunds": "لا يوجد رصيد كافٍ في الخزينة لإتمام هذه الصفقة.",
+  "transfers.purchaseErrorOperatingReserve": "المال متوفر، لكن هذه الصفقة ستخفض الخزينة إلى ما دون احتياطي رواتب أربعة أسابيع. يمكن بيع لاعب أو إطلاق سراحه ثم المحاولة مجددًا.",
   "transfers.purchaseErrorWindowClosed": "سوق الانتقالات مغلق حاليًا - لا يمكن إجراء عمليات شراء الآن.",
   "transfers.purchaseErrorConflict": "تغيرت الصفقة في نفس الوقت، يرجى المحاولة مرة أخرى.",
   "transfers.purchaseErrorCannotBuyOwn": "لا يمكنك شراء لاعب من ناديك الخاص.",

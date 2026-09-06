@@ -2,12 +2,7 @@ import { NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
-import {
-  startStadiumConstruction,
-  ConstructionInProgressError,
-  NoSeatsRequestedError,
-  InsufficientFundsError,
-} from "@/lib/stadium/actions"
+import { startStadiumConstruction, ConstructionInProgressError, NoSeatsRequestedError, InsufficientFundsError, OperatingReserveError } from "@/lib/stadium/actions"
 import { totalSeats } from "@/lib/stadium/construction"
 import type { SeatCounts } from "@/lib/stadium/config"
 
@@ -56,6 +51,16 @@ export async function POST(request: Request) {
     }
     if (error instanceof ConstructionInProgressError) {
       return NextResponse.json({ error: "CONSTRUCTION_IN_PROGRESS" }, { status: 409 })
+    }
+    if (error instanceof OperatingReserveError) {
+      // 409, not 400: the request is well-formed and the money exists - the
+      // club's current state forbids committing it. `headroom` is what the
+      // club may actually spend, so the UI can say how much rather than only
+      // that the answer is no.
+      return NextResponse.json(
+        { error: "OPERATING_RESERVE_REACHED", headroom: error.headroom, required: error.required, reserve: error.reserve },
+        { status: 409 }
+      )
     }
     if (error instanceof InsufficientFundsError) {
       return NextResponse.json(

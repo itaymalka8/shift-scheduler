@@ -1,5 +1,4 @@
 import { createFinancialTransaction } from "@/lib/economy/service"
-import { InsufficientFundsError } from "@/lib/finance/balance"
 import { TransferError } from "./errors"
 import { runSerializableTransaction } from "./retry"
 import { removePlayerFromSquad } from "./squad-cleanup"
@@ -111,14 +110,21 @@ export async function releasePlayer(input: ReleasePlayerInput): Promise<ReleaseP
     // the departure it authorises.
     await assertDepartureKeepsRosterLegal(tx, input.teamId, player)
 
-    // 4. Balance check - fail fast, before touching listings/lineup/roles,
-    // and before ever attempting the charge itself.
-    if (team.balance - player.weeklySalary < 0) {
-      throw new TransferError(
-        "INSUFFICIENT_FUNDS",
-        `Team ${input.teamId} balance ${team.balance} is insufficient for release cost ${player.weeklySalary}`
-      )
-    }
+    // 4. NO BALANCE CHECK, AND THAT IS THE RULE RATHER THAN AN OMISSION.
+    //
+    // Release used to refuse when the cost would take a club below zero. That
+    // is exactly backwards. Releasing a player is a club's CORRECTIVE action -
+    // the cheapest and often the only way for a manager to cut a wage bill
+    // they can no longer carry - so making it unavailable precisely when the
+    // club is in trouble locks a struggling save into its own decline. Phase
+    // 3R builds no bankruptcy, no loans, no administration and no automatic
+    // rescue; the way out has to stay open.
+    //
+    // The cost is NOT waived, and the four-week operating reserve does NOT
+    // apply. A release still charges one weeklySalary, and it may take the
+    // balance negative. Both halves matter: waiving it would make releasing
+    // free, and applying the reserve would re-close the door the reserve
+    // exists to keep clubs away from.
 
     // 5. Cancel any OPEN listing for this player - including one whose
     // expiresAt has already passed but the expiration processor hasn't run
@@ -149,30 +155,24 @@ export async function releasePlayer(input: ReleasePlayerInput): Promise<ReleaseP
     await tx.player.update({ where: { id: player.id }, data: { teamId: null } })
 
     // 9. Charge exactly one weeklySalary, through the Economy Service - the
-    // only place allowed to change Team.balance. allowNegative:false is
-    // defense-in-depth on top of the explicit check in step 4 (same
-    // transaction, so it can never actually disagree with it).
+    // only place allowed to change Team.balance.
+    //
+    // allowNegative:true, matching step 4. A release is a corrective action
+    // and must remain available to a club already under financial pressure;
+    // the debt it leaves behind is the consequence, not a reason to refuse.
     //
     // type is "other", not "playerSalaries": the release cost is *sized*
     // like one weeklySalary, but it isn't a recurring wage payment - a
     // future report that sums "playerSalaries" as payroll spend must never
     // pick this up as one.
-    let charge: Awaited<ReturnType<typeof createFinancialTransaction>>
-    try {
-      charge = await createFinancialTransaction(tx, {
-        teamId: input.teamId,
-        type: "other",
-        amount: -player.weeklySalary,
-        description: `Release: ${player.firstName} ${player.lastName}`,
-        referenceId,
-        allowNegative: false,
-      })
-    } catch (error) {
-      if (error instanceof InsufficientFundsError) {
-        throw new TransferError("INSUFFICIENT_FUNDS", error.message)
-      }
-      throw error
-    }
+    const charge = await createFinancialTransaction(tx, {
+      teamId: input.teamId,
+      type: "other",
+      amount: -player.weeklySalary,
+      description: `Release: ${player.firstName} ${player.lastName}`,
+      referenceId,
+      allowNegative: true,
+    })
     if (!charge) {
       // createFinancialTransaction only returns null when its own insert
       // hit the (teamId, referenceId) unique constraint - something the

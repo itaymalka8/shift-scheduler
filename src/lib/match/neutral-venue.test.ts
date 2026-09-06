@@ -11,11 +11,17 @@
  */
 import { simulateMatch } from "./engine/engine"
 import { DEFAULT_GAME_BALANCE_CONFIG } from "./engine/config"
-import { makeTestSnapshot, makeTestTeam } from "./engine/test-harness"
+import { cloneTeam, makeTestSnapshot, makeTestTeam } from "./engine/test-harness"
 import type { MatchSnapshot } from "./engine/snapshot"
 
 const HOME = makeTestTeam("H")
-const AWAY = makeTestTeam("A")
+// A CLONE, NOT A SECOND GENERATED SQUAD. The home-advantage test below claims
+// "identical squads" and then measures the only remaining asymmetry. Two
+// independently generated squads are not identical - generation is unseeded -
+// so on an unlucky draw one side is genuinely stronger and the test measured
+// squad noise instead of home advantage. It failed intermittently for exactly
+// that reason. cloneTeam exists for this and says so in its own comment.
+const AWAY = cloneTeam(HOME, "A")
 
 function snapshot(seed: string, neutralVenue: boolean): MatchSnapshot {
   return {

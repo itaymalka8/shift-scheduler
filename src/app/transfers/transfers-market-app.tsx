@@ -104,6 +104,11 @@ const PURCHASE_ERROR_INFO: Record<string, { messageKey: TranslationKey; removesC
   // card stays on the market.
   SQUAD_FLOOR_REACHED: { messageKey: "transfers.errorSquadFloorReached", removesCard: false },
   INSUFFICIENT_FUNDS: { messageKey: "transfers.purchaseErrorInsufficientFunds", removesCard: false },
+  // The money exists; committing it would leave the club unable to pay four
+  // weeks of its own wages. A different sentence from "not enough money",
+  // because it calls for a different decision. The listing is untouched, so
+  // the card stays - the club may sell or release and come back to it.
+  OPERATING_RESERVE_REACHED: { messageKey: "transfers.purchaseErrorOperatingReserve", removesCard: false },
   TRANSFER_WINDOW_CLOSED: { messageKey: "transfers.purchaseErrorWindowClosed", removesCard: false },
   TRANSFER_CONFLICT: { messageKey: "transfers.purchaseErrorConflict", removesCard: false },
   CANNOT_BUY_OWN_LISTING: { messageKey: "transfers.purchaseErrorCannotBuyOwn", removesCard: false },

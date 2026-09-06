@@ -515,6 +515,11 @@ function UpgradeView({
       if (!res.ok) {
         if (body?.error === "INSUFFICIENT_FUNDS") {
           setError({ message: t("stadium.insufficientFundsTitle"), balance: body.balance, required: body.required })
+        } else if (body?.error === "OPERATING_RESERVE_REACHED") {
+          // `headroom` is shown where the balance would be: what the club may
+          // actually commit, which is the number a manager needs, rather than
+          // a balance that looks like it should have been enough.
+          setError({ message: t("stadium.operatingReserveTitle"), balance: body.headroom, required: body.required })
         } else {
           setError({ message: t("error.UNKNOWN_ERROR") })
         }

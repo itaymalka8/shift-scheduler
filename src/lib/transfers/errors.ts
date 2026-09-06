@@ -22,6 +22,13 @@ export const TRANSFER_ERROR_CODES = [
   // floor it needs to carry a season - in total OR in any position group.
   // See transfers/roster-guard.ts.
   "SQUAD_FLOOR_REACHED",
+  // THE FOUR-WEEK OPERATING RESERVE. Deliberately NOT folded into
+  // INSUFFICIENT_FUNDS: a club with five million in the bank being told it has
+  // insufficient funds for a one-million player is a bug report waiting to be
+  // filed. This says something different and true - the money exists, but
+  // spending it would leave the club unable to pay four weeks of its own
+  // wages. See economy/reserve.ts.
+  "OPERATING_RESERVE_REACHED",
   // Not in the requested list - added because step 7 of Purchase explicitly
   // requires a clear domain error (never a raw Prisma error) when the
   // buying team doesn't exist, and none of the other codes fit that case.
