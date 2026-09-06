@@ -388,12 +388,35 @@ export async function settleWeeklyEconomy(now: Date = new Date()): Promise<Weekl
       where: { referenceId: { in: referenceIds } },
       select: { teamId: true, referenceId: true },
     }),
-    // Which clubs could owe upkeep AT ALL. Today this is zero of sixty, so the
-    // maintenance settlement is skipped outright rather than opening a
-    // transaction to charge nobody. A club that expands appears here and the
-    // skip stops applying.
+    // Which clubs owe upkeep, AND FOR WHICH WEEKS. Today this is nobody, for
+    // any week, so the maintenance settlement is skipped outright rather than
+    // opening a transaction to charge nobody.
+    //
+    // The construction jobs are read too, so the answer is computed per week
+    // through the same as-of correction the settlement itself uses. Judging it
+    // by the ground as it stands TODAY would be subtly wasteful rather than
+    // wrong: a club that expanded last week owes nothing for the weeks before
+    // it built, gets no row for them, and would therefore make those weeks look
+    // permanently incomplete - a settlement opened every two minutes forever to
+    // charge nobody.
     prisma.stadium.findMany({
-      select: { teamId: true, regularSeats: true, coveredSeats: true, premiumSeats: true, vipSeats: true },
+      select: {
+        teamId: true,
+        regularSeats: true,
+        coveredSeats: true,
+        premiumSeats: true,
+        vipSeats: true,
+        constructionJobs: {
+          select: {
+            status: true,
+            endsAt: true,
+            regularSeatsAdded: true,
+            coveredSeatsAdded: true,
+            premiumSeatsAdded: true,
+            vipSeatsAdded: true,
+          },
+        },
+      },
     }),
   ])
 
@@ -403,11 +426,15 @@ export async function settleWeeklyEconomy(now: Date = new Date()): Promise<Weekl
     bucket.add(row.teamId)
     settledByReference.set(row.referenceId, bucket)
   }
-  const owesUpkeep = new Set(
-    expandedGrounds
-      .filter((ground) => calculateWeeklyMaintenance(toSeatCounts(ground)).total > 0)
-      .map((ground) => ground.teamId)
-  )
+  const owesUpkeepAt = (instant: Date): Set<string> =>
+    new Set(
+      expandedGrounds
+        .filter(
+          (ground) =>
+            calculateWeeklyMaintenance(seatsAsOf(toSeatCounts(ground), ground.constructionJobs, instant).seats).total > 0
+        )
+        .map((ground) => ground.teamId)
+    )
 
   /** Is every club that would get a row for this reference already carrying one? */
   const complete = (referenceId: string, population: readonly { id: string }[]): boolean => {
@@ -434,12 +461,13 @@ export async function settleWeeklyEconomy(now: Date = new Date()): Promise<Weekl
       era === "phase3r" && !complete(sponsorReferenceId(weekKey), eligible)
         ? await settleSponsorWeek(instant)
         : null
+    const owesThisWeek = era === "phase3r" ? owesUpkeepAt(instant) : new Set<string>()
     const maintenance =
       era === "phase3r" &&
-      owesUpkeep.size > 0 &&
+      owesThisWeek.size > 0 &&
       !complete(
         maintenanceReferenceId(weekKey),
-        eligible.filter((team) => owesUpkeep.has(team.id))
+        eligible.filter((team) => owesThisWeek.has(team.id))
       )
         ? await settleMaintenanceWeek(instant)
         : null

@@ -95,8 +95,8 @@ const MUTATIONS: Mutation[] = [
   {
     name: "maintenance is charged retroactively for weeks before the activation boundary",
     file: "src/lib/economy/weekly-settlement.ts",
-    from: '      era === "phase3r" &&\n      owesUpkeep.size > 0 &&',
-    to: "      owesUpkeep.size > 0 &&",
+    from: '      era === "phase3r" &&\n      owesThisWeek.size > 0 &&',
+    to: "      owesUpkeepAt(instant).size > 0 &&",
     catcher: "src/lib/economy/phase-3r-activation.test.ts",
   },
   {
