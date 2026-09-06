@@ -4,10 +4,10 @@ import { extractPlayerAttributes } from "@/lib/players/attributes"
 import { isPlayerPosition, type PlayerPosition } from "@/lib/players/positions"
 import { readTeamTactics } from "@/lib/players/tactics"
 import { resolveFormationSlots } from "@/lib/players/formations"
-import { calculateTeamTotalQuality } from "@/lib/players/quality"
 import { readSeatsAsOf } from "@/lib/stadium/actions"
 import { calculateStadiumCapacity } from "@/lib/stadium/metrics"
-import { calculateAttendance } from "@/lib/stadium/attendance"
+import { resolveMatchAttendance } from "@/lib/stadium/match-attendance"
+import { readLeagueNeutralQuality } from "@/lib/stadium/neutral-quality"
 import type { MatchSnapshot, SnapshotPlayer, SnapshotTeam } from "./snapshot"
 
 function toPosition(value: string): PlayerPosition {
@@ -108,12 +108,40 @@ export async function buildMatchSnapshot(
   const { seats } = await readSeatsAsOf(fixture.homeTeamId, fixture.scheduledAt, homeTeam.name)
   const capacity = calculateStadiumCapacity(seats)
 
-  const homePlayers = await db.player.findMany({ where: { teamId: fixture.homeTeamId } })
-  const attendance = calculateAttendance(
-    { isHome: true },
-    { teamTotalQuality: calculateTeamTotalQuality(homePlayers) },
-    { seats }
-  )
+  // ACTIVE only, explicitly. The crowd is judging the squad the club is
+  // actually paying for, which is the same population payroll charges and the
+  // same one the league neutral is built from - three answers that have to
+  // agree, so all three filter the same way rather than each relying on
+  // retirement happening to null teamId.
+  const homePlayers = await db.player.findMany({
+    where: { teamId: fixture.homeTeamId, careerStatus: "ACTIVE" },
+    select: { overall: true },
+  })
+
+  // THE NEUTRAL, READ FOR THIS FIXTURE'S OWN SEASON, under the same client the
+  // squads were read through - so a league-wide settlement judges every club
+  // against one number rather than re-reading it per fixture. Season-scoped
+  // membership, never current Team state: see neutral-quality.ts.
+  const division = await db.division.findUniqueOrThrow({
+    where: { id: fixture.divisionId },
+    select: { seasonId: true },
+  })
+  const neutralQuality = await readLeagueNeutralQuality(db, division.seasonId)
+
+  // THE ONLY ATTENDANCE ROLL THIS FIXTURE WILL EVER GET. Seeded from the
+  // fixture's own matchSeed, and carried whole on the snapshot so settlement
+  // has no reason - and no means - to roll a second, different crowd.
+  //
+  // `at` is the fixture's KICKOFF, not `now`: a match settled late belongs to
+  // the era its kickoff belonged to, and a delayed cron tick must not be what
+  // decides which economy priced it.
+  const attendance = resolveMatchAttendance({
+    seed,
+    homePlayers,
+    seats,
+    neutralQuality,
+    at: fixture.scheduledAt ?? fixture.createdAt,
+  })
 
   return {
     fixtureId,
@@ -121,6 +149,7 @@ export async function buildMatchSnapshot(
     home,
     away,
     attendance: attendance.total,
+    attendanceBySeatType: attendance.bySeatType,
     stadiumCapacity: capacity,
     fanType: homeTeam.crowdStyle === "ultras" ? "ultras" : "calm",
     // Absent/false for every league fixture, so their snapshots - and

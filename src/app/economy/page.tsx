@@ -6,7 +6,9 @@ import { calculateTeamTotalQuality } from "@/lib/players/quality"
 import { ensureStadiumForTeam } from "@/lib/stadium/actions"
 import { calculateStadiumCapacity } from "@/lib/stadium/metrics"
 import { toSeatCounts } from "@/lib/stadium/config"
-import { calculateAttendance, calculateMatchStadiumRevenue } from "@/lib/stadium/attendance"
+import { calculateMatchStadiumRevenue } from "@/lib/stadium/attendance"
+import { resolveMatchAttendance } from "@/lib/stadium/match-attendance"
+import { readLeagueNeutralQuality } from "@/lib/stadium/neutral-quality"
 import { calculateHomeMatchExpenses, calculateAwayTravelCost } from "@/lib/economy/match-expenses"
 import { getNextPayrollDate, readLastSettledPayroll } from "@/lib/economy/payroll"
 import { EconomyApp } from "./economy-app"
@@ -61,11 +63,34 @@ export default async function EconomyPage() {
     },
   })
 
+  // The forecast is judged against the same league neutral a real matchday
+  // would be, read once for the club's own season rather than per fixture.
+  // Null when the club is not in a season yet, in which case the projection
+  // falls back to the config neutral exactly as the legacy era does.
+  const membership = await prisma.divisionTeam.findFirst({
+    where: { teamId: team.id },
+    orderBy: { season: { number: "desc" } },
+    select: { seasonId: true },
+  })
+  const neutralQuality = membership ? await readLeagueNeutralQuality(prisma, membership.seasonId) : teamQuality
+
   let expectedIncome = 0
   let expectedExpenses = totalWeeklyPlayerSalaries
   for (const fixture of upcomingFixtures) {
     if (fixture.homeTeamId === team.id) {
-      const attendance = calculateAttendance({ isHome: true }, { teamTotalQuality: teamQuality }, { seats })
+      // SEEDED, from the fixture itself, so refreshing the page does not
+      // reshuffle the forecast in front of the manager. This is a projection
+      // and settles nothing - the page has never been allowed to move money
+      // and still is not - but it should project the crowd the fixture will
+      // actually draw, which means using the same resolver, the same quality
+      // model and the same era switch a real matchday uses.
+      const attendance = resolveMatchAttendance({
+        seed: fixture.matchSeed ?? fixture.id,
+        homePlayers: players,
+        seats,
+        neutralQuality,
+        at: fixture.scheduledAt ?? now,
+      })
       const revenue = calculateMatchStadiumRevenue(attendance.bySeatType)
       const expenses = calculateHomeMatchExpenses({ capacity }, attendance.total, COMPETITION)
       expectedIncome += revenue.total

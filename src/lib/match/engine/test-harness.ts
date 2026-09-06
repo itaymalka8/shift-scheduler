@@ -1,3 +1,4 @@
+import type { SeatCounts } from "@/lib/stadium/config"
 import { generateInitialSquad } from "@/lib/players/generate"
 import { calculatePositionOverall } from "@/lib/players/overall"
 import { extractPlayerAttributes } from "@/lib/players/attributes"
@@ -130,7 +131,12 @@ export function makeTestSnapshot(
   home: SnapshotTeam,
   away: SnapshotTeam,
   seed: string,
-  options: { attendance?: number; capacity?: number; fanType?: "calm" | "ultras" } = {}
+  options: {
+    attendance?: number
+    attendanceBySeatType?: SeatCounts
+    capacity?: number
+    fanType?: "calm" | "ultras"
+  } = {}
 ): MatchSnapshot {
   return {
     fixtureId: `test-${seed}`,
@@ -138,6 +144,11 @@ export function makeTestSnapshot(
     home,
     away,
     attendance: options.attendance ?? 7000,
+    // The engine reads only the total, so the breakdown here exists to satisfy
+    // the type rather than to be simulated against. Split across the default
+    // stadium's seat classes in the same proportions so a test that DOES look
+    // at it sees a plausible ground rather than an all-VIP one.
+    attendanceBySeatType: options.attendanceBySeatType ?? { regular: 5283, covered: 1321, premium: 330, vip: 66 },
     stadiumCapacity: options.capacity ?? 10600,
     fanType: options.fanType ?? "calm",
   }

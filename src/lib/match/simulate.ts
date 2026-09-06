@@ -1,8 +1,7 @@
 import type { Prisma } from "@/generated/prisma"
 import { prisma } from "@/lib/prisma"
 import { calculateStadiumCapacity } from "@/lib/stadium/metrics"
-import { calculateMatchStadiumRevenue, calculateAttendance } from "@/lib/stadium/attendance"
-import { calculateTeamTotalQuality } from "@/lib/players/quality"
+import { calculateMatchStadiumRevenue } from "@/lib/stadium/attendance"
 import { readSeatsAsOf } from "@/lib/stadium/actions"
 import { assertFixtureLineupsLegal, MatchPreflightError } from "./lineup-preflight"
 import { settlePriorConsequences } from "./consequence-service"
@@ -193,15 +192,18 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
       shootout = { home: outcome.homeScore, away: outcome.awayScore }
     }
 
-    // Gate revenue/expenses for the home side. Attendance comes from the same
-    // snapshot the engine ran on, so the crowd that affected the match is the
-    // crowd that paid to get in.
-    const homePlayers = await tx.player.findMany({ where: { teamId: fixture.homeTeamId } })
-    const attendanceDetail = calculateAttendance(
-      { isHome: true },
-      { teamTotalQuality: calculateTeamTotalQuality(homePlayers) },
-      { seats: homeSeatsAtKickoff }
-    )
+    // Gate revenue/expenses for the home side, from THE SNAPSHOT'S crowd - not
+    // from a new one.
+    //
+    // This used to roll attendance a second time, independently, so a
+    // fixture's stored crowd and its ticket revenue came from two unrelated
+    // draws and no played fixture could reproduce its own gate. There is now
+    // exactly one roll per fixture, in buildMatchSnapshot, seeded from the
+    // fixture's matchSeed; the breakdown it produced travels on the snapshot
+    // and is read here. Deliberately no local attendance calculation: the
+    // crowd that affected the match, the crowd that was stored, the crowd that
+    // paid to get in and the crowd that had to be stewarded are now one
+    // number by construction rather than by three call sites agreeing.
     // NEUTRAL VENUE MEANS NEUTRAL MONEY TOO.
     //
     // League economics are asymmetric by design: the home club takes the gate
@@ -218,7 +220,7 @@ export async function ensureFixtureSimulated(fixtureId: string): Promise<void> {
     // bigger risk than not paying anyone. The match is still played in full
     // and still draws a crowd; the money is simply not modelled.
     const neutralMoney = hasNeutralFinances(fixture.stage)
-    const revenue = neutralMoney ? { total: 0 } : calculateMatchStadiumRevenue(attendanceDetail.bySeatType)
+    const revenue = neutralMoney ? { total: 0 } : calculateMatchStadiumRevenue(snapshot.attendanceBySeatType)
     const expenses = neutralMoney
       ? { total: 0 }
       : calculateHomeMatchExpenses({ capacity }, snapshot.attendance, CURRENT_COMPETITION)

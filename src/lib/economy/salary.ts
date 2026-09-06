@@ -19,6 +19,7 @@
  * would be unrecoverable because no salary history is persisted anywhere.
  */
 import { DEFAULT_SALARY_CONFIG, PHASE_3R_ACTIVATION_START, type SalaryConfig } from "./config"
+import { economyEraAt } from "./activation"
 import { applyCalibratedSalaryCurve } from "./salary-curve"
 import { POSITION_TO_BROAD_GROUP } from "@/lib/players/config"
 import { isPlayerPosition } from "@/lib/players/positions"
@@ -34,12 +35,16 @@ export interface SalaryPlayer {
 export type SalaryAuthority = "legacy" | "phase3r"
 
 /**
- * THE ERA SWITCH. One instant, one comparison, no deploy time and no database
- * read - so every writer in the codebase reaches the same answer for the same
- * instant, whichever process it runs in.
+ * THE ERA SWITCH, delegated rather than restated.
+ *
+ * Salary does not get its own boundary: Phase 3R was calibrated as one
+ * economy, so the wage curve turns on at exactly the instant the sponsor,
+ * maintenance and attendance models do. Reimplementing the comparison here
+ * would create a second copy that a future edit could move independently -
+ * which is the mixed-authority period the activation design forbids.
  */
 export function salaryAuthorityAt(at: Date, activationStart: Date = PHASE_3R_ACTIVATION_START): SalaryAuthority {
-  return at.getTime() >= activationStart.getTime() ? "phase3r" : "legacy"
+  return economyEraAt(at, activationStart)
 }
 
 /**

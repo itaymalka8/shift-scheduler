@@ -1,3 +1,4 @@
+import type { SeatCounts } from "@/lib/stadium/config"
 import type { PlayerAttributes } from "@/lib/players/attributes"
 import type { PlayerPosition } from "@/lib/players/positions"
 import type { TeamTactics } from "@/lib/players/tactics"
@@ -44,6 +45,18 @@ export interface MatchSnapshot {
   away: SnapshotTeam
   /** Home crowd context. Inert when neutralVenue is true - see below. */
   attendance: number
+  /**
+   * THE SAME CROWD, BROKEN DOWN BY SEAT TYPE - and the reason this field
+   * exists rather than being recomputed downstream.
+   *
+   * Gate receipts are attendance per seat type times that type's ticket price,
+   * so the settlement needs the breakdown, not just the total. It used to get
+   * it by rolling attendance a SECOND time, which is how a fixture ended up
+   * with a stored crowd and an unrelated gate. Carrying the breakdown here
+   * makes the second roll unnecessary and, more importantly, makes it
+   * unreachable: settlement has the numbers, so it never asks for new ones.
+   */
+  attendanceBySeatType: SeatCounts
   stadiumCapacity: number
   fanType: "calm" | "ultras"
   /**
