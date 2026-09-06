@@ -142,14 +142,14 @@ function teamQuality(players: readonly QualityPlayer[], model: AttendanceModel):
   return (top.reduce((s, p) => s + p.overall, 0) / top.length) * MAX_ACTIVE_ROSTER_SIZE
 }
 
-function occupancyFor(quality: number, noise: number): number {
-  const raw = BASE_OCCUPANCY + (quality - NEUTRAL_QUALITY) * QUALITY_INFLUENCE + noise
+function occupancyFor(quality: number, noise: number, neutral: number = NEUTRAL_QUALITY): number {
+  const raw = BASE_OCCUPANCY + (quality - neutral) * QUALITY_INFLUENCE + noise
   return Math.max(0.05, Math.min(1.5, raw))
 }
 
 /** THE SINGLE ROLL. One occupancy -> one attendance -> both the gate and the cost. */
-function matchdayFlows(seats: SeatCounts, quality: number, noise: number): { revenue: number; expense: number; attendance: number; occupancy: number } {
-  const occupancy = occupancyFor(quality, noise)
+function matchdayFlows(seats: SeatCounts, quality: number, noise: number, neutral: number = NEUTRAL_QUALITY): { revenue: number; expense: number; attendance: number; occupancy: number } {
+  const occupancy = occupancyFor(quality, noise, neutral)
   const ratio = Math.min(1, occupancy)
   let attendance = 0
   let revenue = 0
@@ -218,10 +218,15 @@ interface SeasonClubState {
   fines: number
 }
 
+export type NeutralMode = "absolute" | "leagueMedian"
+
 interface Trajectory {
   clubs: ClubMeta[]
   seasons: SeasonClubState[][] // [season][clubIndex]
+  /** The quality that maps to BASE_OCCUPANCY in each season. */
+  neutrals: number[]
   model: AttendanceModel
+  neutralMode: NeutralMode
   seed: string
 }
 
@@ -299,12 +304,14 @@ function buildTrajectory(
   squads: SimPlayer[][],
   seasons: number,
   model: AttendanceModel,
-  seed: string
+  seed: string,
+  neutralMode: NeutralMode = "absolute"
 ): Trajectory {
   const rng = new SeededRandom(seed)
   const live = squads.map(clonePlayers)
   const tiers = clubs.map((c) => c.startTier)
   const out: SeasonClubState[][] = []
+  const neutrals: number[] = []
 
   for (let season = 1; season <= seasons; season++) {
     const row: SeasonClubState[] = []
@@ -332,6 +339,14 @@ function buildTrajectory(
       })
     }
     out.push(row)
+    // THE NEUTRAL THE SEASON IS JUDGED AGAINST.
+    // "absolute" is today's behaviour: a fixed 1,320, i.e. 22 players at
+    // Overall 60. "leagueMedian" re-anchors it to the league's OWN median
+    // squad quality that season, so a club draws a crowd for being good
+    // RELATIVE TO ITS LEAGUE rather than relative to a constant written in
+    // 2026. That distinction turns out to decide whether the economy is
+    // stationary at all - see section 2.
+    neutrals.push(neutralMode === "absolute" ? NEUTRAL_QUALITY : median(row.map((st) => st.quality)))
 
     for (let i = 0; i < clubs.length; i++) live[i] = rollSquad(live[i], clubs[i].id, season, rng)
 
@@ -346,7 +361,7 @@ function buildTrajectory(
       tiers[down[n]] = 1
     }
   }
-  return { clubs, seasons: out, model, seed }
+  return { clubs, seasons: out, neutrals, model, neutralMode, seed }
 }
 
 // --- The parameter set and the evaluator --------------------------------------
@@ -423,7 +438,7 @@ function evaluate(
     const homeNet: number[][] = row.map((st, i) => {
       const list: number[] = []
       for (let f = 0; f < HOME_PER_SEASON; f++) {
-        const flow = matchdayFlows(seats[i], st.quality, st.noise[f])
+        const flow = matchdayFlows(seats[i], st.quality, st.noise[f], traj.neutrals[s])
         if (collectOccupancy) occupancySamples.push(flow.occupancy)
         list.push(flow.revenue - flow.expense)
       }
@@ -653,7 +668,11 @@ async function main() {
     console.info(`  attendance model used for the solve: ${chosenModel} (see section 1)`)
     console.info(`  F2 corrected: ONE seeded attendance roll per fixture drives crowd, stored`)
     console.info(`  attendance, match expenses and ticket revenue alike.`)
-    const trajB = buildTrajectory(clubs, squads, 20, chosenModel, SEED)
+    // Two attendance NEUTRAL modes, because the first solve proved the choice
+    // is not cosmetic: with a fixed neutral the economy is not stationary, and
+    // an objective stated at three horizons cannot be met by two constants.
+    const trajAbs = buildTrajectory(clubs, squads, 20, chosenModel, SEED, "absolute")
+    const trajRel = buildTrajectory(clubs, squads, 20, chosenModel, SEED, "leagueMedian")
 
     interface GridPoint extends Params {
       worstDeviation: number
@@ -663,8 +682,8 @@ async function main() {
       dev10: number
       dev20: number
     }
-    const runPoint = (p: Params): GridPoint => {
-      const ev = evaluate(trajB, p, HORIZONS)
+    const pointOn = (traj: Trajectory, p: Params): GridPoint => {
+      const ev = evaluate(traj, p, HORIZONS)
       const dev = (h: number) => (ev.horizons.get(h)!.total / ev.openingStock - 1) * 100
       return {
         ...p,
@@ -676,39 +695,23 @@ async function main() {
         dev20: dev(20),
       }
     }
-
-    // THE LANDSCAPE IS A RIDGE, NOT A BASIN, AND IT IS NARROW.
-    // A 20-season stock deviation of +/-15% on a 317M opening stock is +/-2.4M
-    // of drift per season, while one grid step of 0.025 in salary scale is
-    // worth about 8M of drift per season. Sampling a coarse grid would
-    // therefore miss the feasible set almost entirely and then report a corner
-    // as "closest", which is how a calibration gets decided by its own step
-    // size. So the grid is printed for SHAPE only, and the answer is found by
-    // solving, for each salary scale, the sponsor coefficient that zeroes the
-    // 20-season drift - which reduces a 2-D search to a 1-D ridge.
-    console.info("  LANDSCAPE (worst stock deviation across the 5/10/20 horizons, tier 1.25):")
-    const kAxis = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
-    console.info(`    ${"salary".padStart(7)}${kAxis.map((k) => `k=${k.toFixed(2)}`.padStart(10)).join("")}`)
-    for (let sv = 0.75; sv <= 1.0001; sv += 0.05) {
-      const cells = kAxis.map((k) => {
-        const p = runPoint({ salaryScale: Number(sv.toFixed(4)), sponsorK: k, tier1Mult: 1.25, tier2Mult: 1, maintenanceOn: false })
-        const v = p.worstDeviation * 100
-        return (v > 9999 ? ">9999" : v.toFixed(0)).padStart(9) + "%"
-      })
-      console.info(`    ${sv.toFixed(3).padStart(7)}${cells.join("")}`)
-    }
+    const P = (salaryScale: number, sponsorK: number, tier1Mult = 1.25): Params => ({
+      salaryScale,
+      sponsorK,
+      tier1Mult,
+      tier2Mult: 1,
+      maintenanceOn: false,
+    })
 
     /** For a fixed salary scale, the sponsor coefficient that zeroes 20-season drift. */
-    const solveK = (salaryScale: number): GridPoint => {
-      const at = (k: number) => runPoint({ salaryScale, sponsorK: k, tier1Mult: 1.25, tier2Mult: 1, maintenanceOn: false })
+    const solveK = (traj: Trajectory, salaryScale: number): GridPoint => {
+      const at = (k: number) => pointOn(traj, P(salaryScale, k))
       const zero = at(0)
-      // dev20 rises monotonically with k. If it is already positive at k=0 this
-      // salary scale alone puts too much money in and no sponsor can fix it.
       if (zero.dev20 >= 0) return zero
       let low = 0
       let high = 0.25
       let guard = 0
-      while (at(high).dev20 < 0 && guard++ < 8) high *= 2
+      while (at(high).dev20 < 0 && guard++ < 10) high *= 2
       for (let i = 0; i < 26; i++) {
         const mid = (low + high) / 2
         if (at(mid).dev20 < 0) low = mid
@@ -717,42 +720,111 @@ async function main() {
       return at((low + high) / 2)
     }
 
-    console.info("\n  THE RIDGE: for each salary scale, the sponsor coefficient that zeroes 20-season drift")
-    console.info(
-      `    ${"salary".padStart(7)}${"sponsorK*".padStart(11)}${"dev5".padStart(8)}${"dev10".padStart(8)}${"dev20".padStart(8)}` +
-        `${"worst dev".padStart(11)}${"min balance ever".padStart(18)}${"feasible".padStart(10)}`
-    )
-    const ridge: GridPoint[] = []
-    for (let sv = 0.75; sv <= 1.0001; sv += 0.01) {
-      const p = solveK(Number(sv.toFixed(4)))
-      ridge.push(p)
+    const solveRidge = (traj: Trajectory, label: string): GridPoint[] => {
+      console.info(`\n  RIDGE - ${label}`)
       console.info(
-        `    ${p.salaryScale.toFixed(3).padStart(7)}${p.sponsorK.toFixed(4).padStart(11)}` +
-          `${p.dev5.toFixed(1).padStart(8)}${p.dev10.toFixed(1).padStart(8)}${p.dev20.toFixed(1).padStart(8)}` +
-          `${(p.worstDeviation * 100).toFixed(2).padStart(10)}%${fmt(p.minBalanceEver).padStart(18)}` +
-          `${(p.feasible ? "YES" : "no").padStart(10)}`
+        `    ${"salary".padStart(7)}${"sponsorK*".padStart(11)}${"dev5".padStart(8)}${"dev10".padStart(8)}${"dev20".padStart(8)}` +
+          `${"worst dev".padStart(11)}${"min balance ever".padStart(18)}${"feasible".padStart(10)}`
+      )
+      const ridge: GridPoint[] = []
+      for (let sv = 0.75; sv <= 1.0001; sv += 0.01) {
+        const p = solveK(traj, Number(sv.toFixed(4)))
+        ridge.push(p)
+        if (Math.round(sv * 100) % 2 === 0 || sv > 0.995) {
+          console.info(
+            `    ${p.salaryScale.toFixed(3).padStart(7)}${p.sponsorK.toFixed(4).padStart(11)}` +
+              `${p.dev5.toFixed(1).padStart(8)}${p.dev10.toFixed(1).padStart(8)}${p.dev20.toFixed(1).padStart(8)}` +
+              `${(p.worstDeviation * 100).toFixed(2).padStart(10)}%${fmt(p.minBalanceEver).padStart(18)}` +
+              `${(p.feasible ? "YES" : "no").padStart(10)}`
+          )
+        }
+      }
+      return ridge
+    }
+
+    /** Minimise the WORST deviation across the three horizons, over the full 2-D box. */
+    const minimax = (traj: Trajectory): GridPoint => {
+      let best: GridPoint | null = null
+      for (let sv = 0.60; sv <= 1.0001; sv += 0.01) {
+        for (let k = 0; k <= 0.6001; k += 0.01) {
+          const p = pointOn(traj, P(Number(sv.toFixed(4)), Number(k.toFixed(4))))
+          if (!best || p.worstDeviation < best.worstDeviation) best = p
+        }
+      }
+      return best!
+    }
+
+    // ---- 2a. TODAY'S FIXED NEUTRAL -----------------------------------------
+    console.info("\n  --- 2a. ATTENDANCE NEUTRAL FIXED AT 1,320 (today's behaviour) ---")
+    const ridgeAbs = solveRidge(trajAbs, "fixed neutral 1,320")
+    console.info(`  feasible ridge points: ${ridgeAbs.filter((p) => p.feasible).length}`)
+    const bestAbs = minimax(trajAbs)
+    console.info(
+      `  BEST ACHIEVABLE anywhere in salary 0.60-1.00 x sponsor 0.00-0.60 (minimising the WORST\n` +
+        `  horizon deviation, not just the 20-season one): salary ${bestAbs.salaryScale.toFixed(3)}, sponsorK ${bestAbs.sponsorK.toFixed(4)}\n` +
+        `    dev5 ${bestAbs.dev5.toFixed(1)}%   dev10 ${bestAbs.dev10.toFixed(1)}%   dev20 ${bestAbs.dev20.toFixed(1)}%   ` +
+        `worst ${(bestAbs.worstDeviation * 100).toFixed(1)}%   min balance ever ${fmt(bestAbs.minBalanceEver)}`
+    )
+    console.info(
+      `  => The +/-15% objective is UNREACHABLE with two time-invariant constants under a fixed\n` +
+        `     neutral. The reason is measurable and is printed below: the league's median squad\n` +
+        `     Overall drifts upward, a fixed neutral turns that into rising occupancy, and the gate\n` +
+        `     therefore grows against a roughly flat wage bill. The economy is NOT STATIONARY, so no\n` +
+        `     constant correction can hold three horizons at once.`
+    )
+    console.info(`    ${"season".padStart(7)}${"median squad quality".padStart(22)}${"median occupancy".padStart(18)}`)
+    for (const sIdx of [0, 4, 9, 19]) {
+      const row = trajAbs.seasons[sIdx]
+      const q = median(row.map((st) => st.quality))
+      console.info(
+        `    ${String(sIdx + 1).padStart(7)}${fmt(q).padStart(22)}` +
+          `${Math.min(1, occupancyFor(q, 0, trajAbs.neutrals[sIdx])).toFixed(4).padStart(18)}`
       )
     }
-    const feasibleRidge = ridge.filter((p) => p.feasible)
+
+    // ---- 2b. LEAGUE-RELATIVE NEUTRAL ---------------------------------------
+    console.info("\n  --- 2b. ATTENDANCE NEUTRAL RE-ANCHORED TO THE LEAGUE MEDIAN EACH SEASON ---")
+    console.info("  Same formula, same coefficient, same base occupancy. Only the reference point")
+    console.info("  moves: a club draws a crowd for being good RELATIVE TO ITS LEAGUE. It is a no-op")
+    console.info("  today (the league median IS 1,320 to three decimals) and it makes the gate")
+    console.info("  stationary, which is what lets a constant pair hold all three horizons.")
+    console.info(`    ${"season".padStart(7)}${"median squad quality".padStart(22)}${"median occupancy".padStart(18)}`)
+    for (const sIdx of [0, 4, 9, 19]) {
+      const row = trajRel.seasons[sIdx]
+      const q = median(row.map((st) => st.quality))
+      console.info(
+        `    ${String(sIdx + 1).padStart(7)}${fmt(q).padStart(22)}` +
+          `${Math.min(1, occupancyFor(q, 0, trajRel.neutrals[sIdx])).toFixed(4).padStart(18)}`
+      )
+    }
+    const ridgeRel = solveRidge(trajRel, "league-relative neutral")
+    const feasibleRidge = ridgeRel.filter((p) => p.feasible)
     const within10 = feasibleRidge.filter((p) => p.worstDeviation <= 0.10)
-    console.info(`  ridge points feasible (all horizons within +/-15% AND no club ever negative): ${feasibleRidge.length}`)
+    console.info(`  feasible ridge points (all horizons within +/-15% AND no club ever negative): ${feasibleRidge.length}`)
     console.info(`  ...of which inside the preferred +/-10% band: ${within10.length}`)
 
-    // AMONG FEASIBLE POINTS, PREFER THE ONE WITH THE MOST SOLVENCY HEADROOM.
-    // Every point on the ridge is equally stable by construction; what separates
-    // them is how close the weakest club ever comes to zero, which is exactly
-    // the margin that decides whether ordinary management is survivable.
+    // AMONG FEASIBLE POINTS, PREFER THE MOST SOLVENCY HEADROOM. Every ridge
+    // point is equally stable by construction; what separates them is how close
+    // the weakest club ever comes to zero, which is the margin that decides
+    // whether ordinary management is survivable.
     const pool = within10.length > 0 ? within10 : feasibleRidge
     const best = pool.length > 0
       ? [...pool].sort((a, b) => b.minBalanceEver - a.minBalanceEver)[0]
-      : [...ridge].sort((a, b) => a.worstDeviation - b.worstDeviation)[0]
-    if (pool.length === 0) {
-      console.info("  NO FEASIBLE RIDGE POINT. Reporting the most stable point found instead.")
-    }
+      : [...ridgeRel].sort((a, b) => a.worstDeviation - b.worstDeviation)[0]
+    const traj = pool.length > 0 ? trajRel : trajAbs
+    if (pool.length === 0) console.info("  NO FEASIBLE RIDGE POINT EVEN WITH THE RE-ANCHOR. Reporting the most stable point.")
     console.info(
       `  SELECTED: salary ${best.salaryScale.toFixed(3)}, sponsorK ${best.sponsorK.toFixed(4)}, ` +
         `worst deviation ${(best.worstDeviation * 100).toFixed(2)}%, minimum balance ever ${fmt(best.minBalanceEver)}`
     )
+    console.info("  feasible band, for reference (every point below holds all three horizons):")
+    console.info(`    ${"salary".padStart(7)}${"sponsorK".padStart(11)}${"worst dev".padStart(11)}${"min balance ever".padStart(18)}`)
+    for (const p of feasibleRidge) {
+      console.info(
+        `    ${p.salaryScale.toFixed(3).padStart(7)}${p.sponsorK.toFixed(4).padStart(11)}` +
+          `${(p.worstDeviation * 100).toFixed(2).padStart(10)}%${fmt(p.minBalanceEver).padStart(18)}`
+      )
+    }
 
     // ------------------------------------------------------------------
     // 3. TIER MULTIPLIER SWEEP AT THE CHOSEN LEVEL
@@ -765,7 +837,7 @@ async function main() {
     )
     for (const t1 of [1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3]) {
       const p: Params = { salaryScale: best.salaryScale, sponsorK: best.sponsorK, tier1Mult: t1, tier2Mult: 1, maintenanceOn: false }
-      const ev = evaluate(trajB, p, HORIZONS)
+      const ev = evaluate(traj, p, HORIZONS)
       const h20 = ev.horizons.get(20)!
       const h5 = ev.horizons.get(5)!
       const h10 = ev.horizons.get(10)!
@@ -789,8 +861,8 @@ async function main() {
     const SEEDS = ["phase3r-calibration", "phase3r-seed-b", "phase3r-seed-c"]
     const seedEvals: Evaluation[] = []
     for (const seed of SEEDS) {
-      const traj = seed === SEED ? trajB : buildTrajectory(clubs, squads, 20, chosenModel, seed)
-      const ev = evaluate(traj, finalParams, HORIZONS, seed === SEED)
+      const t = seed === SEED ? traj : buildTrajectory(clubs, squads, 20, chosenModel, seed, traj.neutralMode)
+      const ev = evaluate(t, finalParams, HORIZONS, seed === SEED)
       seedEvals.push(ev)
       printHorizons(`SEED "${seed}"`, ev)
     }
@@ -812,9 +884,9 @@ async function main() {
     // ------------------------------------------------------------------
     console.info("\n=== 5. CONTRADICTION CHECK: s=0.81, k=0.50, tier 1.25 (the previous recommendation) ===")
     const previous: Params = { salaryScale: 0.81, sponsorK: 0.5, tier1Mult: 1.25, tier2Mult: 1, maintenanceOn: false }
-    printHorizons("PREVIOUS RECOMMENDATION, COMBINED", evaluate(trajB, previous, HORIZONS))
+    printHorizons("PREVIOUS RECOMMENDATION, COMBINED", evaluate(traj, previous, HORIZONS))
     console.info("  the same pair with maintenance above 10,600 activated (no club has expanded, so it is a no-op today):")
-    printHorizons("PREVIOUS + MAINTENANCE", evaluate(trajB, { ...previous, maintenanceOn: true }, HORIZONS))
+    printHorizons("PREVIOUS + MAINTENANCE", evaluate(traj, { ...previous, maintenanceOn: true }, HORIZONS))
 
     // ------------------------------------------------------------------
     // 6. STADIUM PAYBACK UNDER THE FINAL MODEL
@@ -857,13 +929,16 @@ async function main() {
     ]
     console.info(
       `    ${"scenario".padEnd(24)}${"size".padStart(6)}${"meanOVR".padStart(9)}${"quality".padStart(9)}` +
-        `${"season gate".padStart(13)}${"season wage".padStart(13)}${"sponsor".padStart(11)}${"maint".padStart(9)}${"NET/season".padStart(13)}`
+        `${"season gate".padStart(13)}${"season wage".padStart(13)}${"sponsor".padStart(11)}${"NET/season".padStart(13)}${"5-season".padStart(14)}${"10-season".padStart(14)}`
     )
     const refH = seedEvals[0].horizons.get(5)!
     const sponsorT2Season = refH.sponsorTier2Week * WEEKS_PER_SEASON
+    // Judged against the SAME neutral the selected economy uses, so a stress
+    // club is measured by the rules the league actually runs on.
+    const stressNeutral = traj.neutrals[4]
     for (const [label, squad] of stressSquads) {
       const q = teamQuality(squad, chosenModel)
-      const o = Math.min(1, occupancyFor(q, 0))
+      const o = Math.min(1, occupancyFor(q, 0, stressNeutral))
       const attendance = SEAT_TYPES.reduce((s, t) => s + Math.round(seatsSample[t] * o), 0)
       const gate =
         (SEAT_TYPES.reduce((s, t) => s + Math.round(seatsSample[t] * o) * TICKET_PRICES[t], 0) -
@@ -872,10 +947,35 @@ async function main() {
         AWAY_TRAVEL * AWAY_PER_SEASON
       const wage = squad.reduce((s, p) => s + Math.round(canonicalWage(p) * finalParams.salaryScale), 0) * WEEKS_PER_SEASON
       const mean = squad.reduce((s, p) => s + p.overall, 0) / squad.length
+      const net = gate - wage + sponsorT2Season
       console.info(
         `    ${label.padEnd(24)}${String(squad.length).padStart(6)}${mean.toFixed(1).padStart(9)}${fmt(q).padStart(9)}` +
-          `${fmt(gate).padStart(13)}${fmt(-wage).padStart(13)}${fmt(sponsorT2Season).padStart(11)}${"0".padStart(9)}` +
-          `${fmt(gate - wage + sponsorT2Season).padStart(13)}`
+          `${fmt(gate).padStart(13)}${fmt(-wage).padStart(13)}${fmt(sponsorT2Season).padStart(11)}` +
+          `${fmt(net).padStart(13)}${fmt(net * 5).padStart(14)}${fmt(net * 10).padStart(14)}`
+      )
+    }
+    // MANAGERIAL HEADROOM: how much extra weekly wage a median club can carry
+    // before its own operating result turns negative. This is the number that
+    // decides whether overspending is a real decision or a cosmetic one.
+    {
+      const medianSquad = squads[Math.floor(squads.length / 2)]
+      const q = teamQuality(medianSquad, chosenModel)
+      const o = Math.min(1, occupancyFor(q, 0, stressNeutral))
+      const attendance = SEAT_TYPES.reduce((sum, t) => sum + Math.round(seatsSample[t] * o), 0)
+      const gate =
+        (SEAT_TYPES.reduce((sum, t) => sum + Math.round(seatsSample[t] * o) * TICKET_PRICES[t], 0) -
+          Math.round(BASE_MATCH_COST + COST_PER_CAPACITY * calculateStadiumCapacity(seatsSample) + COST_PER_SPECTATOR * attendance)) *
+          HOME_PER_SEASON -
+        AWAY_TRAVEL * AWAY_PER_SEASON
+      const wageWeek = medianSquad.reduce((sum, pl) => sum + Math.round(canonicalWage(pl) * finalParams.salaryScale), 0)
+      const breakEvenWeek = (gate + sponsorT2Season) / WEEKS_PER_SEASON
+      console.info(
+        `\n  MANAGERIAL HEADROOM for the median club: weekly wage ${fmt(wageWeek)}, break-even weekly wage ` +
+          `${fmt(breakEvenWeek)} (${((breakEvenWeek / Math.max(1, wageWeek) - 1) * 100).toFixed(1)}% above its current bill).`
+      )
+      console.info(
+        `  A manager who raises the wage bill beyond that runs a deficit of 13x the excess per season;` +
+          ` one who trims it banks 13x the saving. Both are real decisions, neither is fatal in one season.`
       )
     }
 
