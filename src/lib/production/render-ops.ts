@@ -299,6 +299,7 @@ export async function getServiceConfigSnapshot(
     schedule: readCronDetails(raw).schedule,
     envVarNames: envVars.map((v) => v.key).sort(),
     latestDeployId: deploys[0]?.id ?? null,
+    latestDeployCommit: deploys[0]?.commitId ?? null,
   }
 }
 
@@ -332,18 +333,4 @@ export async function migrateServiceSource(
   }
   const patch = buildServiceSourcePatch(repo, branch)
   await updateServiceSource(createRenderClient(env), serviceId, patch.repo, patch.branch)
-}
-
-/**
- * MUTATES Production: triggers a deploy of one service. commitId PINS it and is
- * WEB ONLY - Render does not support commitId for Cron Jobs, so the cron caller
- * omits it and asserts the created deploy's commit afterwards instead.
- */
-export async function triggerServiceDeploy(
-  serviceId: string,
-  commitId: string | undefined,
-  env: Record<string, string | undefined> = process.env
-): Promise<RenderDeploySummary> {
-  assertProductionWriteConfirmed(env)
-  return createDeploy(createRenderClient(env), serviceId, commitId)
 }

@@ -291,21 +291,18 @@ export async function getDeploy(client: RenderClient, serviceId: string, deployI
 }
 
 /**
- * Triggers a new deploy. With no commitId the service's currently connected
- * branch tip is deployed (an empty body deploys latest, per Render's
- * documented Deploys API).
+ * Triggers a new deploy of the service's currently connected branch (an empty
+ * body deploys latest, per Render's documented Deploys API).
  *
- * commitId PINS THE DEPLOY, AND IS WEB-ONLY. Render's Deploys API accepts
- * commitId for services built from a repo, but explicitly does NOT support it
- * for Cron Jobs. Callers deploying a Cron Job must omit it - passing it there
- * would either be ignored (a pin that silently is not one) or rejected, and
- * both are worse than the honest branch-tip deploy plus an after-the-fact
- * commit assertion. See render-source-migration.ts for how the Cron path
- * closes that gap.
+ * THERE IS EXACTLY ONE DEPLOY AUTHORITY IN THIS CODEBASE, and this is it -
+ * reached only through render-ops' triggerDeploy, which prod:deploy:safe calls
+ * after its own backup and Cron-suspension gates. A commitId parameter was
+ * considered for the source migration and deliberately removed with it: a
+ * second way to start a deploy, however narrow, is a second path that has to
+ * be audited every time the deploy contract changes.
  */
-export async function createDeploy(client: RenderClient, serviceId: string, commitId?: string): Promise<RenderDeploySummary> {
-  const body = commitId ? JSON.stringify({ commitId }) : "{}"
-  const raw = await renderFetch<unknown>(client, `/services/${serviceId}/deploys`, { method: "POST", body })
+export async function createDeploy(client: RenderClient, serviceId: string): Promise<RenderDeploySummary> {
+  const raw = await renderFetch<unknown>(client, `/services/${serviceId}/deploys`, { method: "POST", body: "{}" })
   return readDeploySummary(raw)
 }
 

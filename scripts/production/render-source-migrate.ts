@@ -1,6 +1,6 @@
 /**
  * DESTRUCTIVE, ONE-TIME: repoints BOTH Render services at the canonical
- * repository and deploys the approved commit.
+ * repository. IT DOES NOT DEPLOY, AND CANNOT.
  *
  * DRY RUN IS THE DEFAULT. Without --execute this reads Render and GitHub,
  * prints both before-snapshots and the pre-migration gate's verdict, and stops.
@@ -9,10 +9,15 @@
  * --execute runs the full ordering in render-source-migration.ts: write
  * confirmation, canonical head, both snapshots, the gate, Neon backup, backup
  * verification, Cron suspend + verify, the two-key source PATCH per service
- * with drift and unexpected-deploy verification after each, a head re-read
- * before each deploy, a COMMIT-PINNED web deploy, an unpinned cron deploy whose
- * commit is asserted afterwards, both waits, the existing post-deploy check,
- * and only then Cron resume.
+ * with drift and unexpected-deploy verification after each, the final
+ * pair-level configuration checks, a proof that the deployed commit did not
+ * move, Cron resume, and Cron-active verification. Then it stops.
+ *
+ * PRODUCTION KEEPS RUNNING THE COMMIT IT WAS ALREADY RUNNING. Only Render's
+ * source metadata changes. Deploying is a separate, separately-approved run of
+ * `npm run prod:deploy:safe`, which remains this project's ONLY deployment
+ * authority - there is no deploy call anywhere in this file or in the module it
+ * drives.
  *
  * IT NEVER REPAIRS. Any failure past the first PATCH reports
  * RECOVERY REQUIRED with the exact state and stops. No source rollback, no
@@ -34,8 +39,6 @@ import {
   migrateServiceSource,
   resumeCron,
   suspendCron,
-  triggerServiceDeploy,
-  waitForDeploy,
 } from "../../src/lib/production/render-ops"
 import { createBackupBranch, verifyBackupBranch } from "../../src/lib/production/neon-ops"
 import { NeonCredentialsMissingError } from "../../src/lib/production/neon-client"
@@ -56,15 +59,6 @@ function readGithubHead(): string {
   return sha
 }
 
-function runPostDeployCheck(): { pass: boolean; summary: string } {
-  try {
-    const out = execFileSync("npx", ["tsx", "scripts/production/post-deploy-check.ts"], { encoding: "utf8" })
-    return { pass: !/\bFAIL\b/.test(out), summary: out.trim().split("\n").slice(-3).join(" | ") }
-  } catch (error) {
-    return { pass: false, summary: error instanceof Error ? error.message : String(error) }
-  }
-}
-
 const deps: MigrationDeps = {
   assertWriteConfirmed: () => assertProductionWriteConfirmed(process.env),
   readGithubHead: async () => readGithubHead(),
@@ -77,29 +71,6 @@ const deps: MigrationDeps = {
   suspendCron: async () => suspendCron(),
   getCronSuspended: async () => (await getCronStatus()).suspended === true,
   updateSource: async (serviceId, repo, branch) => migrateServiceSource(serviceId, repo, branch),
-  // WEB: pinned to the exact commit.
-  deployWebPinned: async (commitId) => {
-    const d = await triggerServiceDeploy(C.webServiceId, commitId)
-    return { id: d.id, status: d.status, commitId: d.commitId }
-  },
-  // CRON: Render does not accept commitId here, so no commitId is sent. The
-  // orchestrator asserts the created deploy's commit instead.
-  deployCronUnpinned: async () => {
-    const d = await triggerServiceDeploy(C.cronServiceId, undefined)
-    return { id: d.id, status: d.status, commitId: d.commitId }
-  },
-  waitForDeploy: async (serviceId, deployId) => {
-    const w = await waitForDeploy(serviceId, deployId)
-    // Only render-ops' own "success" outcome maps to a live status. A timeout
-    // or a failure keeps its real shape in the string so the step log says what
-    // actually happened rather than just "not live".
-    return {
-      id: deployId,
-      status: w.outcome === "success" ? "live" : `${w.outcome}:${w.deploy.status}`,
-      commitId: w.deploy.commitId,
-    }
-  },
-  postDeployCheck: async () => runPostDeployCheck(),
   resumeCron: async () => resumeCron(),
 }
 
@@ -113,18 +84,18 @@ function describeSnapshot(label: string, s: Awaited<ReturnType<typeof getService
   console.info(`  startCommand:  ${s.startCommand ?? "unreadable"}`)
   console.info(`  schedule:      ${s.schedule ?? "(none - not a cron)"}`)
   console.info(`  env var NAMES: ${s.envVarNames.join(", ") || "(none)"}`)
-  console.info(`  latest deploy: ${s.latestDeployId ?? "(none)"}`)
+  console.info(`  latest deploy: ${s.latestDeployId ?? "(none)"} commit=${s.latestDeployCommit ?? "(none)"}`)
 }
 
 async function main() {
   const execute = process.argv.slice(2).includes("--execute")
 
   console.info("=== prod:render:source-migrate ===")
-  console.info(`Mode:   ${execute ? "EXECUTE (CHANGES RENDER AND DEPLOYS PRODUCTION)" : "DRY RUN (read-only, changes nothing)"}`)
+  console.info(`Mode:   ${execute ? "EXECUTE (CHANGES RENDER SOURCE METADATA - DOES NOT DEPLOY)" : "DRY RUN (read-only, changes nothing)"}`)
   console.info(`From:   ${C.fromRepo}`)
   console.info(`To:     ${C.toRepo}`)
   console.info(`Branch: ${C.branch}`)
-  console.info(`Commit: ${C.targetCommit}\n`)
+  console.info(`Commit: ${C.targetCommit}  (the head this gate requires - NOT deployed by this command)\n`)
 
   try {
     if (execute) {
@@ -132,7 +103,12 @@ async function main() {
       for (const s of outcome.steps) console.info(`[${s.ok ? "OK" : "FAIL"}] ${s.step}: ${s.detail}`)
       console.info("")
       if (outcome.outcome === "PASS") {
-        console.info("RENDER SOURCE MIGRATION: PASS")
+        console.info("SOURCE MIGRATION COMPLETE")
+        console.info("DEPLOY PERFORMED: NO")
+        console.info(
+          `PRODUCTION COMMIT UNCHANGED: web=${outcome.deployedCommitAfter?.web ?? "unknown"} cron=${outcome.deployedCommitAfter?.cron ?? "unknown"}`
+        )
+        console.info("NEXT APPROVED STEP: npm run prod:deploy:safe")
         return
       }
       console.error(`FAILED STEP: ${outcome.failedStep}`)
@@ -140,7 +116,8 @@ async function main() {
       console.error(`RECOVERY REQUIRED: ${outcome.recoveryRequired ? "YES" : "NO"}`)
       if (outcome.recoveryDetail) console.error(`  ${outcome.recoveryDetail}`)
       console.error(`  web source changed: ${outcome.webSourceChanged}   cron source changed: ${outcome.cronSourceChanged}`)
-      console.error(`  web deploy: ${outcome.webDeployId ?? "none"}   cron deploy: ${outcome.cronDeployId ?? "none"}`)
+      console.error(`  deployed commit before: web=${outcome.deployedCommitBefore?.web ?? "?"} cron=${outcome.deployedCommitBefore?.cron ?? "?"}`)
+      console.error(`  deployed commit after:  web=${outcome.deployedCommitAfter?.web ?? "?"} cron=${outcome.deployedCommitAfter?.cron ?? "?"}`)
       console.error(`  cron state: ${outcome.cronState}   backup: ${outcome.backupBranchId ?? "none"}`)
       console.error("\nDo NOT repair by hand and do NOT re-run this command. Report this output.")
       process.exitCode = 1

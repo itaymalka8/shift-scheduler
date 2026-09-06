@@ -1,11 +1,28 @@
 /**
  * THE ONE-TIME RENDER SOURCE MIGRATION, as pure orchestration.
  *
- * WHAT IT DOES. Moves the two existing Render services from the repository
- * they are currently built from to the canonical one, on the same branch, and
- * then deploys the exact approved commit - without recreating a service,
- * without touching any other configuration field, and without ever letting a
- * deploy reach Production that has no fresh Neon backup behind it.
+ * WHAT IT DOES, AND THE ONE THING IT DELIBERATELY DOES NOT. It moves the two
+ * existing Render services from the repository they are currently built from to
+ * the canonical one, on the same branch, without recreating a service and
+ * without touching any other configuration field. IT DOES NOT DEPLOY. It does
+ * not trigger a deploy, wait for one, or run any check that assumes one
+ * happened, and it cannot reach a deploy endpoint on any path - success or
+ * failure. When it finishes, Production is still running exactly the commit it
+ * was running before; only Render's source metadata has moved.
+ *
+ * WHY THE SPLIT. This project has exactly one deployment authority,
+ * `npm run prod:deploy:safe`, and a migration that also deployed would be a
+ * second one - with its own ordering, its own failure modes, and its own
+ * opportunity to diverge from the contract the first one enforces. Migrating
+ * the source and deploying a commit are also two decisions that deserve two
+ * approvals. So this command changes source metadata and stops; the deploy is
+ * a separate, separately-approved run of prod:deploy:safe afterwards.
+ *
+ * IT STILL SITS BEHIND THE FULL SAFETY ORDERING, because a source change is
+ * itself a Production write with no cheap undo, and because Render could in
+ * principle deploy off the back of one - the backup exists and Cron is down
+ * before the first PATCH precisely so that possibility is survivable, and
+ * steps 11 and 14 prove it did not happen.
  *
  * WHY IT IS NOT A GENERAL CAPABILITY. Every value it is allowed to move
  * between is frozen in RENDER_SOURCE_MIGRATION below. There is no "migrate
@@ -77,6 +94,8 @@ export interface ServiceConfigSnapshot {
   envVarNames: string[]
   /** Newest deploy id at snapshot time, or null when the service has none. Used to detect a deploy born from the PATCH. */
   latestDeployId: string | null
+  /** The commit that newest deploy carried - the commit Production is actually running. Must be identical before and after. */
+  latestDeployCommit: string | null
 }
 
 export interface MigrationRefusal {
@@ -182,27 +201,17 @@ export function detectConfigDrift(before: ServiceConfigSnapshot, after: ServiceC
   return drift
 }
 
-/** A deploy as this migration needs to see it. */
-export interface DeployRecord {
-  id: string
-  status: string
-  commitId: string | null
-}
-
 /**
- * Did the PATCH itself create a deploy? Render documents that it does not.
- * This does not take that on trust: a newest-deploy id that differs from the
- * one snapshotted immediately before the PATCH means one appeared, and the run
- * stops rather than assuming it is harmless - even if it is deploying the right
- * commit, it went out without passing through this pipeline's own ordering.
+ * Did the PATCH itself create a deploy? Render documents that a configuration
+ * change through the Update Service API does not deploy, regardless of
+ * autoDeploy. This does not take that on trust: a newest-deploy id differing
+ * from the one snapshotted immediately before the PATCH means one appeared, and
+ * the run stops rather than assuming it is harmless - a deploy nobody approved
+ * is a deploy nobody approved, whatever commit it carries.
  */
 export function deployAppearedFromPatch(beforeLatestDeployId: string | null, afterLatestDeployId: string | null): boolean {
   if (afterLatestDeployId === null) return false
   return afterLatestDeployId !== beforeLatestDeployId
-}
-
-export function deployMatchesTarget(deploy: DeployRecord, targetCommit: string): boolean {
-  return deploy.commitId === targetCommit
 }
 
 export interface MigrationStepLog {
@@ -222,8 +231,9 @@ export interface MigrationOutcome {
   backupBranchId: string | null
   webSourceChanged: boolean
   cronSourceChanged: boolean
-  webDeployId: string | null
-  cronDeployId: string | null
+  /** The commit Production was running when this started, and still is. */
+  deployedCommitBefore: { web: string | null; cron: string | null } | null
+  deployedCommitAfter: { web: string | null; cron: string | null } | null
   cronState: "suspended" | "active" | "unknown"
 }
 
@@ -244,14 +254,15 @@ export interface MigrationDeps {
   getCronSuspended: () => Promise<boolean>
   /** Issues the two-key PATCH. Implementations must go through updateServiceSource. */
   updateSource: (serviceId: string, repo: string, branch: string) => Promise<void>
-  /** Web only: commitId pins the deploy. */
-  deployWebPinned: (commitId: string) => Promise<DeployRecord>
-  /** Cron only: Render does not support commitId here, so this deploys the connected branch. */
-  deployCronUnpinned: () => Promise<DeployRecord>
-  waitForDeploy: (serviceId: string, deployId: string) => Promise<DeployRecord>
-  postDeployCheck: () => Promise<{ pass: boolean; summary: string }>
   resumeCron: () => Promise<void>
 }
+
+/**
+ * NOTE ON WHAT IS ABSENT. There is deliberately no deploy dependency of any
+ * kind here - no trigger, no wait, no post-deploy check. A dep this interface
+ * does not declare is a call the orchestration cannot make, which is a stronger
+ * guarantee than a rule saying it must not.
+ */
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -276,8 +287,8 @@ export async function runRenderSourceMigration(deps: MigrationDeps, contract: Mi
   let backupBranchId: string | null = null
   let webSourceChanged = false
   let cronSourceChanged = false
-  let webDeployId: string | null = null
-  let cronDeployId: string | null = null
+  let deployedCommitBefore: MigrationOutcome["deployedCommitBefore"] = null
+  let deployedCommitAfter: MigrationOutcome["deployedCommitAfter"] = null
   let cronState: MigrationOutcome["cronState"] = "unknown"
 
   const result = (
@@ -296,8 +307,8 @@ export async function runRenderSourceMigration(deps: MigrationDeps, contract: Mi
     backupBranchId,
     webSourceChanged,
     cronSourceChanged,
-    webDeployId,
-    cronDeployId,
+    deployedCommitBefore,
+    deployedCommitAfter,
     cronState,
   })
 
@@ -336,6 +347,7 @@ export async function runRenderSourceMigration(deps: MigrationDeps, contract: Mi
     steps.push({ step: "3. Before snapshot", ok: false, detail: errorMessage(error) })
     return failClean("3. Before snapshot", `Could not read the services: ${errorMessage(error)}`)
   }
+  deployedCommitBefore = { web: webBefore.latestDeployCommit, cron: cronBefore.latestDeployCommit }
   steps.push({
     step: "3. Before snapshot",
     ok: true,
@@ -464,102 +476,89 @@ export async function runRenderSourceMigration(deps: MigrationDeps, contract: Mi
   }
   steps.push({ step: "12b. Cron unexpected deploy", ok: true, detail: "none" })
 
-  // 13. Re-read the GitHub head immediately before deploying, then deploy the
-  //     web service PINNED to the exact commit.
+  // 15-19. FINAL CROSS-CHECKS, on a FRESH read of both services.
+  //
+  //         Deliberately not reusing the step 10 / step 12 snapshots. Those
+  //         were taken at different moments - the web one before the cron PATCH
+  //         was even issued - so a deploy or an edit that landed after a
+  //         service's own check would be invisible to a final verdict built
+  //         from it. The end state has to be read as an end state.
+  let webFinal: ServiceConfigSnapshot
+  let cronFinal: ServiceConfigSnapshot
   try {
-    const headNow = await deps.readGithubHead()
-    if (headNow !== contract.targetCommit) {
-      steps.push({ step: "13. Head recheck (web)", ok: false, detail: `head moved to ${headNow}` })
-      return failDirty("13. Head recheck (web)", "The canonical branch head moved after the source migration.", "Both sources migrated; nothing deployed.")
-    }
-    steps.push({ step: "13. Head recheck (web)", ok: true, detail: headNow })
+    webFinal = await deps.readServiceSnapshot(contract.webServiceId)
+    cronFinal = await deps.readServiceSnapshot(contract.cronServiceId)
   } catch (error) {
-    return failDirty("13. Head recheck (web)", `Could not re-read the branch head: ${errorMessage(error)}`, "Both sources migrated; nothing deployed.")
+    return failDirty("15-19. Final configuration verification", `Could not re-read the services: ${errorMessage(error)}`, "Both sources were patched; the end state is unverified.")
   }
 
-  let webDeploy: DeployRecord
-  try {
-    webDeploy = await deps.deployWebPinned(contract.targetCommit)
-    webDeployId = webDeploy.id
-    steps.push({ step: "14. Deploy web (pinned)", ok: true, detail: `${webDeploy.id} commit=${webDeploy.commitId ?? "unknown"}` })
-  } catch (error) {
-    return failDirty("14. Deploy web (pinned)", `Web deploy failed to start: ${errorMessage(error)}`, "Both sources migrated; web deploy did not start.")
-  }
-  if (!deployMatchesTarget(webDeploy, contract.targetCommit)) {
-    steps.push({ step: "14b. Web deploy commit", ok: false, detail: `${webDeploy.commitId ?? "unknown"} != ${contract.targetCommit}` })
-    return failDirty("14b. Web deploy commit", "The web deploy is not the approved commit.", `Web deploy ${webDeploy.id} targets ${webDeploy.commitId ?? "unknown"}.`)
-  }
-  steps.push({ step: "14b. Web deploy commit", ok: true, detail: contract.targetCommit })
-
-  // 15. Cron: head recheck again, then an UNPINNED deploy, then assert its commit.
-  try {
-    const headNow = await deps.readGithubHead()
-    if (headNow !== contract.targetCommit) {
-      steps.push({ step: "15. Head recheck (cron)", ok: false, detail: `head moved to ${headNow}` })
-      return failDirty("15. Head recheck (cron)", "The canonical branch head moved before the cron deploy.", "Both sources migrated; web deployed, cron not deployed.")
-    }
-    steps.push({ step: "15. Head recheck (cron)", ok: true, detail: headNow })
-  } catch (error) {
-    return failDirty("15. Head recheck (cron)", `Could not re-read the branch head: ${errorMessage(error)}`, "Both sources migrated; web deployed, cron not deployed.")
-  }
-
-  let cronDeploy: DeployRecord
-  try {
-    cronDeploy = await deps.deployCronUnpinned()
-    cronDeployId = cronDeploy.id
-    steps.push({ step: "16. Deploy cron (branch tip - commitId unsupported)", ok: true, detail: `${cronDeploy.id} commit=${cronDeploy.commitId ?? "unknown"}` })
-  } catch (error) {
-    return failDirty("16. Deploy cron", `Cron deploy failed to start: ${errorMessage(error)}`, "PARTIAL DEPLOYMENT: web deployed, cron deploy did not start.")
-  }
-  if (!deployMatchesTarget(cronDeploy, contract.targetCommit)) {
-    steps.push({ step: "16b. Cron deploy commit", ok: false, detail: `${cronDeploy.commitId ?? "unknown"} != ${contract.targetCommit}` })
-    return failDirty(
-      "16b. Cron deploy commit",
-      "The cron deploy is not the approved commit - the branch tip resolved to something else.",
-      `PARTIAL DEPLOYMENT: web is on ${contract.targetCommit}, cron deploy ${cronDeploy.id} targets ${cronDeploy.commitId ?? "unknown"}.`
-    )
-  }
-  steps.push({ step: "16b. Cron deploy commit", ok: true, detail: contract.targetCommit })
-
-  // 17-18. Wait for both, requiring the finished deploys to still be the target.
-  for (const [label, serviceId, deploy] of [
-    ["17. Wait web deploy", contract.webServiceId, webDeploy],
-    ["18. Wait cron deploy", contract.cronServiceId, cronDeploy],
+  const finalRefusals: string[] = []
+  for (const [label, snap, expectedId] of [
+    ["web", webFinal, contract.webServiceId],
+    ["cron", cronFinal, contract.cronServiceId],
   ] as const) {
-    let finished: DeployRecord
-    try {
-      finished = await deps.waitForDeploy(serviceId, deploy.id)
-    } catch (error) {
-      return failDirty(label, `Waiting for the deploy failed: ${errorMessage(error)}`, "One or both deploys are in an unknown state.")
-    }
-    const live = finished.status === "live" || finished.status === "succeeded"
-    const commitOk = deployMatchesTarget(finished, contract.targetCommit)
-    steps.push({ step: label, ok: live && commitOk, detail: `${finished.status} commit=${finished.commitId ?? "unknown"}` })
-    if (!live || !commitOk) {
-      return failDirty(label, `Deploy did not finish on the approved commit (status=${finished.status}).`, "PARTIAL DEPLOYMENT - inspect both services before acting.")
-    }
+    if (snap.repo !== contract.toRepo) finalRefusals.push(`${label} repo is ${snap.repo ?? "(unreadable)"}, expected ${contract.toRepo}`)
+    if (snap.branch !== contract.branch) finalRefusals.push(`${label} branch is ${snap.branch ?? "(unreadable)"}, expected ${contract.branch}`)
+    if (snap.autoDeploy !== "off") finalRefusals.push(`${label} Auto Deploy is ${snap.autoDeploy}, expected off`)
+    if (snap.id !== expectedId) finalRefusals.push(`${label} id is ${snap.id}, expected ${expectedId}`)
+  }
+  if (cronFinal.schedule !== contract.cronSchedule) {
+    finalRefusals.push(`cron schedule is ${cronFinal.schedule ?? "(unreadable)"}, expected ${contract.cronSchedule}`)
+  }
+  steps.push({
+    step: "15-19. Final configuration verification",
+    ok: finalRefusals.length === 0,
+    detail: finalRefusals.length === 0 ? "both services on the canonical source, everything else unchanged" : finalRefusals.join("; "),
+  })
+  if (finalRefusals.length > 0) {
+    return failDirty("15-19. Final configuration verification", finalRefusals.join("; "), "Both sources were patched but the end state does not match the contract.")
   }
 
-  // 19. Existing post-deploy verification, unchanged.
-  let post: { pass: boolean; summary: string }
-  try {
-    post = await deps.postDeployCheck()
-  } catch (error) {
-    return failDirty("19. Post-deploy check", `Post-deploy check failed to run: ${errorMessage(error)}`, "Both deploys completed; verification did not run.")
+  // THE DEPLOY THAT MUST NOT HAVE HAPPENED. Production has to still be running
+  // the commit it was running before this command started - same deploy id AND
+  // same commit on both services. A changed deploy id was already caught per
+  // service above; this states the guarantee the operator actually cares about.
+  deployedCommitAfter = { web: webFinal.latestDeployCommit, cron: cronFinal.latestDeployCommit }
+  const deployMoved: string[] = []
+  if (webFinal.latestDeployId !== webBefore.latestDeployId || webFinal.latestDeployCommit !== webBefore.latestDeployCommit) {
+    deployMoved.push(`web ${webBefore.latestDeployCommit ?? "?"} (${webBefore.latestDeployId ?? "?"}) -> ${webFinal.latestDeployCommit ?? "?"} (${webFinal.latestDeployId ?? "?"})`)
   }
-  steps.push({ step: "19. Post-deploy check", ok: post.pass, detail: post.summary })
-  if (!post.pass) return failDirty("19. Post-deploy check", "Post-deploy verification failed.", "Both deploys completed but Production did not verify.")
+  if (cronFinal.latestDeployId !== cronBefore.latestDeployId || cronFinal.latestDeployCommit !== cronBefore.latestDeployCommit) {
+    deployMoved.push(`cron ${cronBefore.latestDeployCommit ?? "?"} (${cronBefore.latestDeployId ?? "?"}) -> ${cronFinal.latestDeployCommit ?? "?"} (${cronFinal.latestDeployId ?? "?"})`)
+  }
+  steps.push({
+    step: "19b. Deployed commit unchanged",
+    ok: deployMoved.length === 0,
+    detail: deployMoved.length === 0 ? `web=${webFinal.latestDeployCommit ?? "none"} cron=${cronFinal.latestDeployCommit ?? "none"} (unchanged)` : deployMoved.join("; "),
+  })
+  if (deployMoved.length > 0) {
+    return failDirty("19b. Deployed commit unchanged", "A deploy happened during the source migration.", deployMoved.join("; "))
+  }
 
-  // 20. Resume Cron - ONLY on the full success path, exactly as prod:deploy:safe does.
+  // 20. Resume Cron. Unlike prod:deploy:safe there is no deploy to be confident
+  //     about first - Cron is resumed onto the SAME code it was running before,
+  //     because nothing was deployed.
   try {
     await deps.resumeCron()
-    cronState = "active"
     steps.push({ step: "20. Resume cron", ok: true, detail: "resume requested" })
   } catch (error) {
     cronState = "unknown"
     steps.push({ step: "20. Resume cron", ok: false, detail: errorMessage(error) })
-    return failDirty("20. Resume cron", `Failed to resume Cron: ${errorMessage(error)}`, "Migration and deploys succeeded; Cron is still suspended.")
+    return failDirty("20. Resume cron", `Failed to resume Cron: ${errorMessage(error)}`, "Both sources migrated; Cron is still suspended.")
   }
 
+  // 21. Verify it is actually active - fail-closed, never assumed from step 20.
+  try {
+    const suspended = await deps.getCronSuspended()
+    cronState = suspended ? "suspended" : "active"
+    steps.push({ step: "21. Verify cron active", ok: !suspended, detail: `suspended=${suspended}` })
+    if (suspended) return failDirty("21. Verify cron active", "Cron did not report active after the resume request.", "Both sources migrated; Cron is still suspended.")
+  } catch (error) {
+    cronState = "unknown"
+    steps.push({ step: "21. Verify cron active", ok: false, detail: errorMessage(error) })
+    return failDirty("21. Verify cron active", `Could not confirm Cron active: ${errorMessage(error)}`, "Both sources migrated; Cron state unknown.")
+  }
+
+  // 22. Stop. The deploy is a separate, separately-approved prod:deploy:safe run.
   return result("PASS", null, null, false, null)
 }

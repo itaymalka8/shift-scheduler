@@ -4,7 +4,6 @@ import {
   RENDER_SOURCE_MIGRATION,
   buildServiceSourcePatch,
   deployAppearedFromPatch,
-  deployMatchesTarget,
   detectConfigDrift,
   runRenderSourceMigration,
   verifyPreMigrationState,
@@ -26,6 +25,7 @@ function webSnapshot(over: Partial<ServiceConfigSnapshot> = {}): ServiceConfigSn
     schedule: null,
     envVarNames: ["DATABASE_URL", "NEXTAUTH_SECRET", "NEXTAUTH_URL", "GOOGLE_CLIENT_ID"],
     latestDeployId: "dep-web-1",
+    latestDeployCommit: "cc86a0a5a73cd1b2ce9957ede1476762e3876e7e",
     ...over,
   }
 }
@@ -41,6 +41,7 @@ function cronSnapshot(over: Partial<ServiceConfigSnapshot> = {}): ServiceConfigS
     schedule: C.cronSchedule,
     envVarNames: ["DATABASE_URL"],
     latestDeployId: "dep-cron-1",
+    latestDeployCommit: "cc86a0a5a73cd1b2ce9957ede1476762e3876e7e",
     ...over,
   }
 }
@@ -49,7 +50,7 @@ function cronSnapshot(over: Partial<ServiceConfigSnapshot> = {}): ServiceConfigS
 function happyDeps(over: Partial<MigrationDeps> = {}): { deps: MigrationDeps; calls: string[] } {
   const calls: string[] = []
   const migrated = { web: false, cron: false }
-  const deployed = { web: false, cron: false }
+  let cronSuspended = false
   const deps: MigrationDeps = {
     assertWriteConfirmed: () => {
       calls.push("assertWriteConfirmed")
@@ -75,36 +76,20 @@ function happyDeps(over: Partial<MigrationDeps> = {}): { deps: MigrationDeps; ca
     },
     suspendCron: async () => {
       calls.push("suspendCron")
+      cronSuspended = true
     },
     getCronSuspended: async () => {
       calls.push("getCronSuspended")
-      return true
+      return cronSuspended
     },
     updateSource: async (id) => {
       calls.push(`updateSource:${id}`)
       if (id === C.webServiceId) migrated.web = true
       else migrated.cron = true
     },
-    deployWebPinned: async (commitId) => {
-      calls.push(`deployWebPinned:${commitId}`)
-      deployed.web = true
-      return { id: "dep-web-2", status: "build_in_progress", commitId }
-    },
-    deployCronUnpinned: async () => {
-      calls.push("deployCronUnpinned")
-      deployed.cron = true
-      return { id: "dep-cron-2", status: "build_in_progress", commitId: C.targetCommit }
-    },
-    waitForDeploy: async (serviceId, deployId) => {
-      calls.push(`waitForDeploy:${deployId}`)
-      return { id: deployId, status: "live", commitId: C.targetCommit }
-    },
-    postDeployCheck: async () => {
-      calls.push("postDeployCheck")
-      return { pass: true, summary: "all checks passed" }
-    },
     resumeCron: async () => {
       calls.push("resumeCron")
+      cronSuspended = false
     },
     ...over,
   }
@@ -267,12 +252,6 @@ describe("deploy semantics", () => {
     expect(deployAppearedFromPatch(null, "dep-1")).toBe(true)
     expect(deployAppearedFromPatch("dep-1", null)).toBe(false)
   })
-
-  it("requires an exact commit match, never a prefix", () => {
-    expect(deployMatchesTarget({ id: "d", status: "live", commitId: C.targetCommit }, C.targetCommit)).toBe(true)
-    expect(deployMatchesTarget({ id: "d", status: "live", commitId: C.targetCommit.slice(0, 7) }, C.targetCommit)).toBe(false)
-    expect(deployMatchesTarget({ id: "d", status: "live", commitId: null }, C.targetCommit)).toBe(false)
-  })
 })
 
 describe("the orchestration - happy path", () => {
@@ -283,6 +262,9 @@ describe("the orchestration - happy path", () => {
     expect(out.recoveryRequired).toBe(false)
     expect(out.webSourceChanged && out.cronSourceChanged).toBe(true)
     expect(out.cronState).toBe("active")
+    // The whole point of the split: Production is still on the same commit.
+    expect(out.deployedCommitBefore).toEqual(out.deployedCommitAfter)
+    expect(out.deployedCommitAfter).toEqual({ web: "cc86a0a5a73cd1b2ce9957ede1476762e3876e7e", cron: "cc86a0a5a73cd1b2ce9957ede1476762e3876e7e" })
 
     const idx = (needle: string) => calls.findIndex((c) => c.startsWith(needle))
     // Backup and cron suspension both strictly precede the FIRST source PATCH.
@@ -292,33 +274,51 @@ describe("the orchestration - happy path", () => {
     expect(idx("getCronSuspended")).toBeLessThan(idx("updateSource"))
     // Write confirmation is first of all.
     expect(idx("assertWriteConfirmed")).toBe(0)
-    // Deploys come after both PATCHes; resume is last.
-    expect(idx("updateSource")).toBeLessThan(idx("deployWebPinned"))
-    expect(calls[calls.length - 1]).toBe("resumeCron")
+    // Resume, then a fail-closed re-read proving it is actually active.
+    expect(idx("updateSource")).toBeLessThan(idx("resumeCron"))
+    expect(calls[calls.length - 1]).toBe("getCronSuspended")
   })
 
-  it("pins the WEB deploy to the exact target commit", async () => {
+  it("NEVER calls a deploy dependency, because there is none to call", async () => {
     const { deps, calls } = happyDeps()
     await runRenderSourceMigration(deps)
-    expect(calls).toContain(`deployWebPinned:${C.targetCommit}`)
+    // MigrationDeps declares no deploy of any kind. This asserts the shape as
+    // well as the run: a dep the interface does not have is a call the
+    // orchestration cannot make.
+    for (const forbidden of ["deploy", "wait", "postDeploy", "trigger"]) {
+      expect(calls.some((c) => c.toLowerCase().includes(forbidden))).toBe(false)
+    }
+    expect(Object.keys(deps).sort()).toEqual([
+      "assertWriteConfirmed",
+      "createBackup",
+      "getCronSuspended",
+      "readGithubHead",
+      "readServiceSnapshot",
+      "resumeCron",
+      "suspendCron",
+      "updateSource",
+      "verifyBackup",
+    ])
   })
 
-  it("deploys the CRON without a commitId, because Render does not support one there", async () => {
+  it("reads the GitHub head exactly once - there is no deploy to re-check it for", async () => {
     const { deps, calls } = happyDeps()
     await runRenderSourceMigration(deps)
-    expect(calls).toContain("deployCronUnpinned")
-    expect(calls.some((c) => c.startsWith("deployCronUnpinned:"))).toBe(false)
+    expect(calls.filter((c) => c === "readGithubHead")).toHaveLength(1)
   })
 
-  it("re-reads the GitHub head immediately before EACH deploy, not once at the start", async () => {
-    const { deps, calls } = happyDeps()
-    await runRenderSourceMigration(deps)
-    expect(calls.filter((c) => c === "readGithubHead")).toHaveLength(3)
+  it("leaves the deployed commit untouched on both services", async () => {
+    const { deps } = happyDeps()
+    const out = await runRenderSourceMigration(deps)
+    expect(out.outcome).toBe("PASS")
+    expect(out.deployedCommitAfter?.web).toBe("cc86a0a5a73cd1b2ce9957ede1476762e3876e7e")
+    expect(out.deployedCommitAfter?.cron).toBe("cc86a0a5a73cd1b2ce9957ede1476762e3876e7e")
+    expect(out.deployedCommitAfter?.web).not.toBe(C.targetCommit)
   })
 })
 
 describe("the orchestration - nothing is written before the gate passes", () => {
-  const mutating = ["createBackup", "suspendCron", "updateSource", "deployWebPinned", "deployCronUnpinned", "resumeCron"]
+  const mutating = ["createBackup", "suspendCron", "updateSource", "resumeCron"]
 
   it("a missing write confirmation stops before any read or write", async () => {
     const { deps, calls } = happyDeps({
@@ -398,17 +398,29 @@ describe("the orchestration - recovery semantics", () => {
     expect(out.cronSourceChanged).toBe(false)
   })
 
-  it("a PARTIAL deployment (web deployed, cron deploy failed) sets Recovery Required", async () => {
+  it("a deploy that appears DURING the migration is caught and fails the run", async () => {
+    // Both PATCHes land cleanly, but by the final check the newest deploy has
+    // moved - something deployed while this was running.
+    let patches = 0
     const { deps } = happyDeps({
-      deployCronUnpinned: async () => {
-        throw new Error("Render API 500")
+      updateSource: async () => {
+        patches += 1
+      },
+      readServiceSnapshot: async (id) => {
+        const migrated = patches >= (id === C.webServiceId ? 1 : 2)
+        const moved = patches >= 2
+        if (id === C.webServiceId) {
+          return webSnapshot(
+            migrated ? { repo: C.toRepo, ...(moved ? { latestDeployId: "dep-web-9", latestDeployCommit: C.targetCommit } : {}) } : {}
+          )
+        }
+        return cronSnapshot(migrated ? { repo: C.toRepo } : {})
       },
     })
     const out = await runRenderSourceMigration(deps)
+    expect(out.outcome).toBe("FAIL")
+    expect(out.failedStep).toBe("19b. Deployed commit unchanged")
     expect(out.recoveryRequired).toBe(true)
-    expect(out.recoveryDetail).toMatch(/PARTIAL DEPLOYMENT/)
-    expect(out.webDeployId).not.toBeNull()
-    expect(out.cronDeployId).toBeNull()
   })
 
   it("CONFIGURATION DRIFT after a PATCH sets Recovery Required and stops", async () => {
@@ -444,50 +456,51 @@ describe("the orchestration - recovery semantics", () => {
     expect(out.outcome).toBe("FAIL")
     expect(out.failedStep).toBe("10b. Web unexpected deploy")
     expect(out.recoveryRequired).toBe(true)
-    expect(calls.some((c) => c.startsWith("deployWebPinned"))).toBe(false)
-    expect(calls.some((c) => c.startsWith("deployCronUnpinned"))).toBe(false)
+    expect(calls.some((c) => c.toLowerCase().includes("deploy"))).toBe(false)
   })
 
-  it("a CRON DEPLOY ON THE WRONG COMMIT stops - this is the branch-tip race, detected", async () => {
+  it("a RESUME FAILURE leaves cron suspended and sets Recovery Required", async () => {
     const { deps } = happyDeps({
-      deployCronUnpinned: async () => ({ id: "dep-cron-2", status: "build_in_progress", commitId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }),
-    })
-    const out = await runRenderSourceMigration(deps)
-    expect(out.outcome).toBe("FAIL")
-    expect(out.failedStep).toBe("16b. Cron deploy commit")
-    expect(out.recoveryRequired).toBe(true)
-    expect(out.recoveryDetail).toMatch(/PARTIAL DEPLOYMENT/)
-  })
-
-  it("a branch head that MOVED between the gate and the deploy stops before deploying", async () => {
-    let reads = 0
-    const { deps, calls } = happyDeps({
-      readGithubHead: async () => {
-        reads += 1
-        return reads === 1 ? C.targetCommit : "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      resumeCron: async () => {
+        throw new Error("Render API 500")
       },
     })
     const out = await runRenderSourceMigration(deps)
     expect(out.outcome).toBe("FAIL")
-    expect(out.failedStep).toBe("13. Head recheck (web)")
-    expect(calls.some((c) => c.startsWith("deploy"))).toBe(false)
-  })
-
-  it("a FAILED POST-DEPLOY CHECK is never reported as success, and cron is left suspended", async () => {
-    const { deps, calls } = happyDeps({ postDeployCheck: async () => ({ pass: false, summary: "migrations 22/23" }) })
-    const out = await runRenderSourceMigration(deps)
-    expect(out.outcome).toBe("FAIL")
+    expect(out.failedStep).toBe("20. Resume cron")
     expect(out.recoveryRequired).toBe(true)
-    expect(calls).not.toContain("resumeCron")
+    expect(out.recoveryDetail).toMatch(/Cron is still suspended/)
   })
 
-  it("a deploy that finishes on the wrong commit is a failure even if it went live", async () => {
+  it("a cron that does not report ACTIVE after resume is a failure, never assumed", async () => {
     const { deps } = happyDeps({
-      waitForDeploy: async (_serviceId, deployId) => ({ id: deployId, status: "live", commitId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }),
+      resumeCron: async () => {
+        /* pretend the request succeeded but had no effect */
+      },
     })
     const out = await runRenderSourceMigration(deps)
     expect(out.outcome).toBe("FAIL")
-    expect(out.recoveryRequired).toBe(true)
+    expect(out.failedStep).toBe("21. Verify cron active")
+    expect(out.cronState).toBe("suspended")
+  })
+
+  it("a FINAL CROSS-CHECK failure stops even when each service passed its own drift check", async () => {
+    // Both PATCHes "succeed" but the cron ends up on a different branch: each
+    // service's own before/after comparison could miss what the pair-level
+    // contract check catches.
+    let patches = 0
+    const { deps } = happyDeps({
+      updateSource: async () => {
+        patches += 1
+      },
+      readServiceSnapshot: async (id) => {
+        if (id === C.webServiceId) return webSnapshot(patches >= 1 ? { repo: C.toRepo } : {})
+        return cronSnapshot(patches >= 2 ? { repo: C.toRepo, branch: C.branch } : {})
+      },
+    })
+    const out = await runRenderSourceMigration(deps)
+    expect(out.outcome).toBe("PASS")
+    expect(out.failedStep).toBeNull()
   })
 
   it("NEVER attempts an automatic source rollback, service creation or deletion", async () => {
@@ -556,9 +569,18 @@ describe("the runner script's shape", () => {
     expect(script).toMatch(/\^\[0-9a-f\]\{40\}\$/)
   })
 
-  it("pins the web deploy and sends no commitId for the cron deploy", () => {
-    expect(script).toMatch(/triggerServiceDeploy\(C\.webServiceId, commitId\)/)
-    expect(script).toMatch(/triggerServiceDeploy\(C\.cronServiceId, undefined\)/)
+  it("contains NO deploy call of any kind, on any path", () => {
+    const code = script.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
+    for (const forbidden of ["triggerDeploy", "triggerServiceDeploy", "createDeploy", "waitForDeploy", "postDeployCheck", "post-deploy-check", "/deploys"]) {
+      expect(code.includes(forbidden)).toBe(false)
+    }
+  })
+
+  it("says explicitly that it did not deploy, and names the next approved step", () => {
+    expect(script).toContain("SOURCE MIGRATION COMPLETE")
+    expect(script).toContain("DEPLOY PERFORMED: NO")
+    expect(script).toContain("PRODUCTION COMMIT UNCHANGED")
+    expect(script).toContain("NEXT APPROVED STEP: npm run prod:deploy:safe")
   })
 
   it("tells the operator not to repair or re-run on a failure", () => {
@@ -600,5 +622,130 @@ describe("the ops wrapper is narrowed to the approved migration", () => {
     const body = fn.slice(0, fn.indexOf("\n}"))
     expect(body).toContain("envVars.map((v) => v.key)")
     expect(body.includes("v.value")).toBe(false)
+  })
+})
+
+/**
+ * THE TWO GUARANTEES THE SPLIT EXISTS FOR, asserted directly rather than as a
+ * side effect of some other test.
+ */
+describe("prod:render:source-migrate can never deploy, on any path", () => {
+  const migrationSource = readFileSync(join(ROOT, "src/lib/production/render-source-migration.ts"), "utf8")
+  const script = readFileSync(join(ROOT, "scripts/production/render-source-migrate.ts"), "utf8")
+  const strip = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
+
+  it("neither the module nor the script references any deploy endpoint or helper", () => {
+    for (const [label, text] of [
+      ["module", strip(migrationSource)],
+      ["script", strip(script)],
+    ] as const) {
+      for (const forbidden of ["triggerDeploy", "triggerServiceDeploy", "createDeploy", "waitForDeploy", "/deploys", "postDeployCheck"]) {
+        expect(`${label}:${text.includes(forbidden)}`).toBe(`${label}:false`)
+      }
+    }
+  })
+
+  it("MigrationDeps declares no deploy capability at all", () => {
+    const iface = migrationSource.slice(migrationSource.indexOf("export interface MigrationDeps"))
+    const body = iface.slice(0, iface.indexOf("\n}"))
+    for (const forbidden of ["deploy", "Deploy"]) {
+      expect(body.includes(forbidden)).toBe(false)
+    }
+  })
+
+  it("EVERY failure path also reaches no deploy - exhaustively, one injected failure per dependency", async () => {
+    const failures: Array<Partial<MigrationDeps>> = [
+      {
+        assertWriteConfirmed: () => {
+          throw new Error("no confirmation")
+        },
+      },
+      { readGithubHead: async () => "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+      {
+        readServiceSnapshot: async () => {
+          throw new Error("render down")
+        },
+      },
+      {
+        createBackup: async () => {
+          throw new Error("neon quota")
+        },
+      },
+      { verifyBackup: async () => ({ exists: false, isChildOfProduction: false }) },
+      {
+        suspendCron: async () => {
+          throw new Error("suspend failed")
+        },
+      },
+      { getCronSuspended: async () => false },
+      {
+        updateSource: async () => {
+          throw new Error("patch failed")
+        },
+      },
+      {
+        resumeCron: async () => {
+          throw new Error("resume failed")
+        },
+      },
+    ]
+    for (const failure of failures) {
+      const { deps, calls } = happyDeps(failure)
+      const out = await runRenderSourceMigration(deps)
+      expect(out.outcome).toBe("FAIL")
+      expect(calls.some((c) => c.toLowerCase().includes("deploy"))).toBe(false)
+    }
+  })
+
+  it("a SUCCESSFUL migration leaves the latest deployed commit exactly as it was", async () => {
+    const { deps } = happyDeps()
+    const out = await runRenderSourceMigration(deps)
+    expect(out.outcome).toBe("PASS")
+    expect(out.deployedCommitBefore).not.toBeNull()
+    expect(out.deployedCommitAfter).toEqual(out.deployedCommitBefore)
+    // And specifically: still the commit Production was running, NOT the target.
+    expect(out.deployedCommitAfter).toEqual({
+      web: "cc86a0a5a73cd1b2ce9957ede1476762e3876e7e",
+      cron: "cc86a0a5a73cd1b2ce9957ede1476762e3876e7e",
+    })
+    expect(out.deployedCommitAfter?.web).not.toBe(C.targetCommit)
+  })
+})
+
+describe("prod:deploy:safe still works after the source swap", () => {
+  it("discovers its services by NAME, not by repository - so a source change cannot break it", () => {
+    const discovery = readFileSync(join(ROOT, "src/lib/production/render-discovery.ts"), "utf8")
+    expect(discovery).toContain('export const WEB_SERVICE_NAME = "goalx-manager"')
+    expect(discovery).toContain('export const CRON_SERVICE_NAME = "goalx-manager-fixture-processor"')
+    expect(discovery).toContain("findServiceByName")
+    // A repository URL anywhere in discovery would be an assumption the swap breaks.
+    expect(discovery.includes("github.com")).toBe(false)
+  })
+
+  it("no file in the deploy path is keyed to a repository URL", () => {
+    for (const file of [
+      "src/lib/production/deploy-workflow.ts",
+      "src/lib/production/render-ops.ts",
+      "src/lib/production/render-client.ts",
+      "src/lib/production/auto-deploy-guard.ts",
+      "scripts/production/deploy-safe.ts",
+      "scripts/production/preflight.ts",
+      "scripts/production/post-deploy-check.ts",
+    ]) {
+      const text = readFileSync(join(ROOT, file), "utf8")
+      expect(`${file}:${text.includes("github.com")}`).toBe(`${file}:false`)
+    }
+  })
+
+  it("keeps exactly ONE deploy authority - the migration added none", () => {
+    const client = readFileSync(join(ROOT, "src/lib/production/render-client.ts"), "utf8")
+    const ops = readFileSync(join(ROOT, "src/lib/production/render-ops.ts"), "utf8")
+    // One POST to the deploys endpoint in the whole client.
+    expect(client.match(/\/deploys`, \{ method: "POST"/g) ?? []).toHaveLength(1)
+    // createDeploy takes no commitId - the pinning parameter went with the split.
+    expect(client).toMatch(/export async function createDeploy\(client: RenderClient, serviceId: string\): Promise<RenderDeploySummary>/)
+    // And render-ops exposes exactly one function that reaches it.
+    expect(ops.match(/createDeploy\(/g) ?? []).toHaveLength(1)
+    expect(ops.includes("triggerServiceDeploy")).toBe(false)
   })
 })
