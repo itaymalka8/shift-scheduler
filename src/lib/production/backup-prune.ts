@@ -333,6 +333,13 @@ export interface PruneArgs {
   branchIds: string[]
   execute: boolean
   slotsToFree: number
+  /**
+   * The plan digest the operator is asserting they reviewed. null when none was
+   * supplied - which is fine for a dry run and fatal for an execute, since an
+   * execute with no digest is exactly the "deleted ids I never saw a plan for"
+   * case the digest exists to stop.
+   */
+  planDigest: string | null
 }
 
 /**
@@ -348,6 +355,7 @@ export function parsePruneArgs(argv: string[], env: Record<string, string | unde
   const branchIds: string[] = []
   let execute = false
   let slotsToFree = Number(env.PRUNE_SLOTS_TO_FREE ?? 3)
+  let planDigest: string | null = null
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
@@ -355,14 +363,17 @@ export function parsePruneArgs(argv: string[], env: Record<string, string | unde
     else if (arg === "--branch" || arg === "--branches") branchIds.push(...splitBranchIds(argv[++i] ?? ""))
     else if (arg.startsWith("--branches=")) branchIds.push(...splitBranchIds(arg.slice("--branches=".length)))
     else if (arg.startsWith("--branch=")) branchIds.push(...splitBranchIds(arg.slice("--branch=".length)))
+    else if (arg === "--plan-digest") planDigest = (argv[++i] ?? "").trim() || null
+    else if (arg.startsWith("--plan-digest=")) planDigest = arg.slice("--plan-digest=".length).trim() || null
     else if (arg.startsWith("--slots=")) slotsToFree = Number(arg.slice("--slots=".length))
   }
 
   if (branchIds.length === 0 && env.PRUNE_BRANCH_IDS) branchIds.push(...splitBranchIds(env.PRUNE_BRANCH_IDS))
   if (!execute && env.PRUNE_EXECUTE === "true") execute = true
+  if (!planDigest && env.PRUNE_PLAN_DIGEST) planDigest = env.PRUNE_PLAN_DIGEST.trim() || null
   if (!Number.isFinite(slotsToFree) || slotsToFree < 1) slotsToFree = 3
 
-  return { branchIds, execute, slotsToFree }
+  return { branchIds, execute, slotsToFree, planDigest }
 }
 
 function splitBranchIds(raw: string): string[] {

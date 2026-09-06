@@ -351,7 +351,7 @@ describe("verifyPostPrune", () => {
 
 describe("parsePruneArgs - dry run is the default", () => {
   it("defaults execute to false with no arguments at all", () => {
-    expect(parsePruneArgs([], {})).toEqual({ branchIds: [], execute: false, slotsToFree: 3 })
+    expect(parsePruneArgs([], {})).toEqual({ branchIds: [], execute: false, slotsToFree: 3, planDigest: null })
   })
 
   it("stays a dry run when branches are given but --execute is not", () => {

@@ -19,12 +19,18 @@
  *
  * Run with:
  *   npm run prod:backup:prune                                  # inventory + recommendation
- *   npm run prod:backup:prune -- --branches br-a,br-b          # dry run of a specific plan
- *   PRODUCTION_WRITE_CONFIRM=... npm run prod:backup:prune -- --branches br-a,br-b --execute
+ *   npm run prod:backup:prune -- --branches br-a,br-b          # dry run, prints the PLAN DIGEST
+ *   PRODUCTION_WRITE_CONFIRM=... npm run prod:backup:prune -- --branches br-a,br-b --plan-digest <sha256> --execute
  *
- * PRUNE_BRANCH_IDS / PRUNE_EXECUTE / PRUNE_SLOTS_TO_FREE are env equivalents
- * of the three flags, for the GitHub Actions path where passing argv through
- * `npm run` is awkward. Flags win when both are present.
+ * --execute ALSO REQUIRES --plan-digest, the digest the dry run printed. It is
+ * recomputed here from a freshly fetched inventory and compared before the
+ * first delete, so a plan that has gone stale - a backup created since, a
+ * branch removed by someone else, an edited id list - is refused rather than
+ * carried out against a world nobody reviewed. See prune-digest.ts.
+ *
+ * PRUNE_BRANCH_IDS / PRUNE_EXECUTE / PRUNE_SLOTS_TO_FREE / PRUNE_PLAN_DIGEST
+ * are env equivalents of the flags, for the GitHub Actions path where passing
+ * argv through `npm run` is awkward. Flags win when both are present.
  */
 import {
   MINIMUM_RETAINED_BACKUPS,
@@ -41,10 +47,12 @@ import {
   BackupDeletionRefusedError,
   deleteBackupBranch,
   getProductionBranch,
+  getProjectDetails,
   listBranches,
 } from "../../src/lib/production/neon-ops"
 import { NeonCredentialsMissingError } from "../../src/lib/production/neon-client"
 import { assertProductionWriteConfirmed, ProductionWriteNotConfirmedError } from "../../src/lib/production/write-guard"
+import { evaluatePruneDigestGate, prunePlanDigest } from "../../src/lib/production/prune-digest"
 
 function describe(b: BackupBranch): string {
   return `${b.name} (${b.id}) created=${b.createdAt}`
@@ -62,7 +70,11 @@ async function main() {
     // unconfirmed --execute never even reaches Neon.
     if (args.execute) assertProductionWriteConfirmed(process.env)
 
-    const [production, branchesBefore] = await Promise.all([getProductionBranch(), listBranches()])
+    const [project, production, branchesBefore] = await Promise.all([
+      getProjectDetails(),
+      getProductionBranch(),
+      listBranches(),
+    ])
     const productionBranchId = production.id
 
     console.info(`Production branch: ${production.name} (${productionBranchId}) primary=${production.primary}`)
@@ -129,11 +141,51 @@ async function main() {
     for (const b of plan.backups.filter((b) => !plan.deletable.some((d) => d.id === b.id))) console.info(`  ${describe(b)}`)
     console.info(`\nBranches: ${branchesBefore.length} -> ${plan.totalBranchesAfter}`)
 
+    // THE PLAN DIGEST. Computed from the LIVE inventory just read - on a dry
+    // run it is the value the operator carries forward, and on an execute it is
+    // recomputed here from scratch and compared to what they supplied. Both
+    // paths run this identical code on identically fresh data, which is what
+    // makes a stale plan detectable rather than merely unlikely.
+    const branchMetadata = new Map(
+      branchesBefore.map((b) => [b.id, { name: b.name, createdAt: b.createdAt, parentId: b.parentId }])
+    )
+    const { digest } = prunePlanDigest({
+      projectId: project.id,
+      plan,
+      requestedIds: args.branchIds,
+      minimumRetained: MINIMUM_RETAINED_BACKUPS,
+      totalBranchesBefore: branchesBefore.length,
+      branchMetadata,
+    })
+    console.info(`\nPLAN DIGEST: ${digest}`)
+    console.info(`  binds: schema v1, project, production branch, floor ${MINIMUM_RETAINED_BACKUPS}, ${branchesBefore.length} branches / ${plan.backups.length} backups before,`)
+    console.info(`         the ${args.branchIds.length} requested id(s) in order with their name/createdAt/parent, the ${plan.protectedBackups.length} protected id(s),`)
+    console.info(`         and ${plan.backupsAfter} backups / ${plan.totalBranchesAfter} branches after.`)
+
     if (!args.execute) {
       console.info("\nDRY RUN - NOTHING WAS DELETED.")
-      console.info(`To execute: PRODUCTION_WRITE_CONFIRM=I_UNDERSTAND_THIS_CHANGES_PRODUCTION npm run prod:backup:prune -- --branches ${plan.deletable.map((b) => b.id).join(",")} --execute`)
+      console.info(
+        `To execute: PRODUCTION_WRITE_CONFIRM=I_UNDERSTAND_THIS_CHANGES_PRODUCTION npm run prod:backup:prune -- --branches ${plan.deletable.map((b) => b.id).join(",")} --plan-digest ${digest} --execute`
+      )
       return
     }
+
+    // THE DIGEST GATE, after every other gate and before the first delete.
+    //
+    // A missing digest is refused rather than treated as "skip the check":
+    // an execute that forgets it must fail, or the control is optional in
+    // practice and therefore absent.
+    const digestGate = evaluatePruneDigestGate(args.planDigest, digest)
+    if (!digestGate.ok) {
+      console.error("\nPRUNE REFUSED - NOTHING WAS DELETED.")
+      console.error(`  [${digestGate.code}] ${digestGate.message}`)
+      console.error(`    supplied:   ${args.planDigest ?? "(none)"}`)
+      console.error(`    recomputed: ${digest}`)
+      console.error("  Re-run the dry run, read the plan it prints, and execute THAT plan's digest.")
+      process.exitCode = 1
+      return
+    }
+    console.info("PLAN DIGEST MATCHES the freshly recomputed plan.")
 
     console.info("\nEXECUTING DELETIONS...")
     const deleted: string[] = []
