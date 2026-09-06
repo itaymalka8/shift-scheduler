@@ -42,7 +42,25 @@ const HISTORICAL_MODELS = [
   "championshipPlayoff",
 ]
 
+/**
+ * `scripts/proof/` is EXCLUDED, and the exclusion is narrow on purpose.
+ *
+ * Those scripts are destructive by design: they truncate and reseed a scratch
+ * database in order to prove properties of Postgres itself - that an advisory
+ * lock really serialises four workers, that a rolled-back repricing really
+ * lands on the same numbers. They refuse to run without an explicit
+ * PROOF_DATABASE_URL, refuse a URL equal to PRODUCTION_DATABASE_URL, and refuse
+ * any host that looks hosted. They are test apparatus that happens to live
+ * outside the jest tree because it needs a real database.
+ *
+ * The compensating control is the test below: nothing in shipped source may
+ * import from this directory, so its destructive helpers cannot leak into a
+ * code path that runs against a real league.
+ */
+const DESTRUCTIVE_PROOF_DIR = join(ROOT, "scripts", "proof")
+
 function walk(dir: string, out: string[] = []): string[] {
+  if (dir === DESTRUCTIVE_PROOF_DIR) return out
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry)
     if (entry === "generated" || entry === "node_modules") continue
@@ -87,6 +105,18 @@ describe("no new deletion path for a historical model", () => {
       const source = readFileSync(file, "utf8")
       // $executeRaw`DELETE ...` / $executeRawUnsafe("TRUNCATE ...")
       expect(source).not.toMatch(/\$executeRaw(Unsafe)?[^;]{0,200}\b(DELETE\s+FROM|TRUNCATE)\b/i)
+    }
+  })
+
+  it("nothing in shipped source imports the destructive proof harness", () => {
+    // The compensating control for excluding scripts/proof/ from the scan
+    // above. Those scripts truncate the database they are given; the only
+    // thing standing between that and a real league is that nothing which
+    // could run against one can reach them.
+    for (const file of [...walk(join(ROOT, "src")), ...walk(join(ROOT, "scripts"))]) {
+      const source = readFileSync(file, "utf8")
+      expect(source).not.toMatch(/from\s+["'][^"']*scripts\/proof/)
+      expect(source).not.toMatch(/import\s*\(\s*["'][^"']*scripts\/proof/)
     }
   })
 })
