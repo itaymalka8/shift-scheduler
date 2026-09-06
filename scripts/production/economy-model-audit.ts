@@ -177,6 +177,15 @@ export interface ProjectionOptions {
   flatSeasonIncome?: number
   /** Multiplier applied to flatSeasonIncome for tier 1 clubs (tier 2 keeps 1x). */
   tier1IncomeMultiplier?: number
+  /**
+   * Applied to every salary RECOMPUTED at a season roll, never to the squads
+   * as they stand today. That is exactly the shape of the generation-time
+   * INITIAL_SQUAD_SALARY_RANGE normalisation, which today is applied when a
+   * squad is created and never again. 1 = today's behaviour.
+   */
+  salaryMultiplier?: number
+  /** Applied to gate receipts. 1 = today's ticket prices. */
+  ticketMultiplier?: number
 }
 
 interface SeasonSnapshot {
@@ -210,7 +219,7 @@ function playSeason(club: SimClub, rng: SeededRandom, ledger: SeasonLedger, opts
   const quality = calculateTeamTotalQuality(club.players)
   for (let m = 0; m < HOME_FIXTURES_PER_SEASON; m++) {
     const attendance = calculateAttendance({ isHome: true }, { teamTotalQuality: quality }, { seats: club.seats })
-    const revenue = calculateMatchStadiumRevenue(attendance.bySeatType).total
+    const revenue = Math.round(calculateMatchStadiumRevenue(attendance.bySeatType).total * (opts.ticketMultiplier ?? 1))
     // THE PRODUCTION DEFECT, REPRODUCED ON PURPOSE: the live code computes
     // the expense from a SECOND, INDEPENDENT attendance roll (the snapshot's),
     // not from the roll the gate was sold at. Modelling one roll here would
@@ -275,7 +284,9 @@ function playSeason(club: SimClub, rng: SeededRandom, ledger: SeasonLedger, opts
  * growth the real roll would apply while leaving the stored Overall as the
  * authority it is everywhere else in the game.
  */
-function rollSquad(club: SimClub, seasonNumber: number, rng: SeededRandom): void {
+function rollSquad(club: SimClub, seasonNumber: number, rng: SeededRandom, opts: ProjectionOptions): void {
+  const wage = (p: { overall: number; age: number; potential: number; primaryPosition: string }) =>
+    Math.round(calculatePlayerSalary(p) * (opts.salaryMultiplier ?? 1))
   const survivors: SimPlayer[] = []
   for (const player of club.players) {
     if (rollRetirement(player.age, rng)) continue
@@ -291,7 +302,7 @@ function rollSquad(club: SimClub, seasonNumber: number, rng: SeededRandom): void
       primaryPosition: player.primaryPosition,
       overall: grown,
       attributes: development.attributes,
-      weeklySalary: calculatePlayerSalary({
+      weeklySalary: wage({
         overall: grown,
         age: newAge,
         potential: player.potential,
@@ -319,7 +330,7 @@ function rollSquad(club: SimClub, seasonNumber: number, rng: SeededRandom): void
       primaryPosition: prospect.primaryPosition,
       overall: prospect.overall,
       attributes: extractPlayerAttributes(prospect as unknown as Record<string, unknown>),
-      weeklySalary: calculatePlayerSalary({
+      weeklySalary: wage({
         overall: prospect.overall,
         age: prospect.age,
         potential: prospect.potential,
@@ -350,7 +361,7 @@ function rollSquad(club: SimClub, seasonNumber: number, rng: SeededRandom): void
       primaryPosition: generated.primaryPosition,
       overall: generated.overall,
       attributes: extractPlayerAttributes(generated as unknown as Record<string, unknown>),
-      weeklySalary: generated.weeklySalary,
+      weeklySalary: Math.round(generated.weeklySalary * (opts.salaryMultiplier ?? 1)),
     })
   }
   club.players = survivors
@@ -412,7 +423,7 @@ function project(base: SimClub[], opts: ProjectionOptions, seed: string): Season
       const ledger = EMPTY_LEDGER()
       for (const club of clubs) playSeason(club, rng, ledger, opts)
       for (const club of clubs) ledger.construction += reinvest(club, opts)
-      for (const club of clubs) rollSquad(club, season, rng)
+      for (const club of clubs) rollSquad(club, season, rng, opts)
       // Promotion and relegation, modelled as Phase 3Q leaves it: the tier
       // label moves and NOTHING financial follows it.
       //
@@ -948,6 +959,56 @@ async function main() {
     printProjection(
       `E. TODAY + a flat ${fmt(gapSolvent)} per club per season (the solvency level)`,
       project(base, { seasons: 20, maintenanceEnabled: false, humanReinvestFraction: null, reserveWeeks: 0, flatSeasonIncome: gapSolvent }, "phase3r-economy"),
+      marks
+    )
+    // The two alternatives to inventing income: charge less for players, or
+    // charge more for tickets. Both are solved on the same 20-season
+    // objective, so the three options are comparable rather than rhetorical.
+    const solveScalar = (
+      label: string,
+      build: (x: number) => ProjectionOptions,
+      objective: (snapshots: SeasonSnapshot[]) => boolean,
+      lowSeed: number,
+      highSeed: number,
+      objectiveTrueAtLow: boolean
+    ): number => {
+      let low = lowSeed
+      let high = highSeed
+      for (let i = 0; i < 24; i++) {
+        const mid = (low + high) / 2
+        const hit = objective(project(base, build(mid), "phase3r-economy"))
+        if (hit === objectiveTrueAtLow) low = mid
+        else high = mid
+      }
+      const answer = objectiveTrueAtLow ? low : high
+      console.info(`  ${label.padEnd(52)} ${answer.toFixed(4)}`)
+      return answer
+    }
+    console.info("\n  the same 'zero 20-season drift' target, reached from the cost and revenue sides:")
+    const salaryK = solveScalar(
+      "salary multiplier at every season roll",
+      (x) => ({ seasons: 20, maintenanceEnabled: false, humanReinvestFraction: null, reserveWeeks: 0, salaryMultiplier: x }),
+      (snap) => snap[snap.length - 1].totalMoney >= openingStock,
+      0.2,
+      1.5,
+      true
+    )
+    const ticketK = solveScalar(
+      "ticket price multiplier",
+      (x) => ({ seasons: 20, maintenanceEnabled: false, humanReinvestFraction: null, reserveWeeks: 0, ticketMultiplier: x }),
+      (snap) => snap[snap.length - 1].totalMoney >= openingStock,
+      0.5,
+      4,
+      false
+    )
+    printProjection(
+      `G. NO new money: salaries recomputed at ${salaryK.toFixed(3)}x at every season roll`,
+      project(base, { seasons: 20, maintenanceEnabled: false, humanReinvestFraction: null, reserveWeeks: 0, salaryMultiplier: salaryK }, "phase3r-economy"),
+      marks
+    )
+    printProjection(
+      `H. NO new money: ticket prices at ${ticketK.toFixed(3)}x`,
+      project(base, { seasons: 20, maintenanceEnabled: false, humanReinvestFraction: null, reserveWeeks: 0, ticketMultiplier: ticketK }, "phase3r-economy"),
       marks
     )
     printProjection(
