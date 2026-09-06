@@ -427,10 +427,46 @@ interface Evaluation {
   occupancySamples: number[]
 }
 
+/**
+ * SHAPE AND LEVEL ARE KEPT ORTHOGONAL, AND THAT IS NOT CosmETIC.
+ *
+ * The raw power transform also lowers the league's total wage bill, because the
+ * wage distribution is right-skewed and pulling the tail down outweighs lifting
+ * the floor. Left uncorrected, the solver reads a compression as free money and
+ * answers every increase in c by removing sponsor - which is exactly the
+ * single-lever solution decision R1 rejected. So each compression is
+ * NORMALISED to leave today's league-wide canonical wage bill unchanged:
+ *
+ *     w' = scale x N(c) x PIVOT^c x w^(1-c),   N(c) = SUM(w) / SUM(PIVOT^c w^(1-c))
+ *
+ * After that, `scale` is the only thing that moves the level and `c` only moves
+ * wage BETWEEN cheap and expensive squads. The two axes can then be read
+ * independently, and the sponsor coefficient is solved on its own merits.
+ */
+const compressionNormalisers = new Map<number, number>()
+let baselineCanonicalWages: number[] = []
+
+function compressionNormaliser(compression: number): number {
+  if (compression <= 0) return 1
+  const cached = compressionNormalisers.get(compression)
+  if (cached !== undefined) return cached
+  let raw = 0
+  let shaped = 0
+  for (const w of baselineCanonicalWages) {
+    raw += w
+    shaped += Math.pow(SALARY_PIVOT, compression) * Math.pow(Math.max(1, w), 1 - compression)
+  }
+  const n = shaped > 0 ? raw / shaped : 1
+  compressionNormalisers.set(compression, n)
+  return n
+}
+
 function transformWage(canonical: number, scale: number, compression: number): number {
   if (compression <= 0) return Math.round(canonical * scale)
   const w = Math.max(1, canonical)
-  return Math.round(scale * Math.pow(SALARY_PIVOT, compression) * Math.pow(w, 1 - compression))
+  return Math.round(
+    scale * compressionNormaliser(compression) * Math.pow(SALARY_PIVOT, compression) * Math.pow(w, 1 - compression)
+  )
 }
 
 function wageOf(state: SeasonClubState, scale: number, seasonIndex: number, reprice: boolean, compression: number): number {
@@ -632,6 +668,7 @@ async function main() {
     }))
     const squads = clubs.map((c) => byTeam.get(c.id) ?? [])
     const openingStock = clubs.reduce((s, c) => s + c.startBalance, 0)
+    baselineCanonicalWages = squads.flat().map(canonicalWage)
 
     console.info("=== BASE STATE ===")
     console.info(`  clubs ${clubs.length} (${clubs.filter((c) => !c.isBot).length} Human / ${clubs.filter((c) => c.isBot).length} BOT)`)
@@ -903,7 +940,7 @@ async function main() {
       `${"dev5".padStart(8)}${"dev10".padStart(8)}${"dev20".padStart(8)}${"min balance ever".padStart(18)}${"feasible".padStart(10)}`)
     const compressionResults: { c: number; point: GridPoint; reprice: boolean }[] = []
     for (const repriceMode of [false, true]) {
-      for (const c of [0, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4]) {
+      for (const c of [0, 0.1, 0.2, 0.3, 0.4, 0.45, 0.5, 0.55, 0.6]) {
         REPRICE = repriceMode
         COMPRESSION = c
         let inBand: GridPoint | null = null
@@ -936,7 +973,17 @@ async function main() {
     if (feasibleCompression.length > 0) {
       // Prefer the SMALLEST compression that clears the objective: it is the
       // least disturbance to a curve players and managers can already see.
-      const pick = feasibleCompression.sort((a, b) => a.c - b.c || b.point.minBalanceEver - a.point.minBalanceEver)[0]
+      // Decision R1 requires a BLEND. Among points that clear both objectives,
+      // prefer one that actually uses the sponsor lever; only fall back to a
+      // near-zero sponsor if nothing blended qualifies. Then prefer the
+      // smallest compression, because the curve is something managers can see.
+      const blended = feasibleCompression.filter((r) => r.point.sponsorK >= 0.1)
+      const preferred = blended.length > 0 ? blended : feasibleCompression
+      const pick = preferred.sort((a, b) => a.c - b.c || b.point.minBalanceEver - a.point.minBalanceEver)[0]
+      if (blended.length === 0) {
+        console.info("  NOTE: no feasible point used a sponsor coefficient at or above 0.10 - reporting the")
+        console.info("  best available, and flagging that the blend decision R1 asks for may not be reachable.")
+      }
       REPRICE = pick.reprice
       COMPRESSION = pick.c
       chosen = {
