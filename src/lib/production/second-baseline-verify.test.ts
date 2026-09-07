@@ -299,11 +299,42 @@ describe("the economic aggregates and the repricing marker", () => {
     expect(codes(verify((r) => (r.activity!.maintenanceSettlementCount = null)))).toContain("MAINTENANCE_COUNT_UNREADABLE")
   })
 
-  it("does NOT assert a specific settlement count - it has no authority for what those ought to be", () => {
-    // A non-zero count is reported, not refused. Inventing an expected number
-    // would be asserting something this command cannot know.
-    expect(verify((r) => (r.activity!.sponsorSettlementCount = 240)).ok).toBe(true)
-    expect(verify((r) => (r.activity!.maintenanceSettlementCount = 17)).ok).toBe(true)
+  // THE FROZEN PHASE 3R PRE-ACTIVATION CONTRACT. Before the activation instant
+  // the economy is dormant: sponsor income, stadium maintenance and salary
+  // repricing have all not happened, so every counter has a knowable expected
+  // value of EXACTLY ZERO and is asserted, never merely reported.
+  it("FAILS if any sponsor settlement exists while activation is still ahead", () => {
+    expect(codes(verify((r) => (r.activity!.sponsorSettlementCount = 1)))).toContain("SPONSOR_BEFORE_ACTIVATION")
+    expect(verify((r) => (r.activity!.sponsorSettlementCount = 1)).ok).toBe(false)
+    expect(codes(verify((r) => (r.activity!.sponsorSettlementCount = 240)))).toContain("SPONSOR_BEFORE_ACTIVATION")
+  })
+
+  it("FAILS if any stadium maintenance settlement exists while activation is still ahead", () => {
+    expect(codes(verify((r) => (r.activity!.maintenanceSettlementCount = 1)))).toContain("MAINTENANCE_BEFORE_ACTIVATION")
+    expect(verify((r) => (r.activity!.maintenanceSettlementCount = 1)).ok).toBe(false)
+    expect(codes(verify((r) => (r.activity!.maintenanceSettlementCount = 17)))).toContain("MAINTENANCE_BEFORE_ACTIVATION")
+  })
+
+  it("FAILS on an UNREADABLE sponsor count, and does so SEPARATELY from a non-zero one", () => {
+    const unreadable = verify((r) => (r.activity!.sponsorSettlementCount = null))
+    expect(unreadable.ok).toBe(false)
+    expect(codes(unreadable)).toContain("SPONSOR_COUNT_UNREADABLE")
+    // Unreadable is never reported as evidence of pre-activation activity.
+    expect(codes(unreadable)).not.toContain("SPONSOR_BEFORE_ACTIVATION")
+    // ...and the converse: a real non-zero count is never excused as unreadable.
+    expect(codes(verify((r) => (r.activity!.sponsorSettlementCount = 1)))).not.toContain("SPONSOR_COUNT_UNREADABLE")
+  })
+
+  it("FAILS on an UNREADABLE maintenance count, and does so SEPARATELY from a non-zero one", () => {
+    const unreadable = verify((r) => (r.activity!.maintenanceSettlementCount = null))
+    expect(unreadable.ok).toBe(false)
+    expect(codes(unreadable)).toContain("MAINTENANCE_COUNT_UNREADABLE")
+    expect(codes(unreadable)).not.toContain("MAINTENANCE_BEFORE_ACTIVATION")
+    expect(codes(verify((r) => (r.activity!.maintenanceSettlementCount = 1)))).not.toContain("MAINTENANCE_COUNT_UNREADABLE")
+  })
+
+  it("accepts EXACTLY ZERO on all three counters - that is the only passing state", () => {
+    expect(verify((r) => (r.activity = { sponsorSettlementCount: 0, maintenanceSettlementCount: 0, repricingRowCount: 0 })).ok).toBe(true)
   })
 
   it("FAILS when the activity counters are entirely unreadable", () => {
@@ -357,6 +388,47 @@ describe("the verifier command has NO write path", () => {
     expect(runnerCode).toContain("evaluateFirstBaselineGate")
     expect(runnerCode).toContain("evaluateSecondBaselineState")
     expect(runnerCode).not.toContain("runFirstBaselineTransaction")
+  })
+
+  it("INVOKES the canonical second-baseline predicate directly, on the exact contract shape", () => {
+    // Not merely imported, and not reached only indirectly through the
+    // full-state predicate: the runner asks the canonical authority itself.
+    expect(runnerCode).toContain("evaluateSecondBaselineVerification,")
+    expect(runnerCode).toContain(
+      [
+        "const canonical = evaluateSecondBaselineVerification({",
+        "      historyRows,",
+        "      historyDistinctTeams,",
+        "      teamCount,",
+        "      rowsWritten: 0,",
+        "    })",
+      ].join("\n")
+    )
+  })
+
+  it("evaluates BOTH predicates and FAILS CLOSED if either one refuses", () => {
+    expect(runnerCode).toContain("const canonical = evaluateSecondBaselineVerification({")
+    expect(runnerCode).toContain("const fullState = evaluateSecondBaselineState(reading)")
+    expect(runnerCode).toContain("if (!canonical.ok || !fullState.ok) {")
+    // ...and the failure path exits non-zero rather than falling through.
+    const failClosed = runnerCode.slice(runnerCode.indexOf("if (!canonical.ok || !fullState.ok) {"))
+    expect(failClosed).toContain('console.error("SECOND BASELINE VERIFICATION: FAIL")')
+    expect(failClosed).toContain("process.exitCode = 1")
+    // The single PASS line is reachable only AFTER that guard.
+    expect(runnerCode.indexOf('"SECOND BASELINE VERIFICATION: PASS"')).toBeGreaterThan(
+      runnerCode.indexOf("if (!canonical.ok || !fullState.ok) {")
+    )
+    expect(runnerCode.match(/SECOND BASELINE VERIFICATION: PASS/g)).toHaveLength(1)
+  })
+
+  it("reports BOTH verdicts in the required terminal shape", () => {
+    expect(runnerCode).toContain('console.info("CANONICAL SECOND BASELINE:")')
+    expect(runnerCode).toContain('console.info("  ROWS WRITTEN: 0")')
+    expect(runnerCode).toContain("`  ROWS: ${historyRows ?? \"UNREADABLE\"}`")
+    expect(runnerCode).toContain("`  COVERAGE: ${historyDistinctTeams ?? \"UNREADABLE\"}/${teamCount ?? \"UNREADABLE\"}`")
+    expect(runnerCode).toContain("`  ${canonical.ok ? \"PASS\" : \"FAIL\"}`")
+    expect(runnerCode).toContain('console.info("FULL PRODUCTION INTEGRITY:")')
+    expect(runnerCode).toContain("`  ${fullState.ok ? \"PASS\" : \"FAIL\"}`")
   })
 
   it("reads the orphan through the canonical prefix and never repairs it", () => {

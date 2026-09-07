@@ -560,7 +560,9 @@ export interface HistoryRow extends InsertedRow {
  * ahead, and that the settlement counters are readable at all.
  */
 export interface EconomyActivityReading {
+  /** FinancialTransaction rows of type sponsorIncome - must be 0 before activation. */
   sponsorSettlementCount: number | null
+  /** FinancialTransaction rows of type stadiumMaintenance - must be 0 before activation. */
   maintenanceSettlementCount: number | null
   /** TeamEconomicState rows whose reason is "repricing" - must be 0 before activation. */
   repricingRowCount: number | null
@@ -612,8 +614,9 @@ export interface SecondBaselineReading {
  *   evaluateSecondBaselineVerification   0 new rows, 60 rows, 60/60 coverage
  *   the first-baseline gate's own verdict a second run COULD NOT run
  *
- * and adds what only this command checks: the per-row invariants, the two
- * economic aggregates, the repricing marker, and the acknowledged orphan.
+ * and adds what only this command checks: the per-row invariants, the frozen
+ * pre-activation contract (sponsor, maintenance and repricing all EXACTLY
+ * zero), and the acknowledged orphan.
  */
 export function evaluateSecondBaselineState(
   reading: SecondBaselineReading,
@@ -687,21 +690,46 @@ export function evaluateSecondBaselineState(
   }
 
   // --- 4. SPONSOR / MAINTENANCE / REPRICING ------------------------------
+  //
+  // THE FROZEN PHASE 3R PRE-ACTIVATION CONTRACT. Before the activation instant
+  // the economy is dormant by definition: no sponsor settlement, no stadium
+  // maintenance settlement, and no salary repricing has occurred. All three
+  // counters therefore have a knowable answer - EXACTLY ZERO - and all three
+  // are ASSERTED, not merely reported. A non-zero counter means Production ran
+  // economic activity it was frozen against, which is a refusal, not a note.
+  //
+  // Unreadable is kept STRICTLY SEPARATE from wrong for the two settlement
+  // counters: a null count fails as UNREADABLE and never as a false claim of
+  // activity, so the report never asserts a figure it could not measure. Both
+  // outcomes refuse; they simply refuse for different, honest reasons.
+  //
+  // The environment gate above independently requires that activation is still
+  // future, so these assertions are only ever reached inside the window where
+  // zero is the contract.
   if (!reading.activity) {
     refusals.push({ code: "ACTIVITY_UNREADABLE", detail: "sponsor / maintenance / repricing counters could not be read" })
   } else {
     pushIf(refusals, reading.activity.sponsorSettlementCount === null, "SPONSOR_COUNT_UNREADABLE", "sponsor settlement count could not be read")
     pushIf(
       refusals,
+      reading.activity.sponsorSettlementCount !== null && reading.activity.sponsorSettlementCount !== 0,
+      "SPONSOR_BEFORE_ACTIVATION",
+      `FinancialTransaction rows with type=${SPONSOR_TRANSACTION_TYPE}: ${reading.activity.sponsorSettlementCount} expected=0 while activation is still future`
+    )
+    pushIf(
+      refusals,
       reading.activity.maintenanceSettlementCount === null,
       "MAINTENANCE_COUNT_UNREADABLE",
       "stadium maintenance settlement count could not be read"
     )
+    pushIf(
+      refusals,
+      reading.activity.maintenanceSettlementCount !== null && reading.activity.maintenanceSettlementCount !== 0,
+      "MAINTENANCE_BEFORE_ACTIVATION",
+      `FinancialTransaction rows with type=${MAINTENANCE_TRANSACTION_TYPE}: ${reading.activity.maintenanceSettlementCount} expected=0 while activation is still future`
+    )
     // THE REPRICING MARKER. Activation is still ahead, so the crossing has not
-    // happened and no repricing row can legitimately be in history yet. This
-    // is the one assertion of the three, because it has a knowable answer;
-    // the settlement counters are reported rather than asserted, since this
-    // command has no independent authority for what they ought to be.
+    // happened and no repricing row can legitimately be in history yet.
     pushIf(
       refusals,
       reading.activity.repricingRowCount !== 0,

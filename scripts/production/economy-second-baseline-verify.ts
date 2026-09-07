@@ -29,21 +29,35 @@
  * A verification that measured history against a Production it had not
  * identified would be measuring something, but not the thing that matters.
  *
- * THEN, WHAT ONLY THIS COMMAND CHECKS:
- *   60 rows, 60/60 coverage, through evaluateSecondBaselineVerification -
- *     the canonical statement of the "0 new rows" contract
- *   every real club covered exactly once, against the actual roster
- *   every row version 1, reason baseline, effectiveAt before activation
- *   every row's weeklyPayroll a non-negative integer, and its
- *     attendanceQuality at or above ATTENDANCE_QUALITY_FLOOR
- *   sponsor and stadium-maintenance settlement counters readable
- *   ZERO repricing rows in history, because activation has not happened
- *   the acknowledged orphan still 3 rows netting +213629
- *   and the strict first-baseline gate now REFUSING on HISTORY_NOT_EMPTY,
- *     which is how "a second run writes 0 rows" is proved WITHOUT writing
+ * TWO PREDICATES ARE EVALUATED, AND BOTH MUST PASS.
+ *
+ * A. THE CANONICAL SECOND-BASELINE PREDICATE. This command imports
+ *    evaluateSecondBaselineVerification and invokes it DIRECTLY on the reading
+ *    it just took - rowsWritten 0, 60 rows, 60/60 coverage. That function is
+ *    the single written-down statement of the "0 new rows" contract, so the
+ *    verdict is read from the contract itself rather than restated here.
+ *
+ * B. THE SUPPLEMENTARY FULL-STATE PREDICATE, evaluateSecondBaselineState,
+ *    which composes the environment gate and the canonical predicate and adds
+ *    what only this command checks:
+ *      every real club covered exactly once, against the actual roster
+ *      every row version 1, reason baseline, effectiveAt before activation
+ *      every row's weeklyPayroll a non-negative integer, and its
+ *        attendanceQuality at or above ATTENDANCE_QUALITY_FLOOR
+ *      the FROZEN PHASE 3R PRE-ACTIVATION CONTRACT - sponsorIncome
+ *        settlements EXACTLY 0, stadiumMaintenance settlements EXACTLY 0,
+ *        salary repricing rows EXACTLY 0, because activation has not happened
+ *      the acknowledged orphan still 3 rows netting +213629
+ *      the strict first-baseline gate now REFUSING on HISTORY_NOT_EMPTY,
+ *        which is how "a second run writes 0 rows" is proved WITHOUT writing
+ *
+ * FAIL CLOSED. The final verdict is PASS only if BOTH A and B pass; either one
+ * refusing fails the whole command with a non-zero exit code.
  *
  * ANY UNREADABLE VALUE IS A REFUSAL. A verification that could not read is a
- * verification that failed, never one that passed quietly.
+ * verification that failed, never one that passed quietly. Unreadable is kept
+ * distinct from wrong: an unreadable sponsor or maintenance counter refuses as
+ * UNREADABLE, never as a false claim about pre-activation activity.
  *
  * CREDENTIALS: the Production database URL, a Render API key and a read-only
  * GitHub token - all three for READS. Deliberately NOT given
@@ -64,6 +78,7 @@ import {
   evaluateFirstBaselineGate,
   evaluateProductionEnvironmentGate,
   evaluateSecondBaselineState,
+  evaluateSecondBaselineVerification,
   orphanReferencePrefix,
   readOrphanFromRows,
   type CatalogReading,
@@ -190,7 +205,7 @@ async function main(): Promise<void> {
     const catalog = await readCatalog(prisma).catch(() => null)
     const teamCount = await prisma.team.count().catch(() => null)
     const historyRows = await countScalar(prisma, Prisma.sql`SELECT COUNT(*)::bigint AS n FROM "TeamEconomicState"`).catch(() => null)
-    const historyDistinct = await countScalar(
+    const historyDistinctTeams = await countScalar(
       prisma,
       Prisma.sql`SELECT COUNT(DISTINCT "teamId")::bigint AS n FROM "TeamEconomicState"`
     ).catch(() => null)
@@ -214,7 +229,7 @@ async function main(): Promise<void> {
       catalog,
       teamCount,
       historyRows,
-      historyDistinctTeams: historyDistinct,
+      historyDistinctTeams,
       now: new Date(),
     }
 
@@ -264,7 +279,7 @@ async function main(): Promise<void> {
       environment,
       teamCount,
       historyRows,
-      historyDistinctTeams: historyDistinct,
+      historyDistinctTeams,
       rows,
       teamIds,
       orphan,
@@ -303,8 +318,8 @@ async function main(): Promise<void> {
       console.info(`  weeklyPayroll:         min=${Math.min(...payrolls)} max=${Math.max(...payrolls)}`)
       console.info(`  attendanceQuality:     min=${Math.min(...qualities)} max=${Math.max(...qualities)} floor=${ATTENDANCE_QUALITY_FLOOR}`)
     }
-    console.info(`  sponsor settlements:   ${activity.sponsorSettlementCount ?? "UNREADABLE"}   (measured, not asserted)`)
-    console.info(`  maintenance settlements: ${activity.maintenanceSettlementCount ?? "UNREADABLE"} (measured, not asserted)`)
+    console.info(`  sponsor settlements:   ${activity.sponsorSettlementCount ?? "UNREADABLE"}   (must be 0 before activation)`)
+    console.info(`  maintenance settlements: ${activity.maintenanceSettlementCount ?? "UNREADABLE"} (must be 0 before activation)`)
     console.info(`  repricing rows:        ${activity.repricingRowCount ?? "UNREADABLE"}   (must be 0 before activation)`)
     console.info(`  historical orphan:     ${orphan ? `${orphan.transactionCount} rows, net ${orphan.net}` : "UNREADABLE"}`)
     console.info("")
@@ -314,18 +329,43 @@ async function main(): Promise<void> {
     for (const refusal of firstBaselineGate.refusals) console.info(`    [${refusal.code}] ${refusal.detail}`)
     console.info("")
 
-    const verdict = evaluateSecondBaselineState(reading)
-    if (!verdict.ok) {
-      for (const refusal of verdict.refusals) console.error(`  FAIL [${refusal.code}] ${refusal.detail}`)
-      console.error("")
+    // --- A. THE CANONICAL SECOND-BASELINE PREDICATE, INVOKED DIRECTLY -----
+    //
+    // rowsWritten is 0 by construction, not by measurement: this command has no
+    // write path that could produce any other number. The canonical predicate
+    // is still asked DIRECTLY, because it - not this file - is where "0 new
+    // rows, 60 rows, 60/60 coverage" is actually written down.
+    const canonical = evaluateSecondBaselineVerification({
+      historyRows,
+      historyDistinctTeams,
+      teamCount,
+      rowsWritten: 0,
+    })
+
+    // --- B. THE SUPPLEMENTARY FULL-STATE PREDICATE ------------------------
+    const fullState = evaluateSecondBaselineState(reading)
+
+    console.info("CANONICAL SECOND BASELINE:")
+    console.info("  ROWS WRITTEN: 0")
+    console.info(`  ROWS: ${historyRows ?? "UNREADABLE"}`)
+    console.info(`  COVERAGE: ${historyDistinctTeams ?? "UNREADABLE"}/${teamCount ?? "UNREADABLE"}`)
+    for (const refusal of canonical.refusals) console.error(`  FAIL [${refusal.code}] ${refusal.detail}`)
+    console.info(`  ${canonical.ok ? "PASS" : "FAIL"}`)
+    console.info("")
+
+    console.info("FULL PRODUCTION INTEGRITY:")
+    for (const refusal of fullState.refusals) console.error(`  FAIL [${refusal.code}] ${refusal.detail}`)
+    console.info(`  ${fullState.ok ? "PASS" : "FAIL"}`)
+    console.info("")
+
+    // FAIL CLOSED - either predicate refusing fails the whole command.
+    if (!canonical.ok || !fullState.ok) {
       console.error("SECOND BASELINE VERIFICATION: FAIL")
       process.exitCode = 1
       return
     }
 
-    console.info("ROWS WRITTEN THIS RUN: 0")
-    console.info("NEW ROWS POSSIBLE:     0 (the strict first baseline now refuses on HISTORY_NOT_EMPTY)")
-    console.info(`COVERAGE: ${reading.historyDistinctTeams}/${reading.teamCount}`)
+    console.info("NEW ROWS POSSIBLE: 0 (the strict first baseline now refuses on HISTORY_NOT_EMPTY)")
     console.info(`HISTORICAL ORPHAN: ${orphan?.transactionCount} rows, net ${orphan?.net} (unchanged)`)
     console.info("")
     console.info("SECOND BASELINE VERIFICATION: PASS")
