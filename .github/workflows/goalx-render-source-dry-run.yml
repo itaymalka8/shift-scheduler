@@ -1,0 +1,73 @@
+name: GoalX Render Source Migration — DRY RUN (read only)
+
+# Runs exactly one read-only Render source migration dry run.
+#
+# WHY THIS FILE EXISTS ON main: GitHub only offers a workflow_dispatch workflow
+# for manual dispatch when it is present on the repository's DEFAULT branch. The
+# full Production Operations workflow lives on claude/goalx-manager-game-y3ht29
+# and is therefore not dispatchable. Rather than move that workflow to main,
+# this is the smallest possible dedicated file that can run the one command.
+#
+# The workflow DEFINITION lives on main; the JOB checks out the exact immutable
+# tooling commit below and runs the command from there. main never receives the
+# application code.
+#
+# READ ONLY BY CONSTRUCTION, in three independent layers:
+#
+#   1. The command. `npm run prod:render:source-migrate` is
+#      `tsx scripts/production/render-source-migrate.ts` with no arguments. That
+#      script's contract: "DRY RUN IS THE DEFAULT. Without --execute this reads
+#      Render and GitHub... It writes nothing and needs no
+#      PRODUCTION_WRITE_CONFIRM." Mutation requires the literal `--execute`
+#      argument, which appears nowhere in this file.
+#
+#   2. The credentials. Only RENDER_API_KEY is passed. NEON_API_KEY,
+#      PRODUCTION_DATABASE_URL and PRODUCTION_WRITE_CONFIRM are deliberately
+#      absent, so no production write credential exists inside this job at all —
+#      the write guard cannot be satisfied even if something tried.
+#
+#   3. The token. `permissions: contents: read` and
+#      `persist-credentials: false` mean the job holds no credential that could
+#      write to git, so it cannot move a branch or push a commit.
+#
+# There is no Render mutation call, no Neon call, no backup creation, no Cron
+# suspend or resume, no deploy, and no baseline anywhere in this file.
+#
+# NO DISPATCH INPUTS. The dispatcher supplies nothing: no command, no arguments,
+# no flags. The command below is a fixed literal.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dry-run:
+    name: Render source migration dry run
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # Pinned to an immutable commit, never to a branch head, so what runs
+      # cannot change if the branch moves.
+      - name: Checkout the exact tooling commit
+        uses: actions/checkout@v4
+        with:
+          ref: 831ac5d673026bb3630d230ac4f6e3c1f45a94f3
+          persist-credentials: false
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The only production command in this workflow. No arguments, no
+      # --execute, no shell variable holding a command, nothing interpolated.
+      - name: Render source migration dry run
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: npm run prod:render:source-migrate
