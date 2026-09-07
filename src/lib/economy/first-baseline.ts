@@ -60,6 +60,7 @@
  */
 import { PHASE_3R_ACTIVATION_START } from "./config"
 import type { FinancialTransactionType } from "./service"
+import { ATTENDANCE_QUALITY_FLOOR } from "@/lib/stadium/attendance-quality"
 
 /** Exactly forty lowercase hex characters. Anything else is not a commit id. */
 const FULL_SHA = /^[0-9a-f]{40}$/
@@ -157,11 +158,20 @@ function sameCommit(actual: string | null, expected: string): boolean {
 }
 
 /**
- * THE PRE-WRITE GATE. Fails closed on every axis: an unreadable value is
- * refused identically to a wrong one, because "we could not tell" and "it is
- * wrong" are the same thing to a decision that cannot be taken back.
+ * THE PRODUCTION ENVIRONMENT GATE - everything that must be true of Production
+ * itself, independent of whether history exists yet.
+ *
+ * SHARED BY BOTH BASELINES, ON PURPOSE. The first baseline needs it plus "no
+ * history", and the second-baseline verification needs it plus "exactly the
+ * history the first baseline wrote". Extracting it means the two commands
+ * cannot drift into judging Production by different standards - there is one
+ * definition of "Production is in the approved state", and both read it.
+ *
+ * Fails closed on every axis: an unreadable value is refused identically to a
+ * wrong one, because "we could not tell" and "it is wrong" are the same thing
+ * to a decision that cannot be taken back.
  */
-export function evaluateFirstBaselineGate(
+export function evaluateProductionEnvironmentGate(
   reading: FirstBaselineReading,
   contract: typeof FIRST_BASELINE = FIRST_BASELINE,
   activationStart: Date = PHASE_3R_ACTIVATION_START
@@ -251,14 +261,30 @@ export function evaluateFirstBaselineGate(
     `now=${reading.now.toISOString()} activation=${activationStart.toISOString()}`
   )
 
-  // --- 7. THE FIRST-RUN SHAPE, and this is what makes it a FIRST baseline --
+  // --- 7. THE LEAGUE IS THE APPROVED SIZE ---------------------------------
   pushIf(refusals, reading.teamCount !== contract.expectedClubs, "CLUB_COUNT", `clubs=${reading.teamCount ?? "unreadable"} expected=${contract.expectedClubs}`)
+
+  return { ok: refusals.length === 0, refusals }
+}
+
+/**
+ * THE FIRST-BASELINE PRE-WRITE GATE: the environment gate, PLUS the one thing
+ * that makes a first baseline a FIRST baseline - that no history exists yet.
+ */
+export function evaluateFirstBaselineGate(
+  reading: FirstBaselineReading,
+  contract: typeof FIRST_BASELINE = FIRST_BASELINE,
+  activationStart: Date = PHASE_3R_ACTIVATION_START
+): { ok: boolean; refusals: Refusal[] } {
+  const environment = evaluateProductionEnvironmentGate(reading, contract, activationStart)
+  const refusals: Refusal[] = [...environment.refusals]
+
   pushIf(refusals, reading.historyRows !== 0, "HISTORY_NOT_EMPTY", `TeamEconomicState rows=${reading.historyRows ?? "unreadable"} expected=0`)
   pushIf(
     refusals,
     reading.historyDistinctTeams !== 0,
     "HISTORY_COVERAGE_NOT_ZERO",
-    `distinct covered teams=${reading.historyDistinctTeams ?? "unreadable"} expected=0`
+    `distinct covered teams=${reading.historyDistinctTeams ?? "unreadable"} expected=${0}`
   )
 
   return { ok: refusals.length === 0, refusals }
@@ -521,20 +547,48 @@ export async function runFirstBaselineTransaction<Tx>(
   return { inserted, startingRows, finalRows, distinctCovered, clubs: teamIds.length, before, after, orphanBefore, orphanAfter }
 }
 
+/** One TeamEconomicState row as the verification reads it - including the two economic aggregates. */
+export interface HistoryRow extends InsertedRow {
+  weeklyPayroll: number
+  attendanceQuality: number
+}
+
+/**
+ * ECONOMIC ACTIVITY SINCE THE BASELINE. Measured rather than assumed: the
+ * baseline established history and the league has been running since, so what
+ * matters is that no REPRICING has entered history while activation is still
+ * ahead, and that the settlement counters are readable at all.
+ */
+export interface EconomyActivityReading {
+  sponsorSettlementCount: number | null
+  maintenanceSettlementCount: number | null
+  /** TeamEconomicState rows whose reason is "repricing" - must be 0 before activation. */
+  repricingRowCount: number | null
+}
+
 /**
  * EVERYTHING THE SECOND-BASELINE VERIFICATION MEASURES. Every field may be
  * null, and null is always a refusal - a verification that cannot read is a
  * verification that failed, never one that passed quietly.
  */
 export interface SecondBaselineReading {
+  /**
+   * The FULL Production environment reading - canonical head, both services,
+   * Auto Deploy, deployed commits, Cron state and schedule, migrations,
+   * Migration 23, the 7-point catalog, activation, club count. Judged by
+   * evaluateProductionEnvironmentGate, the SAME authority the first baseline
+   * used, so the two commands cannot drift into different standards.
+   */
+  environment: FirstBaselineReading
   teamCount: number | null
   historyRows: number | null
   historyDistinctTeams: number | null
-  /** Every TeamEconomicState row, for the per-row invariants. */
-  rows: InsertedRow[] | null
+  /** Every TeamEconomicState row, for the per-row invariants and aggregates. */
+  rows: HistoryRow[] | null
   /** Every club id, so coverage is proved against the real roster of clubs. */
   teamIds: string[] | null
   orphan: OrphanReading | null
+  activity: EconomyActivityReading | null
   /**
    * The STRICT FIRST BASELINE GATE, evaluated against the CURRENT state.
    *
@@ -552,29 +606,43 @@ export interface SecondBaselineReading {
  * THE FULL SECOND-BASELINE VERIFICATION - a PURE PREDICATE over a reading.
  *
  * It takes no database client, holds no lock, and has no write path to reach
- * even by mistake. What it asserts is the post-first-baseline contract:
- * 60 clubs, 60 rows, 60 distinct, one row per club, every row version 1 and
- * reason baseline and stamped before activation, the acknowledged orphan
- * untouched - and, crucially, that re-running the first baseline now WOULD
- * REFUSE, which is what "0 new rows" means when nothing is allowed to run.
+ * even by mistake. It composes three authorities rather than restating them:
+ *
+ *   evaluateProductionEnvironmentGate    Production is in the approved state
+ *   evaluateSecondBaselineVerification   0 new rows, 60 rows, 60/60 coverage
+ *   the first-baseline gate's own verdict a second run COULD NOT run
+ *
+ * and adds what only this command checks: the per-row invariants, the two
+ * economic aggregates, the repricing marker, and the acknowledged orphan.
  */
 export function evaluateSecondBaselineState(
   reading: SecondBaselineReading,
   contract: typeof FIRST_BASELINE = FIRST_BASELINE,
-  activationStart: Date = PHASE_3R_ACTIVATION_START
+  activationStart: Date = PHASE_3R_ACTIVATION_START,
+  attendanceQualityFloor: number = ATTENDANCE_QUALITY_FLOOR
 ): { ok: boolean; refusals: Refusal[] } {
-  const refusals: Refusal[] = []
+  // --- 1. PRODUCTION IS IN THE APPROVED STATE -----------------------------
+  const environment = evaluateProductionEnvironmentGate(reading.environment, contract, activationStart)
+  const refusals: Refusal[] = environment.refusals.map((refusal) => ({ code: `ENV_${refusal.code}`, detail: refusal.detail }))
 
-  pushIf(refusals, reading.teamCount !== contract.expectedClubs, "CLUB_COUNT", `clubs=${reading.teamCount ?? "unreadable"} expected=${contract.expectedClubs}`)
-  pushIf(refusals, reading.historyRows !== contract.expectedClubs, "HISTORY_ROWS", `rows=${reading.historyRows ?? "unreadable"} expected=${contract.expectedClubs}`)
-  pushIf(
-    refusals,
-    reading.historyDistinctTeams !== contract.expectedClubs,
-    "HISTORY_COVERAGE",
-    `distinct covered=${reading.historyDistinctTeams ?? "unreadable"} expected=${contract.expectedClubs}`
+  // --- 2. THE COUNTS, THROUGH THE CANONICAL SECOND-BASELINE PREDICATE -----
+  //
+  // rowsWritten is 0 by construction: this command has no write path at all,
+  // so the number of rows it wrote is not a measurement but a property of what
+  // it is. The predicate is still asked, because it is the one place the
+  // "0 new rows, 60, 60/60" contract is written down.
+  const counts = evaluateSecondBaselineVerification(
+    {
+      historyRows: reading.historyRows,
+      historyDistinctTeams: reading.historyDistinctTeams,
+      teamCount: reading.teamCount,
+      rowsWritten: 0,
+    },
+    contract
   )
+  refusals.push(...counts.refusals)
 
-  // --- PER-ROW INVARIANTS ------------------------------------------------
+  // --- 3. PER-ROW INVARIANTS AND THE TWO ECONOMIC AGGREGATES -------------
   if (!reading.rows) {
     refusals.push({ code: "ROWS_UNREADABLE", detail: "TeamEconomicState rows could not be read" })
   } else {
@@ -590,6 +658,20 @@ export function evaluateSecondBaselineState(
         "EFFECTIVE_AT_NOT_BEFORE_ACTIVATION",
         `club ${row.teamId} effectiveAt=${row.effectiveAt.toISOString()}`
       )
+      // weeklyPayroll is a sum of wages: an integer, never negative.
+      pushIf(
+        refusals,
+        !Number.isInteger(row.weeklyPayroll) || row.weeklyPayroll < 0,
+        "WEEKLY_PAYROLL_INVALID",
+        `club ${row.teamId} weeklyPayroll=${row.weeklyPayroll}`
+      )
+      // attendanceQuality is floor + surplus, so it can never be below the floor.
+      pushIf(
+        refusals,
+        !Number.isInteger(row.attendanceQuality) || row.attendanceQuality < attendanceQualityFloor,
+        "ATTENDANCE_QUALITY_BELOW_FLOOR",
+        `club ${row.teamId} attendanceQuality=${row.attendanceQuality} floor=${attendanceQualityFloor}`
+      )
     }
     for (const [teamId, count] of perTeam) {
       pushIf(refusals, count !== 1, "DUPLICATE_TEAM_HISTORY", `club ${teamId} has ${count} rows`)
@@ -604,7 +686,31 @@ export function evaluateSecondBaselineState(
     }
   }
 
-  // --- THE ACKNOWLEDGED ORPHAN, STILL HISTORICAL TRUTH -------------------
+  // --- 4. SPONSOR / MAINTENANCE / REPRICING ------------------------------
+  if (!reading.activity) {
+    refusals.push({ code: "ACTIVITY_UNREADABLE", detail: "sponsor / maintenance / repricing counters could not be read" })
+  } else {
+    pushIf(refusals, reading.activity.sponsorSettlementCount === null, "SPONSOR_COUNT_UNREADABLE", "sponsor settlement count could not be read")
+    pushIf(
+      refusals,
+      reading.activity.maintenanceSettlementCount === null,
+      "MAINTENANCE_COUNT_UNREADABLE",
+      "stadium maintenance settlement count could not be read"
+    )
+    // THE REPRICING MARKER. Activation is still ahead, so the crossing has not
+    // happened and no repricing row can legitimately be in history yet. This
+    // is the one assertion of the three, because it has a knowable answer;
+    // the settlement counters are reported rather than asserted, since this
+    // command has no independent authority for what they ought to be.
+    pushIf(
+      refusals,
+      reading.activity.repricingRowCount !== 0,
+      "REPRICING_BEFORE_ACTIVATION",
+      `TeamEconomicState rows with reason=repricing: ${reading.activity.repricingRowCount ?? "unreadable"} expected=0 while activation is still future`
+    )
+  }
+
+  // --- 5. THE ACKNOWLEDGED ORPHAN, STILL HISTORICAL TRUTH ----------------
   if (!reading.orphan) {
     refusals.push({ code: "ORPHAN_UNREADABLE", detail: "the historical orphan could not be read" })
   } else {
@@ -618,7 +724,7 @@ export function evaluateSecondBaselineState(
     )
   }
 
-  // --- ZERO NEW ROWS, PROVED WITHOUT WRITING -----------------------------
+  // --- 6. ZERO NEW ROWS, PROVED WITHOUT WRITING --------------------------
   //
   // The first-baseline gate must now REFUSE, and specifically because history
   // is no longer empty. A gate that still PASSED would mean a second run could

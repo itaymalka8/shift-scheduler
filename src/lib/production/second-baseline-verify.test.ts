@@ -17,12 +17,16 @@ import { join } from "node:path"
 import {
   FIRST_BASELINE,
   evaluateFirstBaselineGate,
+  evaluateProductionEnvironmentGate,
   evaluateSecondBaselineState,
+  evaluateSecondBaselineVerification,
+  type EconomyActivityReading,
   type FirstBaselineReading,
-  type InsertedRow,
+  type HistoryRow,
   type OrphanReading,
   type SecondBaselineReading,
 } from "@/lib/economy/first-baseline"
+import { ATTENDANCE_QUALITY_FLOOR } from "@/lib/stadium/attendance-quality"
 
 const ROOT = join(__dirname, "..", "..", "..")
 const RUNNER_PATH = join(ROOT, "scripts/production/economy-second-baseline-verify.ts")
@@ -40,39 +44,72 @@ const workflowBody = workflow
 const ACTIVATION = new Date("2026-09-24T13:00:00.000Z")
 const STAMPED = new Date("2026-09-07T12:32:10.000Z")
 
+const TARGET = FIRST_BASELINE.targetCommit
 const clubIds = Array.from({ length: 60 }, (_, i) => `club-${String(i + 1).padStart(2, "0")}`)
-const healthyRows = (): InsertedRow[] => clubIds.map((teamId) => ({ teamId, version: 1, reason: "baseline", effectiveAt: STAMPED }))
+const healthyRows = (): HistoryRow[] =>
+  clubIds.map((teamId) => ({
+    teamId,
+    version: 1,
+    reason: "baseline",
+    effectiveAt: STAMPED,
+    weeklyPayroll: 41_000,
+    attendanceQuality: ATTENDANCE_QUALITY_FLOOR + 120,
+  }))
 const healthyOrphan = (): OrphanReading => ({
   fixtureId: FIRST_BASELINE.orphanFixtureId,
   transactionCount: FIRST_BASELINE.orphanTransactionCount,
   net: FIRST_BASELINE.orphanNet,
 })
+const healthyActivity = (): EconomyActivityReading => ({
+  sponsorSettlementCount: 0,
+  maintenanceSettlementCount: 0,
+  repricingRowCount: 0,
+})
+
+/** A FULL, healthy Production environment reading - the same shape the first baseline gates on. */
+const healthyEnvironment = (historyRows = 60, historyDistinctTeams = 60, teamCount = 60): FirstBaselineReading => ({
+  canonicalHead: TARGET,
+  web: { repo: FIRST_BASELINE.repo, branch: FIRST_BASELINE.branch, autoDeploy: "off", deployedCommit: TARGET },
+  cron: {
+    repo: FIRST_BASELINE.repo,
+    branch: FIRST_BASELINE.branch,
+    autoDeploy: "off",
+    deployedCommit: TARGET,
+    suspended: false,
+    schedule: FIRST_BASELINE.cronSchedule,
+  },
+  migrationsApplied: 23,
+  migrationsTotal: 23,
+  migration23Applied: true,
+  catalog: {
+    tableExists: true,
+    teamIdFkOnDeleteRestrict: true,
+    uniqueTeamIdVersion: true,
+    asOfIndex: true,
+    updateTriggerEnabled: true,
+    deleteTriggerEnabled: true,
+    truncateTriggerEnabled: true,
+  },
+  teamCount,
+  historyRows,
+  historyDistinctTeams,
+  now: STAMPED,
+})
 
 /** The first-baseline gate as it stands AFTER a completed first baseline. */
 function gateAfterBaseline(historyRows = 60, historyDistinctTeams = 60, teamCount = 60) {
-  const reading: FirstBaselineReading = {
-    canonicalHead: null,
-    web: null,
-    cron: null,
-    migrationsApplied: null,
-    migrationsTotal: null,
-    migration23Applied: null,
-    catalog: null,
-    teamCount,
-    historyRows,
-    historyDistinctTeams,
-    now: STAMPED,
-  }
-  return evaluateFirstBaselineGate(reading, FIRST_BASELINE, ACTIVATION)
+  return evaluateFirstBaselineGate(healthyEnvironment(historyRows, historyDistinctTeams, teamCount), FIRST_BASELINE, ACTIVATION)
 }
 
 const healthy = (): SecondBaselineReading => ({
+  environment: healthyEnvironment(),
   teamCount: 60,
   historyRows: 60,
   historyDistinctTeams: 60,
   rows: healthyRows(),
   teamIds: [...clubIds],
   orphan: healthyOrphan(),
+  activity: healthyActivity(),
   firstBaselineGate: gateAfterBaseline(),
   now: STAMPED,
 })
@@ -107,7 +144,10 @@ describe("the second baseline verification passes only on the exact post-baselin
   it("FAILS when a real club has no history, even if the counts look right", () => {
     const result = verify((r) => {
       // 60 rows, but two belong to one club and one club is missing.
-      r.rows = [...healthyRows().slice(0, 59), { teamId: "club-01", version: 2, reason: "baseline", effectiveAt: STAMPED }]
+      r.rows = [
+        ...healthyRows().slice(0, 59),
+        { teamId: "club-01", version: 2, reason: "baseline", effectiveAt: STAMPED, weeklyPayroll: 41_000, attendanceQuality: ATTENDANCE_QUALITY_FLOOR },
+      ]
     })
     expect(result.ok).toBe(false)
     expect(codes(result)).toEqual(expect.arrayContaining(["DUPLICATE_TEAM_HISTORY", "CLUB_NOT_COVERED", "VERSION_NOT_1"]))
@@ -163,6 +203,124 @@ describe("ZERO NEW ROWS is proved without writing", () => {
   })
 })
 
+describe("the FULL Production environment gate is enforced, not skipped", () => {
+  it("uses the SAME authority the first baseline used", () => {
+    // One definition of "Production is in the approved state", read by both.
+    expect(evaluateProductionEnvironmentGate(healthyEnvironment(), FIRST_BASELINE, ACTIVATION)).toEqual({ ok: true, refusals: [] })
+  })
+
+  const envCases: [string, (env: FirstBaselineReading) => void, string][] = [
+    ["a canonical head that is not the target", (env) => (env.canonicalHead = "1111111111111111111111111111111111111111"), "ENV_CANONICAL_HEAD"],
+    ["an unreadable canonical head", (env) => (env.canonicalHead = null), "ENV_CANONICAL_HEAD"],
+    ["a wrong Web source", (env) => (env.web!.repo = "https://github.com/itaymalka8/shift-scheduler"), "ENV_WEB_SOURCE"],
+    ["a wrong Cron source", (env) => (env.cron!.repo = "https://github.com/itaymalka8/shift-scheduler"), "ENV_CRON_SOURCE"],
+    ["a wrong Web branch", (env) => (env.web!.branch = "main"), "ENV_WEB_BRANCH"],
+    ["a wrong Cron branch", (env) => (env.cron!.branch = "main"), "ENV_CRON_BRANCH"],
+    ["Auto Deploy ON for Web", (env) => (env.web!.autoDeploy = "on"), "ENV_WEB_AUTO_DEPLOY"],
+    ["an UNREADABLE Auto Deploy for Cron", (env) => (env.cron!.autoDeploy = "unknown"), "ENV_CRON_AUTO_DEPLOY"],
+    ["a Web deployed commit that is not the target", (env) => (env.web!.deployedCommit = "1111111111111111111111111111111111111111"), "ENV_WEB_COMMIT"],
+    ["a Cron deployed commit that is not the target", (env) => (env.cron!.deployedCommit = "1111111111111111111111111111111111111111"), "ENV_CRON_COMMIT"],
+    ["a suspended Cron", (env) => (env.cron!.suspended = true), "ENV_CRON_NOT_ACTIVE"],
+    ["a wrong Cron schedule", (env) => (env.cron!.schedule = "*/5 * * * *"), "ENV_CRON_SCHEDULE"],
+    ["migrations that are not 23/23", (env) => (env.migrationsApplied = 22), "ENV_MIGRATIONS"],
+    ["a missing Migration 23", (env) => (env.migration23Applied = false), "ENV_MIGRATION_23"],
+    ["a disabled UPDATE protection trigger", (env) => (env.catalog!.updateTriggerEnabled = false), "ENV_CATALOG_UPDATE_TRIGGER"],
+    ["a disabled DELETE protection trigger", (env) => (env.catalog!.deleteTriggerEnabled = false), "ENV_CATALOG_DELETE_TRIGGER"],
+    ["a disabled TRUNCATE protection trigger", (env) => (env.catalog!.truncateTriggerEnabled = false), "ENV_CATALOG_TRUNCATE_TRIGGER"],
+    ["a missing as-of index", (env) => (env.catalog!.asOfIndex = false), "ENV_CATALOG_AS_OF_INDEX"],
+    ["an unreadable catalog", (env) => (env.catalog = null), "ENV_CATALOG_UNREADABLE"],
+    ["an activation boundary already reached", (env) => (env.now = new Date(ACTIVATION.getTime())), "ENV_ACTIVATION_NOT_FUTURE"],
+    ["an unreadable Web service", (env) => (env.web = null), "ENV_WEB_UNREADABLE"],
+    ["an unreadable Cron service", (env) => (env.cron = null), "ENV_CRON_UNREADABLE"],
+  ]
+
+  it.each(envCases)("FAILS the verification on %s", (_label, mutate, code) => {
+    const result = verify((r) => mutate(r.environment))
+    expect(result.ok).toBe(false)
+    expect(codes(result)).toContain(code)
+  })
+
+  it("reports environment refusals under an ENV_ prefix, so their origin is unambiguous", () => {
+    const result = verify((r) => (r.environment.canonicalHead = null))
+    expect(codes(result).filter((code) => code.startsWith("ENV_")).length).toBeGreaterThan(0)
+  })
+})
+
+describe("the counts go through the canonical second-baseline predicate", () => {
+  it("evaluateSecondBaselineVerification is the authority, and it agrees on the healthy state", () => {
+    expect(evaluateSecondBaselineVerification({ historyRows: 60, historyDistinctTeams: 60, teamCount: 60, rowsWritten: 0 })).toEqual({
+      ok: true,
+      refusals: [],
+    })
+  })
+
+  it("its refusal codes are the ones the verification reports", () => {
+    const direct = evaluateSecondBaselineVerification({ historyRows: 59, historyDistinctTeams: 59, teamCount: 60, rowsWritten: 0 })
+    const viaState = verify((r) => {
+      r.historyRows = 59
+      r.historyDistinctTeams = 59
+    })
+    for (const code of direct.refusals.map((refusal) => refusal.code)) expect(codes(viaState)).toContain(code)
+  })
+
+  it("rowsWritten is 0 by construction - this command has no write path to produce anything else", () => {
+    // The runner cannot write at all...
+    expect(/\$executeRaw|appendTeamEconomicState|\$transaction/.test(runnerCode)).toBe(false)
+    // ...so the predicate is handed a literal 0 in the core module, rather than
+    // a counter that something could increment.
+    const core = readFileSync(join(ROOT, "src/lib/economy/first-baseline.ts"), "utf8")
+    expect(core).toContain("rowsWritten: 0,")
+  })
+})
+
+describe("the economic aggregates and the repricing marker", () => {
+  it("FAILS on a negative or non-integer weeklyPayroll", () => {
+    expect(codes(verify((r) => (r.rows![3] = { ...r.rows![3], weeklyPayroll: -1 })))).toContain("WEEKLY_PAYROLL_INVALID")
+    expect(codes(verify((r) => (r.rows![3] = { ...r.rows![3], weeklyPayroll: 1.5 })))).toContain("WEEKLY_PAYROLL_INVALID")
+  })
+
+  it("FAILS on an attendanceQuality below the canonical floor", () => {
+    expect(codes(verify((r) => (r.rows![3] = { ...r.rows![3], attendanceQuality: ATTENDANCE_QUALITY_FLOOR - 1 })))).toContain(
+      "ATTENDANCE_QUALITY_BELOW_FLOOR"
+    )
+  })
+
+  it("accepts attendanceQuality exactly AT the floor - a squad of replacement players is legal", () => {
+    expect(verify((r) => (r.rows![3] = { ...r.rows![3], attendanceQuality: ATTENDANCE_QUALITY_FLOOR })).ok).toBe(true)
+  })
+
+  it("FAILS if any repricing row is in history while activation is still ahead", () => {
+    expect(codes(verify((r) => (r.activity!.repricingRowCount = 1)))).toContain("REPRICING_BEFORE_ACTIVATION")
+    expect(codes(verify((r) => (r.activity!.repricingRowCount = null)))).toContain("REPRICING_BEFORE_ACTIVATION")
+  })
+
+  it("REQUIRES the sponsor and maintenance counters to be READABLE", () => {
+    expect(codes(verify((r) => (r.activity!.sponsorSettlementCount = null)))).toContain("SPONSOR_COUNT_UNREADABLE")
+    expect(codes(verify((r) => (r.activity!.maintenanceSettlementCount = null)))).toContain("MAINTENANCE_COUNT_UNREADABLE")
+  })
+
+  it("does NOT assert a specific settlement count - it has no authority for what those ought to be", () => {
+    // A non-zero count is reported, not refused. Inventing an expected number
+    // would be asserting something this command cannot know.
+    expect(verify((r) => (r.activity!.sponsorSettlementCount = 240)).ok).toBe(true)
+    expect(verify((r) => (r.activity!.maintenanceSettlementCount = 17)).ok).toBe(true)
+  })
+
+  it("FAILS when the activity counters are entirely unreadable", () => {
+    expect(codes(verify((r) => (r.activity = null)))).toContain("ACTIVITY_UNREADABLE")
+  })
+
+  it("the runner measures sponsor and maintenance through the canonical typed constants", () => {
+    expect(runnerCode).toContain('WHERE "type" = ${SPONSOR_TRANSACTION_TYPE}')
+    expect(runnerCode).toContain('WHERE "type" = ${MAINTENANCE_TRANSACTION_TYPE}')
+    expect(runnerCode).toContain(`WHERE "reason" = 'repricing'`)
+  })
+
+  it("the runner reads weeklyPayroll and attendanceQuality from the history rows", () => {
+    expect(runnerCode).toContain('SELECT "teamId", "version", "reason", "effectiveAt", "weeklyPayroll", "attendanceQuality"')
+  })
+})
+
 describe("the verifier command has NO write path", () => {
   it("never requires or sets PRODUCTION_WRITE_CONFIRM", () => {
     expect(runnerCode).not.toContain("PRODUCTION_WRITE_CONFIRM")
@@ -181,8 +339,18 @@ describe("the verifier command has NO write path", () => {
     expect(runnerCode).not.toMatch(/\.create\(|\.createMany\(|\.update\(|\.updateMany\(|\.delete\(|\.deleteMany\(|\.upsert\(/)
   })
 
-  it("touches NO Render and NO Neon surface", () => {
-    expect(runnerCode).not.toMatch(/RENDER_API_KEY|NEON_API_KEY|render-ops|neon-ops|render-client|neon-client/)
+  it("touches NO Neon surface at all, and only READ helpers on Render", () => {
+    expect(runnerCode).not.toMatch(/NEON_API_KEY|neon-ops|neon-client|createBackupBranch|deleteBranch/)
+    expect(runnerCode).not.toMatch(/updateServiceSource|createDeploy|suspendCron|resumeCron|setWebServiceEnvVar/)
+  })
+
+  it("proves the FULL environment gate rather than skipping it", () => {
+    expect(runnerCode).toContain("evaluateProductionEnvironmentGate")
+    expect(runnerCode).toContain("readCanonicalHead")
+    expect(runnerCode).toContain("getWebServiceConfig")
+    expect(runnerCode).toContain("getCronServiceConfig")
+    expect(runnerCode).toContain("readCatalog")
+    expect(runnerCode).toContain("_prisma_migrations")
   })
 
   it("proves zero new rows through the GATE, not by running the baseline", () => {
@@ -226,21 +394,30 @@ describe("Workflow D - read-only dispatch surface", () => {
     expect(workflowBody).toContain("persist-credentials: false")
   })
 
-  it("holds EXACTLY ONE credential - the database URL - on EXACTLY ONE step", () => {
+  it("holds its credentials on EXACTLY ONE step, and they are exactly the three READS", () => {
     const envBlocks = [...workflowBody.matchAll(/^\s+env:\s*$/gm)]
     expect(envBlocks).toHaveLength(1)
     const start = workflowBody.indexOf("env:")
     const keys = [...workflowBody.slice(start).matchAll(/^\s+([A-Z_][A-Z0-9_]*):/gm)].map((m) => m[1])
-    expect(keys).toEqual(["PRODUCTION_DATABASE_URL"])
+    // Render and GitHub are needed to IDENTIFY Production before measuring it.
+    // Every call the command makes with them is a read.
+    expect([...keys].sort()).toEqual(["GITHUB_TOKEN", "PRODUCTION_DATABASE_URL", "RENDER_API_KEY"])
   })
 
   it("has NO PRODUCTION_WRITE_CONFIRM, so no mutating command could run", () => {
     expect(workflowBody).not.toContain("PRODUCTION_WRITE_CONFIRM")
   })
 
-  it("has NO NEON_API_KEY and NO RENDER_API_KEY", () => {
+  it("has NO NEON_API_KEY - no Neon branch can be created or deleted", () => {
     expect(workflowBody).not.toContain("NEON_API_KEY")
-    expect(workflowBody).not.toContain("RENDER_API_KEY")
+  })
+
+  it("the Render key it does hold cannot mutate, because every mutating helper needs the absent write confirmation", () => {
+    expect(workflowBody).toContain("RENDER_API_KEY")
+    expect(workflowBody).not.toContain("PRODUCTION_WRITE_CONFIRM")
+    // The command only calls read helpers.
+    expect(runnerCode).toMatch(/getWebServiceConfig|getCronServiceConfig|getCronStatus|getLatestDeploy/)
+    expect(runnerCode).not.toMatch(/updateServiceSource|createDeploy|suspendCron|resumeCron|setWebServiceEnvVar|setAutoDeploy/)
   })
 
   it("runs ONE fixed literal read-only command", () => {
