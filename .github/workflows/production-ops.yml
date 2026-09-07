@@ -1,0 +1,250 @@
+name: Production Operations
+
+# Manual-only, on purpose - this workflow never runs on push/PR/schedule.
+# Every invocation is a deliberate choice of exactly one command from the
+# dropdown below, triggered either from the GitHub Actions UI or via the
+# API (workflow_dispatch).
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "Production operation to run"
+        required: true
+        type: choice
+        options:
+          - prod:preflight
+          - prod:season-status
+          - prod:scheduled-check
+          - prod:post-deploy-check
+          - prod:render:status
+          - prod:render:source-migrate
+          - prod:backup:list
+          - prod:backup:prune
+          - prod:eras:classify
+          - prod:eras:verify
+          - prod:verify:player-stats
+          - prod:champions:verify
+          - prod:routes:check
+          - prod:retention:verify
+          - prod:players:distribution
+          - prod:players:samples
+          - prod:players:directory-audit
+          - prod:players:availability-audit
+          - prod:replenishment:verify
+          - prod:season:next-verify
+          - prod:economy:audit
+          - prod:economy:model
+          - prod:economy:calibrate
+          - prod:economy:confirm
+          - prod:economy:recalibrate
+          - prod:economy:activation
+          - prod:economy:regression
+          - prod:payroll:activation-check
+          - prod:render:autodeploy:off
+          - prod:backup:create
+          - prod:deploy:safe
+      branch_ids:
+        description: "prod:backup:prune only - explicit comma-separated Neon branch ids to inspect. This workflow can never DELETE a backup; see the note below."
+        required: false
+        type: string
+
+# ---------------------------------------------------------------------------
+# BACKUP DELETION IS NOT AVAILABLE FROM THIS WORKFLOW. DELIBERATELY.
+#
+# prod:backup:prune:execute permanently deletes Neon branches, which Neon
+# cannot undo and this project keeps no copy of. It used to be a dropdown
+# option whose only gate was "branch_ids must be non-empty" - and whoever
+# dispatches the workflow supplies branch_ids in the same dispatch, so the
+# gate was satisfied by the same action it was supposed to restrain. That is
+# how backups came to be deleted by an automated caller rather than by a
+# person who had read the plan.
+#
+# The obvious fix - a GitHub Environment with required reviewers on the
+# destructive job - is unavailable here: environment protection rules need
+# Pro/Team/Enterprise on a PRIVATE repository, and this one is private on a
+# personal account. So the capability is REMOVED rather than guarded, which
+# does not depend on a billing plan: deletion now requires a human running the
+# script in their own shell with NEON_API_KEY and PRODUCTION_WRITE_CONFIRM
+# present. An automated caller has neither.
+#
+# prod:backup:prune (no :execute) STAYS, and stays in the read-only job below,
+# where PRODUCTION_WRITE_CONFIRM is never in scope - so it cannot delete even
+# if asked to. It prints the full plan: branch ids, names, ages, which newer
+# recovery points supersede each one, and how many would remain.
+#
+# ---------------------------------------------------------------------------
+# prod:render:source-migrate IS HERE ON EXACTLY THE SAME TERMS.
+#
+# The command repoints both Render services at the canonical repository, and
+# its --execute path is a Production write. Only the DRY RUN is reachable from
+# this workflow, and that is enforced by construction rather than by a rule:
+#
+#   1. The dropdown value is the bare npm script name. The run step is
+#      `npm run "$COMMAND"` with the value quoted, so a dispatcher cannot
+#      append `-- --execute` - the whole string is one script name, and an
+#      unrecognised one fails at npm rather than running anything.
+#   2. There is no second input that reaches this command. branch_ids is read
+#      by prod:backup:prune alone.
+#   3. The read-only job never sets PRODUCTION_WRITE_CONFIRM, and the migration
+#      calls assertProductionWriteConfirmed before its first write. So even if
+#      an --execute somehow arrived, it would refuse before touching Render.
+#
+# Three independent barriers, any one of which is sufficient. Executing the
+# migration requires a human running the script in their own shell with both
+# RENDER_API_KEY and PRODUCTION_WRITE_CONFIRM present - the same standing as
+# backup deletion above.
+# ---------------------------------------------------------------------------
+#
+# If the account is ever upgraded, restore the job WITH
+# `environment: production-backup-destructive` and required reviewers. That is
+# strictly stronger than this, because it is enforced runner-side and cannot
+# be satisfied by the dispatcher.
+# ---------------------------------------------------------------------------
+
+# Secrets come ONLY from this repository's GitHub Secrets
+# (Settings > Secrets and variables > Actions): RENDER_API_KEY,
+# NEON_API_KEY, PRODUCTION_DATABASE_URL. They are never read from the
+# Claude Cloud environment, never committed, and never echoed - each job
+# below passes them straight from `secrets.*` into the process env of the
+# one script that needs them, and every scripts/production/*.ts script
+# already prints only host/database name or presence booleans, never a
+# credential value (see src/lib/production/env-guard.ts and report.ts).
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Every read-only production command. The three commands that mutate
+  # Production - prod:deploy:safe, prod:render:autodeploy:off and
+  # prod:backup:create - are deliberately excluded here; each gets its own job
+  # below, because PRODUCTION_WRITE_CONFIRM must never be in scope for a
+  # read-only run. prod:backup:prune (no :execute) IS read-only and belongs
+  # here: without the confirmation in scope it cannot delete even if asked to,
+  # and :execute is no longer reachable from this workflow at all. The same
+  # reasoning puts prod:render:source-migrate here - its dry run is read-only,
+  # and its --execute path cannot be reached from a dropdown value that is a
+  # bare script name (see the block above).
+  # ---------------------------------------------------------------------
+  read-only:
+    if: >-
+      github.event.inputs.command != 'prod:deploy:safe' &&
+      github.event.inputs.command != 'prod:render:autodeploy:off' &&
+      github.event.inputs.command != 'prod:backup:create'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Belt-and-suspenders on top of GitHub's automatic secret masking
+      # (which already masks the exact value of any `secrets.*` reference
+      # used in this job): PRODUCTION_DATABASE_URL is a connection string
+      # with a password embedded inside it, and GitHub's masking only
+      # matches the *whole* secret value verbatim - a log line that only
+      # contains the password substring (e.g. from a raw driver error)
+      # would not be caught by that alone. This step registers the
+      # password portion as an additional mask, so it's covered here too.
+      - name: Register additional secret masks
+        env:
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: |
+          PASSWORD=$(node -e "try{const u=new URL(process.env.PRODUCTION_DATABASE_URL||''); if(u.password) console.log(u.password)}catch(e){}")
+          if [ -n "$PASSWORD" ]; then echo "::add-mask::$PASSWORD"; fi
+
+      - name: Run production command
+        env:
+          COMMAND: ${{ github.event.inputs.command }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          # Read by prod:backup:prune only. This job never sets
+          # PRODUCTION_WRITE_CONFIRM, so a prune reaching it is a DRY RUN by
+          # construction - even PRUNE_EXECUTE could not make it delete.
+          PRUNE_BRANCH_IDS: ${{ github.event.inputs.branch_ids }}
+        run: npm run "$COMMAND"
+
+  # ---------------------------------------------------------------------
+  # prod:render:autodeploy:off only. Mutates Render service CONFIGURATION
+  # (the Auto Deploy flag) and nothing else - no deploy, no database, no
+  # suspend/resume. It needs PRODUCTION_WRITE_CONFIRM, so like the deploy
+  # job it lives on its own and NEON_API_KEY / PRODUCTION_DATABASE_URL are
+  # not passed to it at all: this command has no business touching either.
+  # ---------------------------------------------------------------------
+  autodeploy-off:
+    if: github.event.inputs.command == 'prod:render:autodeploy:off'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run prod:render:autodeploy:off
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          PRODUCTION_WRITE_CONFIRM: I_UNDERSTAND_THIS_CHANGES_PRODUCTION
+        run: npm run prod:render:autodeploy:off
+
+  # ---------------------------------------------------------------------
+  # prod:backup:create only. MUTATES the Neon account (provisions a new
+  # backup branch). No Render key, no database URL - creating a branch has
+  # no business with either.
+  # ---------------------------------------------------------------------
+  backup-create:
+    if: github.event.inputs.command == 'prod:backup:create'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run prod:backup:create
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          PRODUCTION_WRITE_CONFIRM: I_UNDERSTAND_THIS_CHANGES_PRODUCTION
+        run: npm run prod:backup:create
+
+  # ---------------------------------------------------------------------
+  # prod:deploy:safe only. PRODUCTION_WRITE_CONFIRM is set ONLY in this
+  # job's env - no other job in this workflow ever sees it, so no other
+  # command here can accidentally satisfy a write guard.
+  # ---------------------------------------------------------------------
+  safe-deploy:
+    if: github.event.inputs.command == 'prod:deploy:safe'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Register additional secret masks
+        env:
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: |
+          PASSWORD=$(node -e "try{const u=new URL(process.env.PRODUCTION_DATABASE_URL||''); if(u.password) console.log(u.password)}catch(e){}")
+          if [ -n "$PASSWORD" ]; then echo "::add-mask::$PASSWORD"; fi
+
+      - name: Run prod:deploy:safe
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          PRODUCTION_WRITE_CONFIRM: I_UNDERSTAND_THIS_CHANGES_PRODUCTION
+        run: npm run prod:deploy:safe

@@ -1,5 +1,21 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
+import { cookies } from "next/headers";
+import { Suspense } from "react";
 import { Geist, Geist_Mono } from "next/font/google";
+import { AuthSessionProvider } from "@/components/session-provider";
+import { LegacyCacheCleanup } from "@/components/legacy-cache-cleanup";
+import { CrestDefs } from "@/components/team-crest";
+import { GoalXNavigation } from "@/components/goalx-navigation";
+import { LocaleProvider } from "@/lib/i18n/locale-context";
+import { DEFAULT_LOCALE, LOCALE_DIR, isLocale } from "@/lib/i18n/translations";
+import {
+  DISPLAY_MODE_COOKIE,
+  DESKTOP_VIEWPORT_WIDTH,
+  MOBILE_VIEWPORT_WIDTH,
+  isDisplayMode,
+  type DisplayMode,
+} from "@/lib/display-mode";
+import { DisplayModeProvider } from "@/lib/display-mode-context";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -13,34 +29,72 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "מערכת ניהול משמרות חכמה",
-  description: "מערכת ניהול סידור עבודה של מודיעין בילוש שפט",
+  title: "Goalx Manager",
+  description: "משחק ניהול כדורגל מקוון - הקימו קבוצה ותתחרו נגד מנהלים אחרים",
+  icons: {
+    icon: "/logo.png",
+  },
+  manifest: "/manifest.json",
 };
 
-export default function RootLayout({
+// The one place the viewport's real width is decided - reads the same
+// display-mode cookie the root layout reads for the initial DisplayMode
+// value, so the <meta name="viewport"> tag lands correctly-sized in the
+// very first server-rendered HTML (no client-side tag mutation, no flash
+// of the wrong layout). "desktop" pins the browser to a desktop-width
+// viewport with no initialScale, so it auto-zooms the whole page out to
+// fit the physical screen exactly like a mobile browser's own "Request
+// Desktop Site" - never a fixed-width wrapper, which would just clip and
+// force horizontal scrolling instead of reflowing the page.
+export async function generateViewport(): Promise<Viewport> {
+  const cookieStore = await cookies();
+  const cookieMode = cookieStore.get(DISPLAY_MODE_COOKIE)?.value;
+  const mode: DisplayMode = isDisplayMode(cookieMode) ? cookieMode : "auto";
+
+  if (mode === "desktop") {
+    // initialScale must be explicitly undefined, not merely omitted - Next's
+    // own createDefaultViewport() bakes in initialScale: 1, and its merge
+    // only touches keys actually present on what we return here, so leaving
+    // this key off entirely lets that default value survive into the final
+    // tag (confirmed by inspecting the served HTML, not assumed). Only an
+    // explicit `undefined` clears it, per resolveViewportLayout's own
+    // falsy-check before writing the key to the meta content string.
+    return { width: DESKTOP_VIEWPORT_WIDTH, initialScale: undefined };
+  }
+  if (mode === "mobile") {
+    return { width: MOBILE_VIEWPORT_WIDTH, initialScale: 1 };
+  }
+  return { width: "device-width", initialScale: 1 };
+}
+
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const cookieStore = await cookies();
+  const cookieLocale = cookieStore.get("goalx-locale")?.value;
+  const locale = isLocale(cookieLocale) ? cookieLocale : DEFAULT_LOCALE;
+  const cookieDisplayMode = cookieStore.get(DISPLAY_MODE_COOKIE)?.value;
+  const displayMode: DisplayMode = isDisplayMode(cookieDisplayMode) ? cookieDisplayMode : "auto";
+
   return (
-    <html lang="he" dir="rtl">
-      <head>
-        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet" />
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-        <link rel="manifest" href="/manifest.json" />
-        <meta name="theme-color" content="#3b82f6" />
-        <meta name="apple-mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-        <meta name="apple-mobile-web-app-title" content="ניהול משמרות" />
-        <link rel="apple-touch-icon" href="/icon-192x192.png" />
-      </head>
+    <html lang={locale} dir={LOCALE_DIR[locale]}>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-        style={{ fontFamily: 'Inter, sans-serif' }}
       >
-        {children}
+        <CrestDefs />
+        <LegacyCacheCleanup />
+        <LocaleProvider initialLocale={locale}>
+          <DisplayModeProvider initialDisplayMode={displayMode}>
+            <AuthSessionProvider>
+              <Suspense fallback={null}>
+                <GoalXNavigation />
+              </Suspense>
+              {children}
+            </AuthSessionProvider>
+          </DisplayModeProvider>
+        </LocaleProvider>
       </body>
     </html>
   );

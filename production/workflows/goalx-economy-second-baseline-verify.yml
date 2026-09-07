@@ -1,0 +1,90 @@
+name: GoalX Economy — SECOND BASELINE VERIFICATION (read only)
+
+# THE REVIEWED SOURCE OF TRUTH FOR WORKFLOW D.
+#
+# Same arrangement as Workflow C: the dispatchable copy is published to
+# goalx-manager/main, and these bytes live outside .github/ so this copy can
+# never be dispatched from anywhere by accident. One token differs - `ref:`
+# reads __TOOLING_SHA__ here and the real pinned SHA there, because the SHA
+# does not exist until this file is committed.
+#
+# READ ONLY. THIS WORKFLOW CANNOT WRITE TO PRODUCTION, and that is a property of
+# what it is NOT given rather than a promise about what it does:
+#
+#   NO PRODUCTION_WRITE_CONFIRM. Every mutating command in this project refuses
+#   without it - including every mutating Render helper. This workflow never
+#   sets it, so nothing here could write even if invoked.
+#   NO NEON_API_KEY. No Neon branch can be created or deleted, at all.
+#
+# READ ONLY IS NOT THE SAME AS UNGATED. This verifies PRODUCTION, so it must
+# first identify Production, and that needs reads it cannot fake:
+#
+#   RENDER_API_KEY  reads both services - repo, branch, Auto Deploy, deployed
+#                   commit, Cron suspended state and schedule. Every call the
+#                   command makes is a GET; the Render helpers that mutate all
+#                   require PRODUCTION_WRITE_CONFIRM, which is absent.
+#   GITHUB_TOKEN    the job's automatic token under `permissions: contents: read`
+#                   - read-only, repo-scoped, expiring with the run - to read
+#                   the canonical branch head through the GitHub API. The
+#                   checkout does not persist a credential, so this is the only
+#                   way that read can happen.
+#   PRODUCTION_DATABASE_URL  SELECT statements only: no transaction, no lock,
+#                   no INSERT/UPDATE/DELETE, and no append primitive imported.
+#
+# A verification that measured history against a Production it had not
+# identified would be measuring something, but not the thing that matters.
+#
+# WHAT IT ANSWERS. The required second-baseline result is "0 new rows, 60/60
+# coverage". It proves the second half by measuring, and the first half WITHOUT
+# WRITING: it evaluates the strict first-baseline gate against the current state
+# and requires it to REFUSE with HISTORY_NOT_EMPTY. Running the baseline again
+# to watch it decline would put a write path one gate away from the league's
+# established history for no gain.
+#
+# NO DISPATCH INPUTS. No command, no arguments, no flags, no ref, no commit. The
+# command is a fixed literal and the checkout is pinned to an immutable SHA.
+#
+# NO CHAINING. Nothing triggers this workflow, and it triggers nothing.
+#
+# IT REPAIRS NOTHING. A failure is reported and the run ends non-zero. It never
+# writes a missing row, never touches the acknowledged historical orphan, and
+# never re-runs anything.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  economy-second-baseline-verify:
+    name: prod:economy:second-baseline-verify (read only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      # Pinned to the reviewed tooling commit, never to a branch head.
+      - name: Checkout the reviewed tooling commit
+        uses: actions/checkout@v4
+        with:
+          ref: __TOOLING_SHA__
+          persist-credentials: false
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The only command in this workflow, and the only step holding any
+      # credential. Read only: no PRODUCTION_WRITE_CONFIRM is provided, so no
+      # mutating command in this repository could run even if invoked, and no
+      # NEON_API_KEY, so no branch can be created or deleted.
+      - name: prod:economy:second-baseline-verify — READ ONLY
+        env:
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run prod:economy:second-baseline-verify
