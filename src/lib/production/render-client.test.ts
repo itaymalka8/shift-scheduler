@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import {
   createRenderClient,
   findServiceByName,
@@ -136,9 +138,54 @@ describe("defensive shape readers", () => {
     expect(readServiceDetail({ id: "s1", name: "n", type: "web_service" }, "s1").suspended).toBe("unknown")
   })
 
-  it("extracts cron schedule and command when present", () => {
-    const raw = { serviceDetails: { startCommand: "npm run process-scheduled-jobs", cronJobDetails: { schedule: "*/2 * * * *" } } }
+  /**
+   * THE SCHEDULE IS READ FROM TWO POSSIBLE SHAPES, and the value feeds a
+   * fail-closed gate: unreadable means the migration REFUSES. Dry run
+   * 34092378681 refused for exactly this reason - the live API returns the
+   * schedule at serviceDetails.schedule while this reader looked only at the
+   * nested serviceDetails.cronJobDetails.schedule.
+   */
+  it("reads the schedule from the LIVE shape: serviceDetails.schedule", () => {
+    const raw = { serviceDetails: { startCommand: "npm run process-scheduled-jobs", schedule: "*/2 * * * *" } }
     expect(readCronDetails(raw)).toEqual({ schedule: "*/2 * * * *", command: "npm run process-scheduled-jobs" })
+  })
+
+  it("still reads the nested legacy shape as a fallback", () => {
+    const raw = { serviceDetails: { startCommand: "npm run process-scheduled-jobs", cronJobDetails: { schedule: "*/5 * * * *" } } }
+    expect(readCronDetails(raw)).toEqual({ schedule: "*/5 * * * *", command: "npm run process-scheduled-jobs" })
+  })
+
+  it("prefers the top-level schedule when BOTH shapes are present", () => {
+    const raw = { serviceDetails: { schedule: "*/2 * * * *", cronJobDetails: { schedule: "*/30 * * * *" } } }
+    expect(readCronDetails(raw).schedule).toBe("*/2 * * * *")
+  })
+
+  it("falls back to the nested shape when the top-level one is unusable", () => {
+    for (const unusable of [null, undefined, 42, {}, [], "", "   "]) {
+      const raw = { serviceDetails: { schedule: unusable, cronJobDetails: { schedule: "*/7 * * * *" } } }
+      expect(readCronDetails(raw).schedule).toBe("*/7 * * * *")
+    }
+  })
+
+  it("returns null - never a default - when neither shape yields a string", () => {
+    expect(readCronDetails({}).schedule).toBeNull()
+    expect(readCronDetails({ serviceDetails: {} }).schedule).toBeNull()
+    expect(readCronDetails({ serviceDetails: { schedule: 123 } }).schedule).toBeNull()
+    expect(readCronDetails({ serviceDetails: { schedule: "", cronJobDetails: { schedule: "  " } } }).schedule).toBeNull()
+    expect(readCronDetails({ serviceDetails: { cronJobDetails: { schedule: null } } }).schedule).toBeNull()
+  })
+
+  it("returns null for a WEB service, which legitimately has no schedule", () => {
+    const web = { serviceDetails: { url: "https://goalx-manager.onrender.com", startCommand: "node .next/standalone/server.js" } }
+    expect(readCronDetails(web).schedule).toBeNull()
+  })
+
+  it("synthesizes nothing - the expected production schedule is not hardcoded in the reader", () => {
+    const source = readFileSync(join(__dirname, "render-client.ts"), "utf8")
+    const fn = source.slice(source.indexOf("export function readCronDetails"))
+    const body = fn.slice(0, fn.indexOf("\n}"))
+    expect(body.includes("*/2 * * * *")).toBe(false)
+    expect(body).not.toMatch(/\?\?\s*"/)
   })
 
   it("returns nulls for cron details on an unrecognized shape rather than guessing", () => {

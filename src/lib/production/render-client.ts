@@ -216,14 +216,43 @@ export interface RenderCronDetails {
   command: string | null
 }
 
-/** Render nests a Cron Job's schedule/command under serviceDetails.cronJobDetails / serviceDetails.startCommand on the full service object - extracted defensively per this file's header. */
+/**
+ * A Cron Job's schedule and command, from the full service object.
+ *
+ * TWO SHAPES ARE ACCEPTED, because Render has used both:
+ *
+ *   serviceDetails.schedule                  <- what the live API returns today
+ *   serviceDetails.cronJobDetails.schedule   <- the nested form this file was
+ *                                               originally written against
+ *
+ * Top level wins when it is a non-empty string; the nested form is the
+ * fallback. The nested-only path is kept rather than deleted: an account or API
+ * version still returning it would otherwise read as "unreadable", and this
+ * value feeds a fail-closed gate where unreadable means REFUSE.
+ *
+ * WHY THIS MATTERS MORE THAN A NORMAL FIELD READ. The migration's
+ * pre-migration gate compares this against the expected cron schedule and
+ * refuses on any mismatch - INCLUDING null. Reading the wrong path therefore
+ * does not degrade gracefully, it blocks the operation, which is exactly what
+ * happened on dry run 34092378681: the schedule was correct on Render and this
+ * function could not see it.
+ *
+ * NOTHING IS EVER SYNTHESIZED. There is no default, no inference from the
+ * service name or id, and no fallback to a configured or expected value - a
+ * schedule that cannot be read from the API returns null, and the caller
+ * refuses. An empty string is treated as unreadable for the same reason: it is
+ * not a schedule.
+ *
+ * The command is read from serviceDetails.startCommand, unchanged.
+ */
 export function readCronDetails(raw: Record<string, unknown>): RenderCronDetails {
   const serviceDetails = (raw.serviceDetails && typeof raw.serviceDetails === "object" ? raw.serviceDetails : {}) as Record<string, unknown>
   const cronJobDetails = (serviceDetails.cronJobDetails && typeof serviceDetails.cronJobDetails === "object" ? serviceDetails.cronJobDetails : {}) as Record<
     string,
     unknown
   >
-  const schedule = typeof cronJobDetails.schedule === "string" ? cronJobDetails.schedule : null
+  const readSchedule = (value: unknown): string | null => (typeof value === "string" && value.trim().length > 0 ? value : null)
+  const schedule = readSchedule(serviceDetails.schedule) ?? readSchedule(cronJobDetails.schedule)
   const command = typeof serviceDetails.startCommand === "string" ? serviceDetails.startCommand : null
   return { schedule, command }
 }

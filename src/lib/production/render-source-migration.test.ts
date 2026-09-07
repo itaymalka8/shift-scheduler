@@ -14,6 +14,7 @@ import {
   type MigrationDeps,
   type ServiceConfigSnapshot,
 } from "./render-source-migration"
+import { readCronDetails } from "./render-client"
 
 const ROOT = join(__dirname, "..", "..", "..")
 const C = RENDER_SOURCE_MIGRATION
@@ -876,5 +877,55 @@ describe("the deploy authority stays single, and resume stays inside it", () => 
     expect(client.match(/\/deploys`, \{ method: "POST"/g) ?? []).toHaveLength(1)
     expect(ops.match(/createDeploy\(/g) ?? []).toHaveLength(1)
     expect(ops.includes("triggerServiceDeploy")).toBe(false)
+  })
+})
+
+/**
+ * THE GATE'S CRON-SCHEDULE CHECK, end to end from the raw Render service object.
+ *
+ * Dry run 34092378681 refused with UNEXPECTED_CRON_SCHEDULE because the reader
+ * looked at the wrong path while Render's live shape put the schedule
+ * elsewhere. These assert the whole chain - raw API body -> readCronDetails ->
+ * snapshot -> gate - so a future reader change that reintroduces the same
+ * blindness fails here rather than on Production.
+ */
+describe("cron schedule flows from the raw Render shape into the gate", () => {
+  const okReading = (schedule: string | null) => ({
+    contract: C,
+    web: webSnapshot(),
+    cron: cronSnapshot({ schedule }),
+    githubHead: C.targetCommit,
+  })
+
+  it("PASSES when the schedule arrives via the LIVE shape serviceDetails.schedule", () => {
+    const rawCron = { serviceDetails: { schedule: C.cronSchedule, startCommand: "npm run process-scheduled-jobs" } }
+    const measured = readCronDetails(rawCron).schedule
+    expect(measured).toBe("*/2 * * * *")
+    expect(verifyPreMigrationState(okReading(measured))).toEqual({ ok: true, refusals: [] })
+  })
+
+  it("PASSES when it arrives via the nested legacy shape", () => {
+    const rawCron = { serviceDetails: { cronJobDetails: { schedule: C.cronSchedule } } }
+    expect(verifyPreMigrationState(okReading(readCronDetails(rawCron).schedule)).ok).toBe(true)
+  })
+
+  it("still REFUSES an actually wrong schedule", () => {
+    const rawCron = { serviceDetails: { schedule: "*/30 * * * *" } }
+    const r = verifyPreMigrationState(okReading(readCronDetails(rawCron).schedule))
+    expect(r.ok).toBe(false)
+    expect(r.refusals.map((x) => x.code)).toContain("UNEXPECTED_CRON_SCHEDULE")
+  })
+
+  it("still REFUSES an UNREADABLE schedule - this is the refusal we just saw in production", () => {
+    const rawCron = { serviceDetails: { startCommand: "npm run process-scheduled-jobs" } }
+    const measured = readCronDetails(rawCron).schedule
+    expect(measured).toBeNull()
+    const r = verifyPreMigrationState(okReading(measured))
+    expect(r.ok).toBe(false)
+    expect(r.refusals.find((x) => x.code === "UNEXPECTED_CRON_SCHEDULE")!.detail).toMatch(/\(unreadable\)/)
+  })
+
+  it("the expected schedule contract is unchanged", () => {
+    expect(C.cronSchedule).toBe("*/2 * * * *")
   })
 })
