@@ -1,0 +1,96 @@
+name: GoalX Economy — STRICT FIRST BASELINE (one time)
+
+# THE REVIEWED SOURCE OF TRUTH FOR WORKFLOW C.
+#
+# WHY IT LIVES HERE AND NOT IN .github/workflows. GitHub only dispatches a
+# workflow that exists on the repository's DEFAULT branch, so the file that
+# actually runs is published to goalx-manager/main. Keeping the reviewed bytes
+# in the tooling commit means the text can be diffed, tested and approved as
+# source; keeping them OUT of .github/ means this copy can never be dispatched
+# from anywhere by accident.
+#
+# ONE TOKEN DIFFERS between this file and the one on main: `ref:` below reads
+# __TOOLING_SHA__ here and the real pinned SHA there. It cannot be otherwise -
+# the SHA does not exist until this file is committed - so the placeholder is
+# explicit rather than a stale value pretending to be current. The published
+# SHA is reported with the commit, and first-baseline-workflow.test.ts pins
+# every other property of this file.
+#
+# MUTATES PRODUCTION. It writes the league's first sixty TeamEconomicState rows
+# in ONE all-or-nothing transaction. There is no partial outcome: either all
+# sixty commit or none does.
+#
+# IT IS NOT prod:economy:baseline. That command is the idempotent coverage
+# repair, which skips clubs that already have history. This one REFUSES to run
+# at all if a single row exists, and asserts the exact first-run shape before it
+# is allowed to commit. Two commands, two contracts, and no flag turns one into
+# the other.
+#
+# WHAT IT NEVER DOES: no Neon backup (the Workflow B backup
+# br-dry-river-b1ira70b already exists, and Neon is at 9 of 10 branches), no
+# Render change, no deploy, no branch movement, no retry, no second baseline,
+# no repair of anything it finds wrong. Every one of those is a refusal instead.
+#
+# NO NEON_API_KEY. The command cannot create or delete a Neon branch because it
+# is never given the credential to do so - a capability withheld rather than a
+# capability asked not to use.
+#
+# NO DISPATCH INPUTS. No command, no arguments, no flags, no ref, no commit and
+# no mode from the dispatcher. The command below is a fixed literal and the
+# checkout is pinned to an immutable SHA, so what runs cannot change if a branch
+# moves.
+#
+# NO CHAINING. Nothing triggers this workflow, and this workflow triggers
+# nothing. The second baseline verification is a separate human decision.
+#
+# CHECKOUT CREDENTIALS ARE NOT PERSISTED. The canonical head check therefore
+# reads the ref through the GitHub API, using the job's automatic GITHUB_TOKEN
+# under `permissions: contents: read` - read-only, scoped to this repository,
+# expiring with the run - given to the ONE step that runs the command, not to
+# the checkout and not to the job.
+#
+# ON THE ABSENT PASSWORD-MASK STEP. Workflow B registers the database
+# password substring as an extra Actions mask, in a step that must therefore
+# hold PRODUCTION_DATABASE_URL. Here the credential is confined to the single
+# Production command step, so that step does not exist. It costs nothing: this
+# command prints only the database HOST and NAME (parseDatabaseTarget), never
+# the URL and never the password, and Actions still masks the whole secret
+# value.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  economy-first-baseline:
+    name: prod:economy:first-baseline (strict, one time)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # Pinned to the reviewed tooling commit, never to a branch head.
+      - name: Checkout the reviewed tooling commit
+        uses: actions/checkout@v4
+        with:
+          ref: __TOOLING_SHA__
+          persist-credentials: false
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The only production command in this workflow, and the only step that
+      # receives any credential.
+      - name: prod:economy:first-baseline — STRICT FIRST BASELINE
+        env:
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRODUCTION_WRITE_CONFIRM: I_UNDERSTAND_THIS_CHANGES_PRODUCTION
+        run: npm run prod:economy:first-baseline
