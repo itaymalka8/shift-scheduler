@@ -1,4 +1,4 @@
-import { runDeploySafeWorkflow, type DeployWorkflowDeps } from "./deploy-workflow"
+import { runDeploySafeWorkflow, type DeploySafeHandoff, type DeployWorkflowDeps } from "./deploy-workflow"
 
 function makeDeps(overrides: Partial<DeployWorkflowDeps> = {}): DeployWorkflowDeps {
   return {
@@ -465,5 +465,148 @@ describe("step 0 - the auto-deploy guard, before any Production mutation", () =>
     expect(serialized).not.toMatch(/rnd_[A-Za-z0-9]/)
     expect(serialized).not.toMatch(/Bearer\s+\S/)
     expect(serialized).not.toMatch(/postgres(ql)?:\/\//)
+  })
+})
+
+/**
+ * HANDOFF MODE. Opt-in, and it exists for exactly one situation: the source
+ * migration has just repointed both Render services and left Cron SUSPENDED on
+ * purpose, because Render can turn a resume into a deployment (deploy trigger
+ * `service_resumed`). Without the option nothing about this workflow changes.
+ */
+describe("prod:deploy:safe handoff mode", () => {
+  function okHandoff(over: Partial<DeploySafeHandoff> = {}): DeploySafeHandoff {
+    return {
+      verify: jest.fn(async () => ({ ok: true, refusals: [] })),
+      verifyTargetCommits: jest.fn(async () => ({ ok: true, detail: "web=063342e cron=063342e" })),
+      ...over,
+    }
+  }
+
+  // Cron is ALREADY suspended when handoff mode starts, and stays suspended
+  // until the resume at step L.
+  function handoffCronStatus() {
+    return jest
+      .fn()
+      .mockResolvedValueOnce({ id: "cron-1", suspended: true }) // B. initial - already suspended
+      .mockResolvedValueOnce({ id: "cron-1", suspended: true }) // F. still suspended, no request sent
+      .mockResolvedValueOnce({ id: "cron-1", suspended: false }) // M. after resume
+  }
+
+  it("passes and NEVER sends a redundant suspend request", async () => {
+    const deps = makeDeps({ getCronStatus: handoffCronStatus() })
+    const result = await runDeploySafeWorkflow(deps, { handoff: okHandoff() })
+    expect(result.outcome).toBe("PASS")
+    expect(deps.suspendCron).not.toHaveBeenCalled()
+    expect(result.steps.find((s) => s.step === "E. Suspend cron")!.detail).toMatch(/no suspend request sent/)
+    // Step F still PROVES the suspension - only the redundant write is skipped.
+    expect(result.steps.find((s) => s.step === "F. Verify cron suspended")!.ok).toBe(true)
+  })
+
+  it("still creates AND verifies its own fresh Neon backup", async () => {
+    const deps = makeDeps({ getCronStatus: handoffCronStatus() })
+    const result = await runDeploySafeWorkflow(deps, { handoff: okHandoff() })
+    expect(deps.createBackup).toHaveBeenCalledTimes(1)
+    expect(deps.verifyBackup).toHaveBeenCalledTimes(1)
+    expect(result.backupBranchId).toBe("backup-1")
+  })
+
+  it("refuses BEFORE any Production mutation when the gate says no", async () => {
+    const deps = makeDeps()
+    const result = await runDeploySafeWorkflow(deps, {
+      handoff: okHandoff({ verify: jest.fn(async () => ({ ok: false, refusals: ["[CRON_NOT_SUSPENDED] cron is active"] })) }),
+    })
+    expect(result.outcome).toBe("FAIL")
+    expect(result.failedStep).toBe("0h. Source-migration handoff")
+    expect(result.reason).toMatch(/CRON_NOT_SUSPENDED/)
+    // Nothing was touched: no preflight, no backup, no suspend, no deploy.
+    expect(deps.runPreflight).not.toHaveBeenCalled()
+    expect(deps.createBackup).not.toHaveBeenCalled()
+    expect(deps.suspendCron).not.toHaveBeenCalled()
+    expect(deps.triggerDeploy).not.toHaveBeenCalled()
+  })
+
+  it("refuses when the gate itself cannot be evaluated - fail closed", async () => {
+    const deps = makeDeps()
+    const result = await runDeploySafeWorkflow(deps, {
+      handoff: okHandoff({
+        verify: jest.fn(async () => {
+          throw new Error("render unreachable")
+        }),
+      }),
+    })
+    expect(result.outcome).toBe("FAIL")
+    expect(result.failedStep).toBe("0h. Source-migration handoff")
+    expect(deps.createBackup).not.toHaveBeenCalled()
+  })
+
+  it("runs the gate AFTER the auto-deploy guard, so an Auto Deploy ON still refuses first", async () => {
+    const handoff = okHandoff()
+    const deps = makeDeps({ getAutoDeployReading: jest.fn(async () => ({ web: "on" as const, cron: "off" as const })) })
+    const result = await runDeploySafeWorkflow(deps, { handoff })
+    expect(result.failedStep).toBe("0. Auto-deploy guard")
+    expect(handoff.verify).not.toHaveBeenCalled()
+  })
+
+  it("resumes Cron only through this workflow, and then proves BOTH services are on the target commit", async () => {
+    const deps = makeDeps({ getCronStatus: handoffCronStatus() })
+    const handoff = okHandoff()
+    const result = await runDeploySafeWorkflow(deps, { handoff })
+    expect(result.outcome).toBe("PASS")
+    expect(deps.resumeCron).toHaveBeenCalledTimes(1)
+    expect(handoff.verifyTargetCommits).toHaveBeenCalledTimes(1)
+    const m2 = result.steps.find((s) => s.step === "M2. Verify target commit on both services")!
+    expect(m2.ok).toBe(true)
+    // M2 comes after the resume, because the resume itself can deploy.
+    const stepNames = result.steps.map((s) => s.step)
+    expect(stepNames.indexOf("L. Resume cron")).toBeLessThan(stepNames.indexOf("M2. Verify target commit on both services"))
+  })
+
+  it("FAILS when the post-resume commit check does not match, and never redeploys", async () => {
+    const deps = makeDeps({ getCronStatus: handoffCronStatus() })
+    const result = await runDeploySafeWorkflow(deps, {
+      handoff: okHandoff({ verifyTargetCommits: jest.fn(async () => ({ ok: false, detail: "web=063342e cron=cc86a0a expected=063342e" })) }),
+    })
+    expect(result.outcome).toBe("FAIL")
+    expect(result.failedStep).toBe("M2. Verify target commit on both services")
+    expect(deps.triggerDeploy).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("prod:deploy:safe normal mode is unchanged by the handoff work", () => {
+  it("still REQUESTS the suspend when no handoff is passed", async () => {
+    const deps = makeHappyPathDeps()
+    const result = await runDeploySafeWorkflow(deps)
+    expect(result.outcome).toBe("PASS")
+    expect(deps.suspendCron).toHaveBeenCalledTimes(1)
+    expect(result.steps.find((s) => s.step === "E. Suspend cron")!.detail).toBe("suspend requested")
+  })
+
+  it("adds no handoff step at all - the step list is exactly what it was", async () => {
+    const result = await runDeploySafeWorkflow(makeHappyPathDeps())
+    expect(result.steps.map((s) => s.step)).toEqual([
+      "0. Auto-deploy guard",
+      "A. Preflight",
+      "B. Render status",
+      "C. Create backup",
+      "D. Verify backup",
+      "E. Suspend cron",
+      "F. Verify cron suspended",
+      "G. Trigger deploy",
+      "H. Wait for deploy",
+      "I. Verify web live",
+      "J. Post-deploy check",
+      "K. Scheduled dry check",
+      "L. Resume cron",
+      "M. Verify cron active",
+      "N. Poll next cron run",
+    ])
+  })
+
+  it("passing an empty options object behaves identically to passing nothing", async () => {
+    const a = await runDeploySafeWorkflow(makeHappyPathDeps())
+    const b = await runDeploySafeWorkflow(makeHappyPathDeps(), {})
+    expect(b.steps.map((s) => s.step)).toEqual(a.steps.map((s) => s.step))
+    expect(b.outcome).toBe(a.outcome)
   })
 })

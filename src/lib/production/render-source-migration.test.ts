@@ -1,12 +1,16 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import {
+  PRE_DEPLOY_PRODUCTION_COMMIT,
   RENDER_SOURCE_MIGRATION,
   buildServiceSourcePatch,
   deployAppearedFromPatch,
   detectConfigDrift,
   runRenderSourceMigration,
+  verifyDeployHandoffState,
+  verifyPostDeployTargetCommits,
   verifyPreMigrationState,
+  type DeployHandoffReading,
   type MigrationDeps,
   type ServiceConfigSnapshot,
 } from "./render-source-migration"
@@ -86,10 +90,6 @@ function happyDeps(over: Partial<MigrationDeps> = {}): { deps: MigrationDeps; ca
       calls.push(`updateSource:${id}`)
       if (id === C.webServiceId) migrated.web = true
       else migrated.cron = true
-    },
-    resumeCron: async () => {
-      calls.push("resumeCron")
-      cronSuspended = false
     },
     ...over,
   }
@@ -261,7 +261,7 @@ describe("the orchestration - happy path", () => {
     expect(out.outcome).toBe("PASS")
     expect(out.recoveryRequired).toBe(false)
     expect(out.webSourceChanged && out.cronSourceChanged).toBe(true)
-    expect(out.cronState).toBe("active")
+    expect(out.cronState).toBe("suspended")
     // The whole point of the split: Production is still on the same commit.
     expect(out.deployedCommitBefore).toEqual(out.deployedCommitAfter)
     expect(out.deployedCommitAfter).toEqual({ web: "cc86a0a5a73cd1b2ce9957ede1476762e3876e7e", cron: "cc86a0a5a73cd1b2ce9957ede1476762e3876e7e" })
@@ -274,8 +274,8 @@ describe("the orchestration - happy path", () => {
     expect(idx("getCronSuspended")).toBeLessThan(idx("updateSource"))
     // Write confirmation is first of all.
     expect(idx("assertWriteConfirmed")).toBe(0)
-    // Resume, then a fail-closed re-read proving it is actually active.
-    expect(idx("updateSource")).toBeLessThan(idx("resumeCron"))
+    // Ends by re-proving Cron is still suspended - never by resuming it.
+    expect(calls).not.toContain("resumeCron")
     expect(calls[calls.length - 1]).toBe("getCronSuspended")
   })
 
@@ -294,7 +294,6 @@ describe("the orchestration - happy path", () => {
       "getCronSuspended",
       "readGithubHead",
       "readServiceSnapshot",
-      "resumeCron",
       "suspendCron",
       "updateSource",
       "verifyBackup",
@@ -318,7 +317,7 @@ describe("the orchestration - happy path", () => {
 })
 
 describe("the orchestration - nothing is written before the gate passes", () => {
-  const mutating = ["createBackup", "suspendCron", "updateSource", "resumeCron"]
+  const mutating = ["createBackup", "suspendCron", "updateSource"]
 
   it("a missing write confirmation stops before any read or write", async () => {
     const { deps, calls } = happyDeps({
@@ -459,29 +458,21 @@ describe("the orchestration - recovery semantics", () => {
     expect(calls.some((c) => c.toLowerCase().includes("deploy"))).toBe(false)
   })
 
-  it("a RESUME FAILURE leaves cron suspended and sets Recovery Required", async () => {
+  it("a Cron found ACTIVE at the end fails - something resumed it, and a resume can deploy", async () => {
+    let patches = 0
     const { deps } = happyDeps({
-      resumeCron: async () => {
-        throw new Error("Render API 500")
+      updateSource: async () => {
+        patches += 1
       },
+      readServiceSnapshot: async (id) =>
+        id === C.webServiceId ? webSnapshot(patches >= 1 ? { repo: C.toRepo } : {}) : cronSnapshot(patches >= 2 ? { repo: C.toRepo } : {}),
+      getCronSuspended: async () => patches < 2,
     })
     const out = await runRenderSourceMigration(deps)
     expect(out.outcome).toBe("FAIL")
-    expect(out.failedStep).toBe("20. Resume cron")
+    expect(out.failedStep).toBe("20-21. Cron left suspended (handoff)")
     expect(out.recoveryRequired).toBe(true)
-    expect(out.recoveryDetail).toMatch(/Cron is still suspended/)
-  })
-
-  it("a cron that does not report ACTIVE after resume is a failure, never assumed", async () => {
-    const { deps } = happyDeps({
-      resumeCron: async () => {
-        /* pretend the request succeeded but had no effect */
-      },
-    })
-    const out = await runRenderSourceMigration(deps)
-    expect(out.outcome).toBe("FAIL")
-    expect(out.failedStep).toBe("21. Verify cron active")
-    expect(out.cronState).toBe("suspended")
+    expect(out.cronState).toBe("active")
   })
 
   it("a FINAL CROSS-CHECK failure stops even when each service passed its own drift check", async () => {
@@ -683,11 +674,6 @@ describe("prod:render:source-migrate can never deploy, on any path", () => {
           throw new Error("patch failed")
         },
       },
-      {
-        resumeCron: async () => {
-          throw new Error("resume failed")
-        },
-      },
     ]
     for (const failure of failures) {
       const { deps, calls } = happyDeps(failure)
@@ -745,6 +731,149 @@ describe("prod:deploy:safe still works after the source swap", () => {
     // createDeploy takes no commitId - the pinning parameter went with the split.
     expect(client).toMatch(/export async function createDeploy\(client: RenderClient, serviceId: string\): Promise<RenderDeploySummary>/)
     // And render-ops exposes exactly one function that reaches it.
+    expect(ops.match(/createDeploy\(/g) ?? []).toHaveLength(1)
+    expect(ops.includes("triggerServiceDeploy")).toBe(false)
+  })
+})
+
+/**
+ * THE SUSPENDED HANDOFF. Render records a deploy trigger of `service_resumed`,
+ * so a resume can CREATE a deployment - which is why the migration must not
+ * resume, and why prod:deploy:safe's handoff mode has to re-prove everything.
+ */
+describe("the source migration never resumes Cron", () => {
+  const source = readFileSync(join(ROOT, "src/lib/production/render-source-migration.ts"), "utf8")
+  const script = readFileSync(join(ROOT, "scripts/production/render-source-migrate.ts"), "utf8")
+
+  it("declares no resume capability, so it cannot resume even by mistake", () => {
+    const iface = source.slice(source.indexOf("export interface MigrationDeps"))
+    expect(iface.slice(0, iface.indexOf("\n}")).includes("resume")).toBe(false)
+    const code = script.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
+    expect(code.includes("resumeCron")).toBe(false)
+  })
+
+  it("ends a SUCCESSFUL migration with Cron suspended, re-proved rather than assumed", async () => {
+    const { deps, calls } = happyDeps()
+    const out = await runRenderSourceMigration(deps)
+    expect(out.outcome).toBe("PASS")
+    expect(out.cronState).toBe("suspended")
+    // Suspension is confirmed AGAIN at the end - two PATCHes have happened since
+    // step 8, so the step-8 reading is not evidence about the end state.
+    expect(calls.filter((c) => c === "getCronSuspended")).toHaveLength(2)
+    expect(calls[calls.length - 1]).toBe("getCronSuspended")
+  })
+
+  it("says CRON STATE: SUSPENDED in its success output", () => {
+    expect(script).toContain("SOURCE MIGRATION COMPLETE")
+    expect(script).toContain("DEPLOY PERFORMED: NO")
+    expect(script).toContain("PRODUCTION COMMIT UNCHANGED")
+    expect(script).toContain("CRON STATE: SUSPENDED")
+    expect(script).toContain("NEXT APPROVED STEP: npm run prod:deploy:safe")
+  })
+
+  it("checks the deployed commit AFTER the last possible source mutation", async () => {
+    const { deps, calls } = happyDeps()
+    await runRenderSourceMigration(deps)
+    const lastPatch = calls.lastIndexOf(`updateSource:${C.cronServiceId}`)
+    // The final snapshots feeding step 19b are read after both PATCHes.
+    const snapshotsAfterLastPatch = calls.slice(lastPatch).filter((c) => c.startsWith("readServiceSnapshot"))
+    expect(snapshotsAfterLastPatch.length).toBeGreaterThanOrEqual(2)
+  })
+})
+
+describe("prod:deploy:safe handoff gate", () => {
+  const reading = (over: Partial<DeployHandoffReading> = {}): DeployHandoffReading => ({
+    web: webSnapshot({ repo: C.toRepo }),
+    cron: cronSnapshot({ repo: C.toRepo }),
+    githubHead: C.targetCommit,
+    cronSuspended: true,
+    ...over,
+  })
+  const codes = (r: DeployHandoffReading) => verifyDeployHandoffState({ contract: C, reading: r }).refusals.map((x) => x.code)
+
+  it("accepts the exact post-migration state", () => {
+    expect(verifyDeployHandoffState({ contract: C, reading: reading() })).toEqual({ ok: true, refusals: [] })
+  })
+
+  it("REFUSES if Cron is active - the handoff's defining precondition", () => {
+    expect(codes(reading({ cronSuspended: false }))).toContain("CRON_NOT_SUSPENDED")
+  })
+
+  it("REFUSES a repo that is not the canonical one, including the pre-migration repo", () => {
+    expect(codes(reading({ web: webSnapshot({ repo: C.fromRepo }) }))).toContain("SOURCE_NOT_MIGRATED")
+    expect(codes(reading({ cron: cronSnapshot({ repo: "https://github.com/someone/else" }) }))).toContain("SOURCE_NOT_MIGRATED")
+  })
+
+  it("REFUSES an unexpected branch", () => {
+    expect(codes(reading({ web: webSnapshot({ repo: C.toRepo, branch: "main" }) }))).toContain("UNEXPECTED_BRANCH")
+  })
+
+  it("REFUSES an unexpected service ID", () => {
+    expect(codes(reading({ web: webSnapshot({ repo: C.toRepo, id: "srv-other" }) }))).toContain("SERVICE_ID_MISMATCH")
+    expect(codes(reading({ cron: cronSnapshot({ repo: C.toRepo, id: "crn-other" }) }))).toContain("SERVICE_ID_MISMATCH")
+  })
+
+  it("REFUSES Auto Deploy ON, and equally UNKNOWN", () => {
+    for (const state of ["on", "unknown"] as const) {
+      expect(codes(reading({ web: webSnapshot({ repo: C.toRepo, autoDeploy: state }) }))).toContain("AUTO_DEPLOY_NOT_OFF")
+      expect(codes(reading({ cron: cronSnapshot({ repo: C.toRepo, autoDeploy: state }) }))).toContain("AUTO_DEPLOY_NOT_OFF")
+    }
+  })
+
+  it("REFUSES a GitHub head other than the exact target", () => {
+    expect(codes(reading({ githubHead: "e60910e8405edbc0f0a6d417f9e554ee76ac1952" }))).toContain("GITHUB_HEAD_MISMATCH")
+    expect(codes(reading({ githubHead: "" }))).toContain("GITHUB_HEAD_MISMATCH")
+  })
+
+  it("REFUSES if either deployed commit moved - an unexpected deploy since the migration", () => {
+    expect(codes(reading({ web: webSnapshot({ repo: C.toRepo, latestDeployCommit: C.targetCommit }) }))).toContain("UNEXPECTED_DEPLOY_SINCE_MIGRATION")
+    expect(codes(reading({ cron: cronSnapshot({ repo: C.toRepo, latestDeployCommit: null }) }))).toContain("UNEXPECTED_DEPLOY_SINCE_MIGRATION")
+  })
+
+  it("expects exactly cc86a0a as the pre-deploy production commit", () => {
+    expect(PRE_DEPLOY_PRODUCTION_COMMIT).toBe("cc86a0a5a73cd1b2ce9957ede1476762e3876e7e")
+  })
+
+  it("reports every refusal together, not just the first", () => {
+    const r = verifyDeployHandoffState({
+      contract: C,
+      reading: reading({ cronSuspended: false, githubHead: "deadbeef", web: webSnapshot({ repo: C.fromRepo, autoDeploy: "on" }) }),
+    })
+    expect(r.refusals.length).toBeGreaterThanOrEqual(4)
+  })
+
+  it("requires BOTH services on the target commit after the deploy and resume", () => {
+    expect(verifyPostDeployTargetCommits({ web: C.targetCommit, cron: C.targetCommit }, C.targetCommit).ok).toBe(true)
+    expect(verifyPostDeployTargetCommits({ web: C.targetCommit, cron: PRE_DEPLOY_PRODUCTION_COMMIT }, C.targetCommit).ok).toBe(false)
+    expect(verifyPostDeployTargetCommits({ web: PRE_DEPLOY_PRODUCTION_COMMIT, cron: C.targetCommit }, C.targetCommit).ok).toBe(false)
+    expect(verifyPostDeployTargetCommits({ web: null, cron: null }, C.targetCommit).ok).toBe(false)
+  })
+})
+
+describe("the deploy authority stays single, and resume stays inside it", () => {
+  it("resume appears in the deploy path and NOT in the migration path", () => {
+    const migration = readFileSync(join(ROOT, "src/lib/production/render-source-migration.ts"), "utf8")
+    const migrateScript = readFileSync(join(ROOT, "scripts/production/render-source-migrate.ts"), "utf8")
+    const workflow = readFileSync(join(ROOT, "src/lib/production/deploy-workflow.ts"), "utf8")
+    const strip = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
+
+    expect(strip(migration).includes("resumeCron")).toBe(false)
+    expect(strip(migrateScript).includes("resumeCron")).toBe(false)
+    expect(strip(workflow)).toContain("deps.resumeCron()")
+  })
+
+  it("the deploy-safe script gates handoff mode behind an explicit flag", () => {
+    const script = readFileSync(join(ROOT, "scripts/production/deploy-safe.ts"), "utf8")
+    expect(script).toMatch(/process\.argv\.slice\(2\)\.includes\("--handoff"\)/)
+    expect(script).toMatch(/DEPLOY_HANDOFF === "source-migration"/)
+    // The workflow only receives a handoff when it was explicitly requested.
+    expect(script).toMatch(/runDeploySafeWorkflow\(deps, handoffRequested \? \{ handoff: buildHandoff\(\) \} : \{\}\)/)
+  })
+
+  it("still has exactly one deploy authority after the handoff work", () => {
+    const client = readFileSync(join(ROOT, "src/lib/production/render-client.ts"), "utf8")
+    const ops = readFileSync(join(ROOT, "src/lib/production/render-ops.ts"), "utf8")
+    expect(client.match(/\/deploys`, \{ method: "POST"/g) ?? []).toHaveLength(1)
     expect(ops.match(/createDeploy\(/g) ?? []).toHaveLength(1)
     expect(ops.includes("triggerServiceDeploy")).toBe(false)
   })

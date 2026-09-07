@@ -18,6 +18,16 @@
  * approvals. So this command changes source metadata and stops; the deploy is
  * a separate, separately-approved run of prod:deploy:safe afterwards.
  *
+ * IT DOES NOT RESUME CRON, AND THAT IS THE POINT OF THE SUSPENDED HANDOFF.
+ * Render records a deploy trigger of `service_resumed`: resuming a suspended
+ * service can CREATE A DEPLOYMENT. A migration that resumed Cron would
+ * therefore be able to print "DEPLOY PERFORMED: NO" and then cause a deploy
+ * one call later, after its own final check had already passed - the check
+ * would be true when it ran and false by the time anyone read it. So a
+ * successful source migration ends with Cron DELIBERATELY SUSPENDED, and the
+ * resume happens inside prod:deploy:safe, where a resume-triggered deployment
+ * is part of the approved deploy rather than a surprise after one.
+ *
  * IT STILL SITS BEHIND THE FULL SAFETY ORDERING, because a source change is
  * itself a Production write with no cheap undo, and because Render could in
  * principle deploy off the back of one - the backup exists and Cron is down
@@ -254,13 +264,13 @@ export interface MigrationDeps {
   getCronSuspended: () => Promise<boolean>
   /** Issues the two-key PATCH. Implementations must go through updateServiceSource. */
   updateSource: (serviceId: string, repo: string, branch: string) => Promise<void>
-  resumeCron: () => Promise<void>
 }
 
 /**
  * NOTE ON WHAT IS ABSENT. There is deliberately no deploy dependency of any
- * kind here - no trigger, no wait, no post-deploy check. A dep this interface
- * does not declare is a call the orchestration cannot make, which is a stronger
+ * kind here - no trigger, no wait, no post-deploy check - and no RESUME either,
+ * because a resume can itself trigger a deployment. A dep this interface does
+ * not declare is a call the orchestration cannot make, which is a stronger
  * guarantee than a rule saying it must not.
  */
 
@@ -535,30 +545,119 @@ export async function runRenderSourceMigration(deps: MigrationDeps, contract: Mi
     return failDirty("19b. Deployed commit unchanged", "A deploy happened during the source migration.", deployMoved.join("; "))
   }
 
-  // 20. Resume Cron. Unlike prod:deploy:safe there is no deploy to be confident
-  //     about first - Cron is resumed onto the SAME code it was running before,
-  //     because nothing was deployed.
+  // 20-21. CRON IS LEFT SUSPENDED, DELIBERATELY, and that is re-confirmed here
+  //        rather than assumed from step 8 - the run has issued two PATCHes
+  //        since then. Resuming is what prod:deploy:safe does, inside the
+  //        approved deploy, precisely because a resume can trigger one.
   try {
-    await deps.resumeCron()
-    steps.push({ step: "20. Resume cron", ok: true, detail: "resume requested" })
+    const stillSuspended = await deps.getCronSuspended()
+    cronState = stillSuspended ? "suspended" : "active"
+    steps.push({ step: "20-21. Cron left suspended (handoff)", ok: stillSuspended, detail: `suspended=${stillSuspended}` })
+    if (!stillSuspended) {
+      return failDirty(
+        "20-21. Cron left suspended (handoff)",
+        "Cron is not suspended at the end of the migration - something resumed it.",
+        "Both sources migrated, but Cron is ACTIVE. A resume can trigger a deployment; check Render before running prod:deploy:safe.",
+      )
+    }
   } catch (error) {
     cronState = "unknown"
-    steps.push({ step: "20. Resume cron", ok: false, detail: errorMessage(error) })
-    return failDirty("20. Resume cron", `Failed to resume Cron: ${errorMessage(error)}`, "Both sources migrated; Cron is still suspended.")
+    steps.push({ step: "20-21. Cron left suspended (handoff)", ok: false, detail: errorMessage(error) })
+    return failDirty("20-21. Cron left suspended (handoff)", `Could not confirm Cron is still suspended: ${errorMessage(error)}`, "Both sources migrated; Cron state unknown.")
   }
 
-  // 21. Verify it is actually active - fail-closed, never assumed from step 20.
-  try {
-    const suspended = await deps.getCronSuspended()
-    cronState = suspended ? "suspended" : "active"
-    steps.push({ step: "21. Verify cron active", ok: !suspended, detail: `suspended=${suspended}` })
-    if (suspended) return failDirty("21. Verify cron active", "Cron did not report active after the resume request.", "Both sources migrated; Cron is still suspended.")
-  } catch (error) {
-    cronState = "unknown"
-    steps.push({ step: "21. Verify cron active", ok: false, detail: errorMessage(error) })
-    return failDirty("21. Verify cron active", `Could not confirm Cron active: ${errorMessage(error)}`, "Both sources migrated; Cron state unknown.")
-  }
-
-  // 22. Stop. The deploy is a separate, separately-approved prod:deploy:safe run.
+  // 22. Stop. Cron stays suspended until prod:deploy:safe picks up the handoff.
   return result("PASS", null, null, false, null)
+}
+
+/**
+ * The commit Production is running before the Phase 3R deploy, and must STILL
+ * be running when prod:deploy:safe picks up the handoff. If it has moved,
+ * something deployed in between and the handoff is not the state that was
+ * reviewed.
+ */
+export const PRE_DEPLOY_PRODUCTION_COMMIT = "cc86a0a5a73cd1b2ce9957ede1476762e3876e7e"
+
+export interface DeployHandoffReading {
+  web: ServiceConfigSnapshot
+  cron: ServiceConfigSnapshot
+  githubHead: string
+  cronSuspended: boolean
+}
+
+/**
+ * THE HANDOFF GATE, for prod:deploy:safe's opt-in handoff mode.
+ *
+ * A suspended Cron is normally a reason for the deploy pipeline to be
+ * suspicious - it means something interrupted a previous run. In handoff mode
+ * it is expected, because the source migration left it that way ON PURPOSE so
+ * that the resume (which Render can turn into a deployment - trigger
+ * `service_resumed`) happens inside the approved deploy rather than after an
+ * unrelated command has already declared success.
+ *
+ * Because that inverts a safety expectation, this gate is deliberately the
+ * strictest in the codebase: it re-proves the ENTIRE post-migration state
+ * before the deploy is allowed to mutate anything. Every field is fail-closed,
+ * an unreadable value is refused exactly like a wrong one, and all refusals are
+ * returned together.
+ */
+export function verifyDeployHandoffState(input: {
+  contract: MigrationContract
+  reading: DeployHandoffReading
+  expectedProductionCommit?: string
+}): { ok: boolean; refusals: MigrationRefusal[] } {
+  const { contract, reading } = input
+  const expectedProductionCommit = input.expectedProductionCommit ?? PRE_DEPLOY_PRODUCTION_COMMIT
+  const refusals: MigrationRefusal[] = []
+
+  // The handoff's defining precondition. An ACTIVE cron means either the
+  // migration did not finish, or something resumed it since - and a resume may
+  // already have deployed.
+  if (!reading.cronSuspended) {
+    refusals.push({ code: "CRON_NOT_SUSPENDED", detail: "handoff mode requires Cron to be already suspended by the source migration" })
+  }
+
+  if (reading.githubHead !== contract.targetCommit) {
+    refusals.push({ code: "GITHUB_HEAD_MISMATCH", detail: `canonical branch head is ${reading.githubHead || "(unreadable)"}, expected ${contract.targetCommit}` })
+  }
+
+  for (const [label, snap, expectedId] of [
+    ["web", reading.web, contract.webServiceId],
+    ["cron", reading.cron, contract.cronServiceId],
+  ] as const) {
+    if (snap.id !== expectedId) refusals.push({ code: "SERVICE_ID_MISMATCH", detail: `${label} id is ${snap.id}, expected ${expectedId}` })
+    // The migration must ALREADY have happened - this is the post-migration
+    // state, so the repo has to be the canonical one, not the old one.
+    if (snap.repo !== contract.toRepo) {
+      refusals.push({ code: "SOURCE_NOT_MIGRATED", detail: `${label} repo is ${snap.repo ?? "(unreadable)"}, expected ${contract.toRepo}` })
+    }
+    if (snap.branch !== contract.branch) {
+      refusals.push({ code: "UNEXPECTED_BRANCH", detail: `${label} branch is ${snap.branch ?? "(unreadable)"}, expected ${contract.branch}` })
+    }
+    if (snap.autoDeploy !== "off") {
+      refusals.push({ code: "AUTO_DEPLOY_NOT_OFF", detail: `${label} Auto Deploy is ${snap.autoDeploy}; it must be proven off` })
+    }
+    // No deploy may have happened between the migration and this handoff.
+    if (snap.latestDeployCommit !== expectedProductionCommit) {
+      refusals.push({
+        code: "UNEXPECTED_DEPLOY_SINCE_MIGRATION",
+        detail: `${label} deployed commit is ${snap.latestDeployCommit ?? "(unreadable)"}, expected ${expectedProductionCommit} - something deployed since the source migration`,
+      })
+    }
+  }
+
+  if (reading.cron.schedule !== contract.cronSchedule) {
+    refusals.push({ code: "UNEXPECTED_CRON_SCHEDULE", detail: `cron schedule is ${reading.cron.schedule ?? "(unreadable)"}, expected ${contract.cronSchedule}` })
+  }
+
+  return { ok: refusals.length === 0, refusals }
+}
+
+/** After the deploy AND the resume: both services must be running the approved commit. */
+export function verifyPostDeployTargetCommits(
+  deployed: { web: string | null; cron: string | null },
+  targetCommit: string
+): { ok: boolean; detail: string } {
+  const ok = deployed.web === targetCommit && deployed.cron === targetCommit
+  return { ok, detail: `web=${deployed.web ?? "unreadable"} cron=${deployed.cron ?? "unreadable"} expected=${targetCommit}` }
 }

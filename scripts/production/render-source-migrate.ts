@@ -14,7 +14,13 @@
  * move, Cron resume, and Cron-active verification. Then it stops.
  *
  * PRODUCTION KEEPS RUNNING THE COMMIT IT WAS ALREADY RUNNING. Only Render's
- * source metadata changes. Deploying is a separate, separately-approved run of
+ * source metadata changes.
+ *
+ * IT LEAVES CRON SUSPENDED ON PURPOSE. Render can turn a resume into a
+ * deployment (trigger `service_resumed`), so resuming here would let this
+ * command print "DEPLOY PERFORMED: NO" and then cause a deploy a call later.
+ * The resume belongs to prod:deploy:safe's handoff mode, where a
+ * resume-triggered deployment is part of the approved deploy. Deploying is a separate, separately-approved run of
  * `npm run prod:deploy:safe`, which remains this project's ONLY deployment
  * authority - there is no deploy call anywhere in this file or in the module it
  * drives.
@@ -33,13 +39,7 @@ import {
   verifyPreMigrationState,
   type MigrationDeps,
 } from "../../src/lib/production/render-source-migration"
-import {
-  getCronStatus,
-  getServiceConfigSnapshot,
-  migrateServiceSource,
-  resumeCron,
-  suspendCron,
-} from "../../src/lib/production/render-ops"
+import { getCronStatus, getServiceConfigSnapshot, migrateServiceSource, suspendCron } from "../../src/lib/production/render-ops"
 import { createBackupBranch, verifyBackupBranch } from "../../src/lib/production/neon-ops"
 import { NeonCredentialsMissingError } from "../../src/lib/production/neon-client"
 import { RenderCredentialsMissingError } from "../../src/lib/production/render-client"
@@ -71,7 +71,6 @@ const deps: MigrationDeps = {
   suspendCron: async () => suspendCron(),
   getCronSuspended: async () => (await getCronStatus()).suspended === true,
   updateSource: async (serviceId, repo, branch) => migrateServiceSource(serviceId, repo, branch),
-  resumeCron: async () => resumeCron(),
 }
 
 function describeSnapshot(label: string, s: Awaited<ReturnType<typeof getServiceConfigSnapshot>>): void {
@@ -108,6 +107,7 @@ async function main() {
         console.info(
           `PRODUCTION COMMIT UNCHANGED: web=${outcome.deployedCommitAfter?.web ?? "unknown"} cron=${outcome.deployedCommitAfter?.cron ?? "unknown"}`
         )
+        console.info("CRON STATE: SUSPENDED")
         console.info("NEXT APPROVED STEP: npm run prod:deploy:safe")
         return
       }

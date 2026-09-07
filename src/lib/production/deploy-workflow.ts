@@ -24,6 +24,18 @@
  * that read is missing or fails - never assumed from an earlier reading,
  * because Cron's real state may have changed since.
  *
+ * HANDOFF MODE (options.handoff) IS OPT-IN AND CHANGES EXACTLY TWO THINGS.
+ * With it absent - the default, and every existing caller - this workflow is
+ * byte-for-byte the pipeline it has always been. With it present, one extra
+ * gate runs before preflight (0h), and step E VERIFIES that Cron is already
+ * suspended instead of REQUESTING a suspend, because the source migration
+ * already suspended it deliberately. Nothing is skipped and nothing is
+ * weakened: the backup is still created and verified, the deploy still goes
+ * through the same single authority, and every post-deploy check still runs.
+ * One step is ADDED at the end (M2), because handoff mode is the case where a
+ * resume can itself deploy - so both services are re-read afterwards and
+ * required to be running the approved commit.
+ *
  * Step 0 runs before everything else, preflight included: if Render's Auto
  * Deploy is on (or cannot be read), this whole pipeline is theatre - a
  * push already reached Production without it - so it refuses before the
@@ -100,6 +112,24 @@ export interface DeployWorkflowDeps {
   resumeCron: () => Promise<void>
 }
 
+/**
+ * The suspended-Cron handoff from prod:render:source-migrate.
+ *
+ * ABSENT BY DEFAULT. Passing it is an explicit statement that a source
+ * migration just finished and left Cron suspended on purpose. `verify` is the
+ * caller-supplied gate over the whole post-migration state (see
+ * render-source-migration.ts's verifyDeployHandoffState) and MUST fail closed;
+ * `verifyTargetCommits` re-reads both services after the deploy and the resume.
+ */
+export interface DeploySafeHandoff {
+  verify: () => Promise<{ ok: boolean; refusals: string[] }>
+  verifyTargetCommits: () => Promise<{ ok: boolean; detail: string }>
+}
+
+export interface DeploySafeOptions {
+  handoff?: DeploySafeHandoff
+}
+
 const NEVER_AUTO_RESTORE = "Do not restore the database automatically - that is a human decision."
 
 function errorMessage(error: unknown): string {
@@ -127,7 +157,8 @@ function recoveryForPostDeployCronFailure(cronState: CronState): string {
   return `The deploy itself succeeded and the app is live, but the system did NOT return to full operational state - Cron is ${cronState.toUpperCase()}, not confirmed active. Manually check the Cron service on Render's dashboard and resume it once confirmed safe with \`PRODUCTION_WRITE_CONFIRM=I_UNDERSTAND_THIS_CHANGES_PRODUCTION npm run prod:cron:resume\`. ${NEVER_AUTO_RESTORE}`
 }
 
-export async function runDeploySafeWorkflow(deps: DeployWorkflowDeps): Promise<DeploySafeOutcome> {
+export async function runDeploySafeWorkflow(deps: DeployWorkflowDeps, options: DeploySafeOptions = {}): Promise<DeploySafeOutcome> {
+  const handoff = options.handoff ?? null
   const steps: DeploySafeStepLog[] = []
   let backupBranchId: string | null = null
   let webStatusText: string | null = null
@@ -213,6 +244,25 @@ export async function runDeploySafeWorkflow(deps: DeployWorkflowDeps): Promise<D
     return fail("0. Auto-deploy guard", autoDeployGuard.reason ?? "Auto Deploy guard refused.", recoveryForUntouchedCron("unknown"))
   }
 
+  // 0h. HANDOFF GATE - only when handoff mode was explicitly requested. It runs
+  //     before preflight and before any Production mutation, so a refusal here
+  //     costs nothing. Absent handoff mode, this block does not exist.
+  if (handoff) {
+    let verdict: { ok: boolean; refusals: string[] }
+    try {
+      verdict = await handoff.verify()
+    } catch (error) {
+      // A gate that could not be evaluated refuses, exactly like the
+      // auto-deploy guard above.
+      steps.push({ step: "0h. Source-migration handoff", ok: false, detail: `handoff state could not be read: ${errorMessage(error)}` })
+      return fail("0h. Source-migration handoff", `Handoff state could not be confirmed: ${errorMessage(error)}`, recoveryForUntouchedCron(cronState))
+    }
+    steps.push({ step: "0h. Source-migration handoff", ok: verdict.ok, detail: verdict.ok ? "post-migration state verified" : verdict.refusals.join("; ") })
+    if (!verdict.ok) {
+      return fail("0h. Source-migration handoff", `Handoff refused: ${verdict.refusals.join("; ")}`, recoveryForUntouchedCron(cronState))
+    }
+  }
+
   // A. Production Preflight
   const preflight = await deps.runPreflight()
   steps.push({ step: "A. Preflight", ok: preflight.pass, detail: preflight.summary })
@@ -250,13 +300,23 @@ export async function runDeploySafeWorkflow(deps: DeployWorkflowDeps): Promise<D
   steps.push({ step: "D. Verify backup", ok: backupOk, detail: `exists=${verification.exists} isChildOfProduction=${verification.isChildOfProduction}` })
   if (!backupOk) return failBeforeCronTouched("D. Verify backup", "Backup could not be verified - refusing to proceed without a confirmed backup.")
 
-  // E. Suspend Cron
-  try {
-    await deps.suspendCron()
-  } catch (error) {
-    return failAfterCronTouched("E. Suspend cron", `Failed to suspend Cron: ${errorMessage(error)}. Never proceed to deploy without a confirmed suspend.`)
+  // E. Suspend Cron.
+  //
+  //    IN HANDOFF MODE NO SUSPEND REQUEST IS SENT. Cron is already suspended by
+  //    the source migration, and gate 0h proved it; re-requesting it would be a
+  //    redundant Production write whose only effect could be a surprise. Step F
+  //    below then verifies the suspension exactly as it always does - the proof
+  //    is unchanged, only the redundant request is skipped.
+  if (handoff) {
+    steps.push({ step: "E. Suspend cron", ok: true, detail: "HANDOFF: already suspended by the source migration - no suspend request sent" })
+  } else {
+    try {
+      await deps.suspendCron()
+    } catch (error) {
+      return failAfterCronTouched("E. Suspend cron", `Failed to suspend Cron: ${errorMessage(error)}. Never proceed to deploy without a confirmed suspend.`)
+    }
+    steps.push({ step: "E. Suspend cron", ok: true, detail: "suspend requested" })
   }
-  steps.push({ step: "E. Suspend cron", ok: true, detail: "suspend requested" })
 
   // F. Verify Cron is suspended
   let cronAfterSuspend: ServiceStatus
@@ -389,6 +449,29 @@ export async function runDeploySafeWorkflow(deps: DeployWorkflowDeps): Promise<D
       "Deploy succeeded, but Cron did not report active after the resume request. The system did not return to full operational state.",
       recoveryForPostDeployCronFailure(cronState)
     )
+  }
+
+  // M2. HANDOFF ONLY: prove both services are actually running the approved
+  //     commit AFTER the resume. This is the step the whole suspended handoff
+  //     exists for - Render can turn a resume into a deployment, so the resume
+  //     that just happened may itself have deployed the Cron service, and that
+  //     deployment has to be the approved commit like any other.
+  if (handoff) {
+    let targets: { ok: boolean; detail: string }
+    try {
+      targets = await handoff.verifyTargetCommits()
+    } catch (error) {
+      steps.push({ step: "M2. Verify target commit on both services", ok: false, detail: errorMessage(error) })
+      return fail("M2. Verify target commit on both services", `Could not read the deployed commits: ${errorMessage(error)}`, recoveryForPostDeployCronFailure(cronState))
+    }
+    steps.push({ step: "M2. Verify target commit on both services", ok: targets.ok, detail: targets.detail })
+    if (!targets.ok) {
+      return fail(
+        "M2. Verify target commit on both services",
+        `Deploy and resume completed but the services are not both on the approved commit: ${targets.detail}`,
+        recoveryForPostDeployCronFailure(cronState)
+      )
+    }
   }
 
   // N. Poll for next successful Cron run - LIMITATION, not invented. Render's
