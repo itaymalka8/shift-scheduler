@@ -522,6 +522,125 @@ export async function runFirstBaselineTransaction<Tx>(
 }
 
 /**
+ * EVERYTHING THE SECOND-BASELINE VERIFICATION MEASURES. Every field may be
+ * null, and null is always a refusal - a verification that cannot read is a
+ * verification that failed, never one that passed quietly.
+ */
+export interface SecondBaselineReading {
+  teamCount: number | null
+  historyRows: number | null
+  historyDistinctTeams: number | null
+  /** Every TeamEconomicState row, for the per-row invariants. */
+  rows: InsertedRow[] | null
+  /** Every club id, so coverage is proved against the real roster of clubs. */
+  teamIds: string[] | null
+  orphan: OrphanReading | null
+  /**
+   * The STRICT FIRST BASELINE GATE, evaluated against the CURRENT state.
+   *
+   * This is how "a second run would write 0 rows" is proved WITHOUT writing:
+   * the first-baseline command refuses unless history is empty, so a gate that
+   * now refuses with HISTORY_NOT_EMPTY is a gate that cannot reach its write
+   * loop. The claim is established by the same code path that would do the
+   * writing, rather than by running it and hoping it declines.
+   */
+  firstBaselineGate: { ok: boolean; refusals: Refusal[] }
+  now: Date
+}
+
+/**
+ * THE FULL SECOND-BASELINE VERIFICATION - a PURE PREDICATE over a reading.
+ *
+ * It takes no database client, holds no lock, and has no write path to reach
+ * even by mistake. What it asserts is the post-first-baseline contract:
+ * 60 clubs, 60 rows, 60 distinct, one row per club, every row version 1 and
+ * reason baseline and stamped before activation, the acknowledged orphan
+ * untouched - and, crucially, that re-running the first baseline now WOULD
+ * REFUSE, which is what "0 new rows" means when nothing is allowed to run.
+ */
+export function evaluateSecondBaselineState(
+  reading: SecondBaselineReading,
+  contract: typeof FIRST_BASELINE = FIRST_BASELINE,
+  activationStart: Date = PHASE_3R_ACTIVATION_START
+): { ok: boolean; refusals: Refusal[] } {
+  const refusals: Refusal[] = []
+
+  pushIf(refusals, reading.teamCount !== contract.expectedClubs, "CLUB_COUNT", `clubs=${reading.teamCount ?? "unreadable"} expected=${contract.expectedClubs}`)
+  pushIf(refusals, reading.historyRows !== contract.expectedClubs, "HISTORY_ROWS", `rows=${reading.historyRows ?? "unreadable"} expected=${contract.expectedClubs}`)
+  pushIf(
+    refusals,
+    reading.historyDistinctTeams !== contract.expectedClubs,
+    "HISTORY_COVERAGE",
+    `distinct covered=${reading.historyDistinctTeams ?? "unreadable"} expected=${contract.expectedClubs}`
+  )
+
+  // --- PER-ROW INVARIANTS ------------------------------------------------
+  if (!reading.rows) {
+    refusals.push({ code: "ROWS_UNREADABLE", detail: "TeamEconomicState rows could not be read" })
+  } else {
+    pushIf(refusals, reading.rows.length !== contract.expectedClubs, "ROWS_READBACK", `read back ${reading.rows.length} rows expected=${contract.expectedClubs}`)
+    const perTeam = new Map<string, number>()
+    for (const row of reading.rows) {
+      perTeam.set(row.teamId, (perTeam.get(row.teamId) ?? 0) + 1)
+      pushIf(refusals, row.version !== 1, "VERSION_NOT_1", `club ${row.teamId} version=${row.version}`)
+      pushIf(refusals, row.reason !== "baseline", "REASON_NOT_BASELINE", `club ${row.teamId} reason=${row.reason}`)
+      pushIf(
+        refusals,
+        !(row.effectiveAt.getTime() < activationStart.getTime()),
+        "EFFECTIVE_AT_NOT_BEFORE_ACTIVATION",
+        `club ${row.teamId} effectiveAt=${row.effectiveAt.toISOString()}`
+      )
+    }
+    for (const [teamId, count] of perTeam) {
+      pushIf(refusals, count !== 1, "DUPLICATE_TEAM_HISTORY", `club ${teamId} has ${count} rows`)
+    }
+    // Coverage against the REAL roster of clubs, not merely sixty distinct ids.
+    if (!reading.teamIds) {
+      refusals.push({ code: "TEAM_IDS_UNREADABLE", detail: "club ids could not be read" })
+    } else {
+      for (const teamId of reading.teamIds) {
+        pushIf(refusals, !perTeam.has(teamId), "CLUB_NOT_COVERED", `club ${teamId} has no economic history`)
+      }
+    }
+  }
+
+  // --- THE ACKNOWLEDGED ORPHAN, STILL HISTORICAL TRUTH -------------------
+  if (!reading.orphan) {
+    refusals.push({ code: "ORPHAN_UNREADABLE", detail: "the historical orphan could not be read" })
+  } else {
+    pushIf(
+      refusals,
+      reading.orphan.fixtureId !== contract.orphanFixtureId ||
+        reading.orphan.transactionCount !== contract.orphanTransactionCount ||
+        reading.orphan.net !== contract.orphanNet,
+      "ORPHAN_NOT_HISTORICAL_TRUTH",
+      `fixture=${reading.orphan.fixtureId} rows=${reading.orphan.transactionCount} net=${reading.orphan.net}; expected ${contract.orphanFixtureId} / ${contract.orphanTransactionCount} / ${contract.orphanNet}`
+    )
+  }
+
+  // --- ZERO NEW ROWS, PROVED WITHOUT WRITING -----------------------------
+  //
+  // The first-baseline gate must now REFUSE, and specifically because history
+  // is no longer empty. A gate that still PASSED would mean a second run could
+  // reach its write loop, which is the opposite of what this verifies.
+  const gateCodes = reading.firstBaselineGate.refusals.map((refusal) => refusal.code)
+  pushIf(
+    refusals,
+    reading.firstBaselineGate.ok,
+    "FIRST_BASELINE_WOULD_STILL_RUN",
+    "the strict first baseline gate still PASSES - a second run could write rows"
+  )
+  pushIf(
+    refusals,
+    !gateCodes.includes("HISTORY_NOT_EMPTY"),
+    "GATE_NOT_REFUSING_ON_HISTORY",
+    `expected HISTORY_NOT_EMPTY among the gate's refusals; got [${gateCodes.join(", ")}]`
+  )
+
+  return { ok: refusals.length === 0, refusals }
+}
+
+/**
  * THE SECOND BASELINE IS A DIFFERENT QUESTION, ASKED READ-ONLY.
  *
  * After the first baseline commits, the required second result is "0 new rows,

@@ -1,0 +1,75 @@
+name: GoalX Economy — SECOND BASELINE VERIFICATION (read only)
+
+# THE REVIEWED SOURCE OF TRUTH FOR WORKFLOW D.
+#
+# Same arrangement as Workflow C: the dispatchable copy is published to
+# goalx-manager/main, and these bytes live outside .github/ so this copy can
+# never be dispatched from anywhere by accident. One token differs - `ref:`
+# reads __TOOLING_SHA__ here and the real pinned SHA there, because the SHA
+# does not exist until this file is committed.
+#
+# READ ONLY. THIS WORKFLOW CANNOT WRITE TO PRODUCTION, and that is a property of
+# what it is NOT given rather than a promise about what it does:
+#
+#   NO PRODUCTION_WRITE_CONFIRM. Every mutating command in this project refuses
+#   without it. This workflow never sets it, so even a command that wanted to
+#   write could not.
+#   NO NEON_API_KEY. No Neon branch can be created or deleted.
+#   NO RENDER_API_KEY. No service can be changed, suspended, resumed or deployed.
+#   NO GITHUB_TOKEN beyond the job's read-only default under contents: read.
+#
+# ONE CREDENTIAL: PRODUCTION_DATABASE_URL, on the single command step. The
+# command it runs issues SELECT statements only - no transaction, no lock, no
+# INSERT/UPDATE/DELETE, and it imports no append primitive.
+#
+# WHAT IT ANSWERS. The required second-baseline result is "0 new rows, 60/60
+# coverage". It proves the second half by measuring, and the first half WITHOUT
+# WRITING: it evaluates the strict first-baseline gate against the current state
+# and requires it to REFUSE with HISTORY_NOT_EMPTY. Running the baseline again
+# to watch it decline would put a write path one gate away from the league's
+# established history for no gain.
+#
+# NO DISPATCH INPUTS. No command, no arguments, no flags, no ref, no commit. The
+# command is a fixed literal and the checkout is pinned to an immutable SHA.
+#
+# NO CHAINING. Nothing triggers this workflow, and it triggers nothing.
+#
+# IT REPAIRS NOTHING. A failure is reported and the run ends non-zero. It never
+# writes a missing row, never touches the acknowledged historical orphan, and
+# never re-runs anything.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  economy-second-baseline-verify:
+    name: prod:economy:second-baseline-verify (read only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      # Pinned to the reviewed tooling commit, never to a branch head.
+      - name: Checkout the reviewed tooling commit
+        uses: actions/checkout@v4
+        with:
+          ref: __TOOLING_SHA__
+          persist-credentials: false
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The only command in this workflow, and the only step holding a
+      # credential. Read only: no write confirmation is provided, so no
+      # mutating command in this repository could run even if invoked.
+      - name: prod:economy:second-baseline-verify — READ ONLY
+        env:
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: npm run prod:economy:second-baseline-verify
