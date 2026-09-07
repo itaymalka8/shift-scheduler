@@ -55,7 +55,7 @@ export async function getBranchDetails(branchId: string, env: Record<string, str
 
 export async function getProjectDetails(
   env: Record<string, string | undefined> = process.env
-): Promise<{ id: string; name: string; createdAt: string | null }> {
+): Promise<{ id: string; name: string; createdAt: string | null; branchLimit: number | null }> {
   const client = createNeonClient(env)
   const projectId = await resolveProjectId(client, env)
   return clientGetProjectDetails(client, projectId)

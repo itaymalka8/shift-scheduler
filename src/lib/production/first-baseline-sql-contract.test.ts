@@ -29,9 +29,19 @@
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { Prisma } from "@/generated/prisma"
 import { FINANCIAL_TRANSACTION_TYPES } from "@/lib/economy/service"
 import { MAINTENANCE_TRANSACTION_TYPE, SPONSOR_TRANSACTION_TYPE } from "@/lib/economy/first-baseline"
+import {
+  datamodelUsesDbNames,
+  dmmfFieldKinds,
+  dmmfModel,
+  physicalColumns,
+  physicalTable,
+  quotedColumns,
+  rawStatements as extractRawStatements,
+  relationFields,
+  type RawStatement,
+} from "@/lib/production/dmmf-columns"
 
 const ROOT = join(__dirname, "..", "..", "..")
 const RUNNER_PATH = join(ROOT, "scripts/production/economy-first-baseline.ts")
@@ -47,95 +57,16 @@ const APPLICATION_MODELS = ["Team", "Player", "Fixture", "FinancialTransaction",
 const NON_MODEL_RELATIONS = ["pg_class", "pg_namespace", "pg_constraint", "pg_indexes", "pg_trigger", "_prisma_migrations"]
 
 /**
- * THE PHYSICAL COLUMN AUTHORITY - Prisma's DMMF, not a text parse.
+ * THE PHYSICAL COLUMN AUTHORITY is now a SHARED module, not a copy.
  *
- * WHY THE FIRST VERSION OF THIS WAS WRONG. It read every declared field name
- * out of schema.prisma and allowed all of them. But a Prisma RELATION field is
- * not a PostgreSQL column:
- *
- *     teamId  String              <- a physical column
- *     team    Team @relation(...) <- NOT a column; it is a client-side navigation
- *
- * so `SELECT "team" FROM "FinancialTransaction"` satisfied the old check and
- * would still have failed in Production with undefined_column - the very defect
- * class this file exists to make unreachable.
- *
- * DMMF IS THE RIGHT AUTHORITY, and it is available from the generated client
- * (Prisma.dmmf), so no hand-written scalar-type list is maintained here. Every
- * field carries a `kind`, and across this datamodel the kinds are exactly
- * `scalar`, `enum` and `object`. Stored columns are the scalar and enum fields;
- * `object` is a relation and is excluded. That is structural: a back-relation
- * carries no FK and no @relation attribute of its own, so "strip fields with
- * @relation" would have missed it, while `kind === "object"` catches every
- * relation in both directions.
- *
- * @map / @@map ARE RESPECTED. The physical name is `dbName ?? name` for a field
- * and `dbName ?? name` for a model. No field or model in this datamodel
- * currently sets one - asserted below, so the day one does, the assertion fails
- * and this code is re-read rather than silently doing the wrong thing.
+ * It used to live in this file. A second read-only Production runner (the
+ * Phase 3R closure gate) now issues raw SQL and needs exactly the same
+ * contract, and a second copy is how two copies drift apart - so the DMMF
+ * helpers moved to src/lib/production/dmmf-columns.ts and both contract tests
+ * import them. The reasoning that makes DMMF the right authority (a Prisma
+ * relation field is NOT a PostgreSQL column) is documented there.
  */
-type DmmfField = { name: string; kind: string; dbName?: string | null }
-type DmmfModel = { name: string; dbName?: string | null; fields: DmmfField[] }
-
-const datamodel = Prisma.dmmf.datamodel.models as unknown as DmmfModel[]
-
-function dmmfModel(model: string): DmmfModel {
-  const found = datamodel.find((candidate) => candidate.name === model)
-  if (!found) throw new Error(`model ${model} not found in Prisma DMMF`)
-  return found
-}
-
-/** The PHYSICAL database columns of one model: scalar and enum fields only, named as the database names them. */
-function physicalColumns(model: string): Set<string> {
-  return new Set(
-    dmmfModel(model)
-      .fields.filter((field) => field.kind === "scalar" || field.kind === "enum")
-      .map((field) => field.dbName ?? field.name)
-  )
-}
-
-/** The physical table name of one model. */
-function physicalTable(model: string): string {
-  const found = dmmfModel(model)
-  return found.dbName ?? found.name
-}
-
-/** The RELATION fields of one model - never valid in raw SQL. */
-function relationFields(model: string): Set<string> {
-  return new Set(
-    dmmfModel(model)
-      .fields.filter((field) => field.kind === "object")
-      .map((field) => field.name)
-  )
-}
-
-/** One raw SQL statement lifted out of the runner, with the relation it reads. */
-interface RawStatement {
-  sql: string
-  relation: string | null
-}
-
-/**
- * Every `$queryRaw` / `Prisma.sql` template literal in the runner, with the
- * relation each one reads. Extracted from the source rather than listed here,
- * so a NEW query added later is audited automatically instead of escaping the
- * inventory.
- */
-function rawStatements(): RawStatement[] {
-  const statements: RawStatement[] = []
-  const pattern = /(?:\$queryRaw(?:<[^>]*>)?|Prisma\.sql)`([\s\S]*?)`/g
-  for (const match of runner.matchAll(pattern)) {
-    const sql = match[1]
-    const from = /FROM\s+(?:"([A-Za-z_][A-Za-z0-9_]*)"|([a-z_][a-z0-9_]*))/i.exec(sql)
-    statements.push({ sql, relation: from ? (from[1] ?? from[2]) : null })
-  }
-  return statements
-}
-
-/** The quoted identifiers inside one statement, minus the relation name itself. */
-function quotedColumns(sql: string, relation: string): string[] {
-  return [...sql.matchAll(/"([A-Za-z_][A-Za-z0-9_]*)"/g)].map((m) => m[1]).filter((name) => name !== relation)
-}
+const rawStatements = (): RawStatement[] => extractRawStatements(runner)
 
 describe("the runner's raw SQL is inventoried, not assumed", () => {
   it("finds every raw statement in the runner", () => {
@@ -267,9 +198,14 @@ describe("PHYSICAL COLUMNS ONLY - a Prisma relation field is not a database colu
   })
 
   it("uses Prisma DMMF rather than a hand-written scalar-type list", () => {
-    const self = readFileSync(join(__dirname, "first-baseline-sql-contract.test.ts"), "utf8")
-    expect(self).toContain("Prisma.dmmf.datamodel.models")
-    expect(self).toContain('field.kind === "scalar" || field.kind === "enum"')
+    // The authority is the shared module now; assert IT derives from DMMF.
+    const authority = readFileSync(join(__dirname, "dmmf-columns.ts"), "utf8")
+    expect(authority).toContain("Prisma.dmmf.datamodel.models")
+    expect(authority).toContain('field.kind === "scalar" || field.kind === "enum"')
+    // And that the kinds it classifies are the only kinds this datamodel has.
+    expect([...dmmfFieldKinds()].sort()).toEqual(["enum", "object", "scalar"])
+    // Nothing in the datamodel renames a table or column yet.
+    expect(datamodelUsesDbNames()).toBe(false)
   })
 })
 

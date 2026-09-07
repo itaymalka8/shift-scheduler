@@ -87,14 +87,41 @@ export interface NeonProjectSummary {
   name: string
 }
 
+/**
+ * The project's BRANCH COUNT limit, read from the project object.
+ *
+ * Neon reports this on the project's owner (the plan's allowance), and has
+ * also carried it on the project itself in some API versions - both shapes are
+ * read, newest first, exactly as the primary/default branch flag is. A value
+ * that is not a positive integer is reported as null rather than guessed at:
+ * an unreadable limit must fail a retention audit, never be replaced by an
+ * assumed one.
+ */
+function readBranchLimit(raw: { branches_limit?: unknown; owner?: { branches_limit?: unknown } | null }): number | null {
+  for (const candidate of [raw.owner?.branches_limit, raw.branches_limit]) {
+    if (typeof candidate === "number" && Number.isInteger(candidate) && candidate > 0) return candidate
+  }
+  return null
+}
+
 export async function listProjects(client: NeonClient): Promise<NeonProjectSummary[]> {
   const body = await neonFetch<{ projects: { id: string; name: string }[] }>(client, "/projects?limit=100")
   return body.projects.map((p) => ({ id: p.id, name: p.name }))
 }
 
-export async function getProjectDetails(client: NeonClient, projectId: string): Promise<NeonProjectSummary & { createdAt: string | null }> {
-  const body = await neonFetch<{ project: { id: string; name: string; created_at?: string } }>(client, `/projects/${projectId}`)
-  return { id: body.project.id, name: body.project.name, createdAt: body.project.created_at ?? null }
+export async function getProjectDetails(
+  client: NeonClient,
+  projectId: string
+): Promise<NeonProjectSummary & { createdAt: string | null; branchLimit: number | null }> {
+  const body = await neonFetch<{
+    project: { id: string; name: string; created_at?: string; branches_limit?: unknown; owner?: { branches_limit?: unknown } | null }
+  }>(client, `/projects/${projectId}`)
+  return {
+    id: body.project.id,
+    name: body.project.name,
+    createdAt: body.project.created_at ?? null,
+    branchLimit: readBranchLimit(body.project),
+  }
 }
 
 export interface NeonBranchSummary {

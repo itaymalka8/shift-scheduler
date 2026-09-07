@@ -1,0 +1,182 @@
+name: GoalX Phase 3R — CLOSURE AUDIT (read only)
+
+# THE REVIEWED SOURCE OF TRUTH FOR WORKFLOW E.
+#
+# Same arrangement as Workflows C and D: the dispatchable copy is published to
+# goalx-manager/main, and these bytes live outside .github/ so this copy can
+# never be dispatched from anywhere by accident. One token differs - `ref:`
+# reads __TOOLING_SHA__ here and the real pinned SHA there, because the SHA
+# does not exist until this file is committed.
+#
+# WHAT THIS IS. Six read-only audits, run in order, each one a separate step so
+# a failure stops the job at the audit that failed rather than being averaged
+# into a summary. It is EVIDENCE ONLY. It never prints that Phase 3R is closed;
+# that decision is taken outside the runner, after independent review.
+#
+# READ ONLY, AND STRUCTURALLY SO - a property of what it is NOT given:
+#
+#   NO PRODUCTION_WRITE_CONFIRM anywhere. Every mutating command in this
+#   project - including every mutating Render helper and every mutating Neon
+#   helper - asserts it before its first write. Without it, nothing here could
+#   write even if it were invoked.
+#
+# CREDENTIALS ARE PER-STEP, AND EACH STEP GETS ONLY WHAT ITS READS NEED:
+#
+#   PRODUCTION_DATABASE_URL  the four database audits and the closure gate.
+#                            SELECT statements only.
+#   NEON_API_KEY             the backup-retention audit ALONE. That command
+#                            imports exactly three Neon helpers, all GETs
+#                            (getProjectDetails, getProductionBranch,
+#                            listBranches), and imports no branch creation,
+#                            deletion, rename, reset or restore helper - so
+#                            there is no Neon mutation path in it to reach.
+#   RENDER_API_KEY           the closure gate, to read both services' repo,
+#                            branch, Auto Deploy, deployed commit and cron
+#                            state. Every call is a GET.
+#   GITHUB_TOKEN             the job's automatic token under
+#                            `permissions: contents: read` - read-only,
+#                            repo-scoped, expiring with the run - to read the
+#                            canonical branch head through the GitHub API. The
+#                            checkout does not persist a credential, so this is
+#                            the only way that read can happen.
+#
+# EACH AUDIT IS REQUIRED TO SAY SO IN WORDS, NOT ONLY IN ITS EXIT CODE. Every
+# step captures its own output to a runner-local file, prints it, and then
+# greps for the exact terminal line that command emits on success. Output is
+# redirected rather than piped, so the command's exit status is never masked by
+# a pipeline. A command that exits zero without printing its verdict fails the
+# step.
+#
+# TWO DIFFERENT THINGS ARE BOTH CALLED RETENTION, and both are required:
+#   prod:retention:verify              does the DATABASE preserve its own
+#                                      history (RESTRICT, not cascade)?
+#   prod:phase3r:backup-retention-audit do the NEON point-in-time branches that
+#                                      could restore it still exist?
+# Neither substitutes for the other; they share no evidence.
+#
+# NO DISPATCH INPUTS. No command, no arguments, no flags, no ref, no commit.
+# Every command is a fixed literal and the checkout is pinned to an immutable
+# SHA.
+#
+# NO CHAINING. Nothing triggers this workflow, and it triggers nothing. It
+# dispatches no workflow, re-runs no workflow, writes no ref and pushes
+# nothing.
+#
+# IT REPAIRS NOTHING. A failure is reported and the run ends non-zero. It never
+# writes a missing row, never touches the acknowledged historical orphan, never
+# creates or deletes a Neon branch, and never re-runs anything.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  phase3r-closure-audit:
+    name: Phase 3R closure audit (read only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # Pinned to the reviewed tooling commit, never to a branch head.
+      - name: Checkout the reviewed tooling commit
+        uses: actions/checkout@v4
+        with:
+          ref: __TOOLING_SHA__
+          persist-credentials: false
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      # 1. ECONOMY AUDIT. Reports the whole economic picture and exits non-zero
+      #    on any Phase 3R audit failure - a new orphan, an inconsistent state,
+      #    or a failed activation gate. Requiring the absence of the failure
+      #    line as well as the exit code makes a silent regression impossible.
+      - name: 1 — ECONOMY AUDIT (read only)
+        env:
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: |
+          npm run prod:economy:audit > "$RUNNER_TEMP/economy-audit.log" 2>&1 || { cat "$RUNNER_TEMP/economy-audit.log"; exit 1; }
+          cat "$RUNNER_TEMP/economy-audit.log"
+          grep -qxF 'ECONOMY AUDIT: REPORTED' "$RUNNER_TEMP/economy-audit.log"
+          ! grep -q 'PHASE 3R AUDIT FAILURE' "$RUNNER_TEMP/economy-audit.log"
+          ! grep -q 'ACTIVATION GATE: FAIL' "$RUNNER_TEMP/economy-audit.log"
+
+      # 2. ACTIVATION AUDIT. The activation instant, the pre-activation zeros,
+      #    full state-history coverage, Migration 23's protections, the weekly
+      #    settlement grid, and the frozen Phase 3R constants.
+      - name: 2 — ACTIVATION AUDIT (read only)
+        env:
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: |
+          npm run prod:economy:activation > "$RUNNER_TEMP/activation.log" 2>&1 || { cat "$RUNNER_TEMP/activation.log"; exit 1; }
+          cat "$RUNNER_TEMP/activation.log"
+          grep -qxF 'PHASE 3R ACTIVATION CHECK: PASS' "$RUNNER_TEMP/activation.log"
+
+      # 3. POST-DEPLOY AUDIT.
+      - name: 3 — POST-DEPLOY AUDIT (read only)
+        env:
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: |
+          npm run prod:post-deploy-check > "$RUNNER_TEMP/post-deploy.log" 2>&1 || { cat "$RUNNER_TEMP/post-deploy.log"; exit 1; }
+          cat "$RUNNER_TEMP/post-deploy.log"
+          grep -qxF 'PRODUCTION POST-DEPLOY CHECK: PASS' "$RUNNER_TEMP/post-deploy.log"
+
+      # 4. HISTORICAL RETENTION AUDIT - the DATABASE's own history guarantees.
+      #    This is NOT the Neon backup check; step 5 is.
+      - name: 4 — HISTORICAL RETENTION AUDIT (read only)
+        env:
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: |
+          npm run prod:retention:verify > "$RUNNER_TEMP/retention.log" 2>&1 || { cat "$RUNNER_TEMP/retention.log"; exit 1; }
+          cat "$RUNNER_TEMP/retention.log"
+          grep -qxF 'HISTORICAL RETENTION VERIFICATION: PASS' "$RUNNER_TEMP/retention.log"
+
+      # 5. NEON BACKUP RETENTION AUDIT - can Production still be recovered?
+      #    The only step holding NEON_API_KEY, and the command it runs imports
+      #    GET helpers only.
+      - name: 5 — NEON BACKUP RETENTION AUDIT (read only)
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+        run: |
+          npm run prod:phase3r:backup-retention-audit > "$RUNNER_TEMP/backup-retention.log" 2>&1 || { cat "$RUNNER_TEMP/backup-retention.log"; exit 1; }
+          cat "$RUNNER_TEMP/backup-retention.log"
+          grep -qxF 'PHASE 3R BACKUP RETENTION AUDIT: PASS' "$RUNNER_TEMP/backup-retention.log"
+
+      # 6. THE FINAL FROZEN PRODUCTION GATE. Re-reads Production now - GitHub,
+      #    both Render services, migrations, catalog, the sixty rows, the
+      #    pre-activation zeros and the acknowledged orphan - and re-proves the
+      #    canonical second-baseline contract rather than remembering Workflow
+      #    D's conclusion.
+      - name: 6 — FINAL FROZEN PRODUCTION GATE (read only)
+        env:
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npm run prod:phase3r:closure-gate > "$RUNNER_TEMP/closure-gate.log" 2>&1 || { cat "$RUNNER_TEMP/closure-gate.log"; exit 1; }
+          cat "$RUNNER_TEMP/closure-gate.log"
+          grep -qxF 'FINAL FROZEN PRODUCTION GATE: PASS' "$RUNNER_TEMP/closure-gate.log"
+          grep -qxF 'RECOVERY REQUIRED: NO' "$RUNNER_TEMP/closure-gate.log"
+
+      # THE SUMMARY. Reachable ONLY when every step above succeeded - GitHub
+      # Actions stops the job at the first failing step - so each line below is
+      # asserted by the corresponding audit having passed, not by this step
+      # measuring anything itself. It deliberately does NOT print that Phase 3R
+      # is closed: this workflow produces evidence, and the closure decision is
+      # taken outside the runner after independent review.
+      - name: Closure audit summary
+        run: |
+          echo 'ECONOMY AUDIT: PASS'
+          echo 'ACTIVATION AUDIT: PASS'
+          echo 'POST-DEPLOY AUDIT: PASS'
+          echo 'HISTORICAL RETENTION AUDIT: PASS'
+          echo 'BACKUP RETENTION AUDIT: PASS'
+          echo 'FINAL FROZEN PRODUCTION GATE: PASS'
+          echo 'PHASE 3R CLOSURE AUDIT: PASS'
