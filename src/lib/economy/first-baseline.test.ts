@@ -7,6 +7,7 @@
  * The point of a first baseline is that it refuses far more often than it
  * writes, so most of what follows is refusals.
  */
+import { createHash } from "crypto"
 import { readFileSync } from "fs"
 import { join } from "path"
 import {
@@ -649,6 +650,57 @@ describe("the canonical MATCH_ prefix semantics over the real historical rows", 
   it("a MISSING historical row fails the gate just as loudly", async () => {
     const missing = readOrphanFromRows(FIRST_BASELINE.orphanFixtureId, HISTORICAL.slice(0, 2))
     await expect(run(makeWorld({ orphan: missing }))).rejects.toThrow(/ORPHAN_NOT_HISTORICAL_TRUTH/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// THE FIXTURE DIGEST ACTUALLY WATCHES THE SCORE - REGRESSION
+// ---------------------------------------------------------------------------
+
+/**
+ * The digest is only a proof if it MOVES when the thing it watches moves. The
+ * defect that failed Workflow C was a fixture query naming columns that do not
+ * exist; the repair names homeScore/awayScore instead, and these two tests
+ * prove the repaired shape is score-sensitive in both directions rather than
+ * merely compiling.
+ *
+ * The digest function itself lives in the runner (it needs the database), so
+ * what is exercised here is the exact row-to-tuple shape the runner builds -
+ * asserted against the runner's source in first-baseline-sql-contract.test.ts -
+ * over the same sha256-of-JSON reduction.
+ */
+const fixtureRowsToDigest = (rows: readonly { id: string; playedAt: Date | null; homeScore: number | null; awayScore: number | null }[]) =>
+  createHash("sha256")
+    .update(JSON.stringify(rows.map((row) => [row.id, row.playedAt?.toISOString() ?? null, row.homeScore, row.awayScore])))
+    .digest("hex")
+
+describe("the fixture digest is sensitive to the result", () => {
+  const played = new Date("2026-09-05T19:00:00.000Z")
+  const baseline = [{ id: "fx-1", playedAt: played, homeScore: 2, awayScore: 1 }]
+
+  it("CHANGES when homeScore changes", () => {
+    const moved = [{ ...baseline[0], homeScore: 3 }]
+    expect(fixtureRowsToDigest(moved)).not.toBe(fixtureRowsToDigest(baseline))
+  })
+
+  it("CHANGES when awayScore changes", () => {
+    const moved = [{ ...baseline[0], awayScore: 0 }]
+    expect(fixtureRowsToDigest(moved)).not.toBe(fixtureRowsToDigest(baseline))
+  })
+
+  it("CHANGES when a fixture becomes played", () => {
+    const unplayed = [{ ...baseline[0], playedAt: null, homeScore: null, awayScore: null }]
+    expect(fixtureRowsToDigest(unplayed)).not.toBe(fixtureRowsToDigest(baseline))
+  })
+
+  it("is STABLE when nothing moved - otherwise every run would look like drift", () => {
+    expect(fixtureRowsToDigest(baseline)).toBe(fixtureRowsToDigest([{ id: "fx-1", playedAt: played, homeScore: 2, awayScore: 1 }]))
+  })
+
+  it("a moved fixture digest FAILS the whole first baseline", async () => {
+    const moved = { ...flatDigest(), fixtureDigest: "a-different-hash" }
+    await expect(run(makeWorld({ digestAfter: moved }))).rejects.toThrow(/SIDE_EFFECT_DRIFT/)
+    await expect(run(makeWorld({ digestAfter: moved }))).rejects.toThrow(/fixtureDigest/)
   })
 })
 

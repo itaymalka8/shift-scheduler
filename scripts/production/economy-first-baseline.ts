@@ -36,6 +36,8 @@ import {
   FIRST_BASELINE,
   FirstBaselineAbort,
   evaluateFirstBaselineGate,
+  MAINTENANCE_TRANSACTION_TYPE,
+  SPONSOR_TRANSACTION_TYPE,
   orphanReferencePrefix,
   readOrphanFromRows,
   runFirstBaselineTransaction,
@@ -138,8 +140,12 @@ async function readSideEffectDigest(tx: Tx): Promise<SideEffectDigest> {
   const players = await tx.$queryRaw<{ id: string; teamId: string | null; salary: bigint; status: string }[]>`
     SELECT "id", "teamId", "weeklySalary"::bigint AS salary, "careerStatus" AS status FROM "Player" ORDER BY "id"
   `
-  const fixtures = await tx.$queryRaw<{ id: string; playedAt: Date | null; homeGoals: number | null; awayGoals: number | null }[]>`
-    SELECT "id", "playedAt", "homeGoals", "awayGoals" FROM "Fixture" ORDER BY "id"
+  // homeScore / awayScore are the canonical Fixture result columns. An earlier
+  // draft named homeGoals / awayGoals, which do not exist - that is the 42703
+  // this runner failed on, and it is why the schema-contract test below reads
+  // prisma/schema.prisma rather than trusting any name written here.
+  const fixtures = await tx.$queryRaw<{ id: string; playedAt: Date | null; homeScore: number | null; awayScore: number | null }[]>`
+    SELECT "id", "playedAt", "homeScore", "awayScore" FROM "Fixture" ORDER BY "id"
   `
   const tx_ = await tx.$queryRaw<{ id: string; amount: bigint; type: string }[]>`
     SELECT "id", "amount"::bigint AS amount, "type" FROM "FinancialTransaction" ORDER BY "id"
@@ -147,8 +153,20 @@ async function readSideEffectDigest(tx: Tx): Promise<SideEffectDigest> {
   const seasons = await tx.$queryRaw<{ id: string; status: string; stage: string | null; active: boolean }[]>`
     SELECT "id", "status", "offseasonStage" AS stage, "isActive" AS active FROM "Season" ORDER BY "id"
   `
-  const sponsorCount = await countScalar(tx, Prisma.sql`SELECT COUNT(*)::bigint AS n FROM "FinancialTransaction" WHERE "type" = 'SPONSOR'`)
-  const maintenanceCount = await countScalar(tx, Prisma.sql`SELECT COUNT(*)::bigint AS n FROM "FinancialTransaction" WHERE "type" = 'STADIUM_MAINTENANCE'`)
+  // PARAMETERISED FROM THE CANONICAL CATALOG, never a hand-written literal.
+  // SPONSOR_TRANSACTION_TYPE and MAINTENANCE_TRANSACTION_TYPE are typed as
+  // FinancialTransactionType, so a value the codebase never writes does not
+  // compile. The previous 'SPONSOR' / 'STADIUM_MAINTENANCE' matched nothing and
+  // could not fail loudly - they made both counts 0 before and 0 after, which
+  // compares equal and proves nothing.
+  const sponsorCount = await countScalar(
+    tx,
+    Prisma.sql`SELECT COUNT(*)::bigint AS n FROM "FinancialTransaction" WHERE "type" = ${SPONSOR_TRANSACTION_TYPE}`
+  )
+  const maintenanceCount = await countScalar(
+    tx,
+    Prisma.sql`SELECT COUNT(*)::bigint AS n FROM "FinancialTransaction" WHERE "type" = ${MAINTENANCE_TRANSACTION_TYPE}`
+  )
 
   return {
     teamBalanceSum: teams.reduce((sum, row) => sum + Number(row.balance), 0),
@@ -156,7 +174,7 @@ async function readSideEffectDigest(tx: Tx): Promise<SideEffectDigest> {
     playerSalarySum: players.reduce((sum, row) => sum + Number(row.salary), 0),
     playerOwnershipDigest: digestRows(players.map((row) => [row.id, row.teamId])),
     playerCareerStatusDigest: digestRows(players.map((row) => [row.id, row.status])),
-    fixtureDigest: digestRows(fixtures.map((row) => [row.id, row.playedAt?.toISOString() ?? null, row.homeGoals, row.awayGoals])),
+    fixtureDigest: digestRows(fixtures.map((row) => [row.id, row.playedAt?.toISOString() ?? null, row.homeScore, row.awayScore])),
     financialTransactionCount: tx_.length,
     financialTransactionNet: tx_.reduce((sum, row) => sum + Number(row.amount), 0),
     financialTransactionDigest: digestRows(tx_.map((row) => [row.id, Number(row.amount), row.type])),

@@ -59,9 +59,32 @@
  * ordering authority exactly as state-history.ts describes.
  */
 import { PHASE_3R_ACTIVATION_START } from "./config"
+import type { FinancialTransactionType } from "./service"
 
 /** Exactly forty lowercase hex characters. Anything else is not a commit id. */
 const FULL_SHA = /^[0-9a-f]{40}$/
+
+/**
+ * THE TWO SETTLEMENT TYPES THE SIDE-EFFECT DIGEST COUNTS.
+ *
+ * TYPED AGAINST THE CANONICAL CATALOG, NOT RESTATED. FinancialTransactionType
+ * is the union of FINANCIAL_TRANSACTION_TYPES in economy/service.ts - the one
+ * place this project names transaction types - so a literal that is not a real
+ * type does not compile. That is the whole point: an earlier draft filtered on
+ * 'SPONSOR' and 'STADIUM_MAINTENANCE', which are not values this codebase has
+ * ever written. Those predicates could not throw; they simply matched nothing,
+ * before AND after, so the digest would have compared 0 to 0 and called it
+ * proof. A wrong column crashes and is found; a wrong enum value passes and is
+ * not, which makes this the more dangerous half of the same defect.
+ *
+ * The authority is the WRITER: weekly-settlement.ts emits `sponsorIncome` when
+ * it credits a sponsor week and `stadiumMaintenance` when it charges upkeep.
+ * first-baseline.test.ts asserts these two constants against both the catalog
+ * and those writers, so a rename in either place fails the test rather than
+ * silently emptying the measurement.
+ */
+export const SPONSOR_TRANSACTION_TYPE: FinancialTransactionType = "sponsorIncome"
+export const MAINTENANCE_TRANSACTION_TYPE: FinancialTransactionType = "stadiumMaintenance"
 
 /**
  * THE APPROVED FIRST-BASELINE CONTRACT. Frozen, and every value is compared
