@@ -14,6 +14,8 @@ import {
   FirstBaselineAbort,
   evaluateFirstBaselineGate,
   evaluateSecondBaselineVerification,
+  orphanReferencePrefix,
+  readOrphanFromRows,
   runFirstBaselineTransaction,
   type CatalogReading,
   type FirstBaselineReading,
@@ -529,6 +531,124 @@ describe("the first-baseline runner script's shape", () => {
   it("logs no row contents - only counts, sums and digests", () => {
     expect(code).toContain("createHash")
     expect(code).toMatch(/digestRows/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// THE HISTORICAL ORPHAN'S IDENTITY - REGRESSION
+// ---------------------------------------------------------------------------
+
+/**
+ * A DEFECT THAT REACHED THIS REPO. An earlier draft of readOrphan queried
+ * `WHERE "fixtureId" = ...` on FinancialTransaction. That column does not
+ * exist: the table is id, teamId, type, amount, description, referenceId,
+ * createdAt. The query would have thrown inside the baseline transaction and
+ * rolled the whole thing back - so it could never have written anything wrong,
+ * and could never have succeeded either. These tests read the REAL Prisma
+ * schema so the same class of mistake fails here rather than in Production.
+ */
+const schema = readFileSync(join(process.cwd(), "prisma/schema.prisma"), "utf8")
+
+/** The declared scalar fields of one model, read out of schema.prisma. */
+function modelFields(model: string): string[] {
+  const start = schema.indexOf(`model ${model} {`)
+  expect(start).toBeGreaterThanOrEqual(0)
+  const block = schema.slice(start, schema.indexOf("\n}", start))
+  return block
+    .split("\n")
+    .slice(1)
+    .map((line) => /^\s{2}(\w+)\s/.exec(line)?.[1])
+    .filter((name): name is string => Boolean(name))
+}
+
+describe("readOrphan matches the canonical FinancialTransaction schema", () => {
+  it("FinancialTransaction has NO fixtureId column - the premise of the defect", () => {
+    const fields = modelFields("FinancialTransaction")
+    expect(fields).toEqual(expect.arrayContaining(["id", "teamId", "type", "amount", "description", "referenceId", "createdAt"]))
+    expect(fields).not.toContain("fixtureId")
+  })
+
+  it("the runner NEVER queries a fixtureId column on FinancialTransaction", () => {
+    expect(code).not.toMatch(/"fixtureId"/)
+    expect(code).not.toMatch(/fixtureId\s*=/)
+  })
+
+  it("every column readOrphan's query names really exists on the model", () => {
+    const fields = new Set(modelFields("FinancialTransaction"))
+    const orphanQuery = code.slice(code.indexOf("async function readOrphan"))
+    const named = [...orphanQuery.slice(0, orphanQuery.indexOf("readOrphanFromRows")).matchAll(/"([a-zA-Z][a-zA-Z0-9]*)"/g)].map((m) => m[1])
+    const columns = named.filter((name) => name !== "FinancialTransaction")
+    expect(columns.length).toBeGreaterThan(0)
+    for (const column of columns) expect(fields).toContain(column)
+  })
+
+  it("uses a parameterised LITERAL PREFIX, never a broad substring search", () => {
+    // Scoped to readOrphan. The catalog reader legitimately uses ILIKE against
+    // pg_indexes.indexdef, which is a different question about a different table.
+    const start = code.indexOf("async function readOrphan")
+    const orphanFn = code.slice(start, code.indexOf("\n}", start))
+    expect(orphanFn).toMatch(/starts_with\("referenceId", \$\{prefix\}\)/)
+    for (const broad of ["ILIKE", "LIKE", "strpos(", "POSITION(", "SIMILAR TO", "~"]) {
+      expect(orphanFn).not.toContain(broad)
+    }
+  })
+
+  it("the prefix carries the trailing underscore, so a longer fixture id cannot be folded in", () => {
+    expect(orphanReferencePrefix("cmtedbpib0001ya9jpzjzevb5")).toBe("MATCH_cmtedbpib0001ya9jpzjzevb5_")
+    const rows = [
+      { referenceId: "MATCH_cmtedbpib0001ya9jpzjzevb5X_HOME_REVENUE", amount: 999 },
+      { referenceId: "MATCH_cmtedbpib0001ya9jpzjzevb5_HOME_REVENUE", amount: 1 },
+    ]
+    expect(readOrphanFromRows("cmtedbpib0001ya9jpzjzevb5", rows).transactionCount).toBe(1)
+  })
+})
+
+describe("the canonical MATCH_ prefix semantics over the real historical rows", () => {
+  /** The three rows Production actually holds for the acknowledged orphan. */
+  const HISTORICAL = [
+    { referenceId: "MATCH_cmtedbpib0001ya9jpzjzevb5_HOME_REVENUE", amount: 262410 },
+    { referenceId: "MATCH_cmtedbpib0001ya9jpzjzevb5_HOME_EXPENSE", amount: -38781 },
+    { referenceId: "MATCH_cmtedbpib0001ya9jpzjzevb5_AWAY_TRAVEL", amount: -10000 },
+  ]
+
+  it("exactly the three historical rows produce count 3 and net 213629", () => {
+    expect(readOrphanFromRows(FIRST_BASELINE.orphanFixtureId, HISTORICAL)).toEqual({
+      fixtureId: "cmtedbpib0001ya9jpzjzevb5",
+      transactionCount: 3,
+      net: 213629,
+    })
+  })
+
+  it("ignores other clubs' and other fixtures' ledger rows entirely", () => {
+    const noise = [
+      ...HISTORICAL,
+      { referenceId: "MATCH_someotherfixture_HOME_REVENUE", amount: 500_000 },
+      { referenceId: "PAYROLL_2026_W35_CLUB_123", amount: -9_000 },
+      { referenceId: "SPONSOR_2026_W35_CLUB_123", amount: 4_000 },
+    ]
+    expect(readOrphanFromRows(FIRST_BASELINE.orphanFixtureId, noise)).toEqual({
+      fixtureId: "cmtedbpib0001ya9jpzjzevb5",
+      transactionCount: 3,
+      net: 213629,
+    })
+  })
+
+  it("an UNEXPECTED FOURTH MATCH_ row is DETECTED, not hidden", () => {
+    const withFourth = [...HISTORICAL, { referenceId: "MATCH_cmtedbpib0001ya9jpzjzevb5_FAN_INCIDENT", amount: -5_000 }]
+    const reading = readOrphanFromRows(FIRST_BASELINE.orphanFixtureId, withFourth)
+    expect(reading.transactionCount).toBe(4)
+    expect(reading.net).toBe(208_629)
+  })
+
+  it("that unexpected fourth row makes the historical truth gate FAIL the whole transaction", async () => {
+    const withFourth = [...HISTORICAL, { referenceId: "MATCH_cmtedbpib0001ya9jpzjzevb5_FAN_INCIDENT", amount: -5_000 }]
+    const drifted = readOrphanFromRows(FIRST_BASELINE.orphanFixtureId, withFourth)
+    await expect(run(makeWorld({ orphan: drifted }))).rejects.toThrow(/ORPHAN_NOT_HISTORICAL_TRUTH/)
+  })
+
+  it("a MISSING historical row fails the gate just as loudly", async () => {
+    const missing = readOrphanFromRows(FIRST_BASELINE.orphanFixtureId, HISTORICAL.slice(0, 2))
+    await expect(run(makeWorld({ orphan: missing }))).rejects.toThrow(/ORPHAN_NOT_HISTORICAL_TRUTH/)
   })
 })
 

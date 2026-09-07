@@ -283,6 +283,53 @@ export interface OrphanReading {
   net: number
 }
 
+/**
+ * HOW A MATCH'S LEDGER ROWS ARE IDENTIFIED, and why it is not a foreign key.
+ *
+ * FinancialTransaction has NO fixtureId column. Its canonical columns are
+ * id, teamId, type, amount, description, referenceId, createdAt - and a match's
+ * rows are tied to their fixture through the referenceId NAMESPACE that
+ * match/simulate.ts writes:
+ *
+ *     MATCH_<fixtureId>_HOME_REVENUE
+ *     MATCH_<fixtureId>_HOME_EXPENSE
+ *     MATCH_<fixtureId>_AWAY_TRAVEL
+ *     MATCH_<fixtureId>_FAN_INCIDENT
+ *
+ * THE TRAILING UNDERSCORE IS LOAD-BEARING. Without it the prefix would also
+ * match any fixture whose id merely STARTS WITH the orphan's id, which would
+ * quietly fold another match's ledger into this one's evidence.
+ *
+ * A PREFIX, NEVER A SUBSTRING. `LIKE '%...%'` would match a referenceId that
+ * merely mentions the fixture anywhere - including a namespace invented later -
+ * so the check would silently widen. A prefix over a namespace that is built by
+ * concatenation is exactly as precise as the namespace itself.
+ *
+ * IT COUNTS THE WHOLE NAMESPACE, not the three known rows. Enumerating the
+ * three ids would make an unexpected FOURTH MATCH_ row invisible - and an
+ * unexpected fourth row is precisely the kind of drift this gate exists to
+ * catch.
+ */
+export function orphanReferencePrefix(fixtureId: string): string {
+  return `MATCH_${fixtureId}_`
+}
+
+/**
+ * The orphan reading, reduced from rows. The prefix filter is applied HERE as
+ * well as in SQL, so the semantics live in one tested place and the query is
+ * only the fetch - a query that ever widened would still be narrowed back to
+ * the namespace by this function.
+ */
+export function readOrphanFromRows(fixtureId: string, rows: readonly { referenceId: string; amount: number }[]): OrphanReading {
+  const prefix = orphanReferencePrefix(fixtureId)
+  const matching = rows.filter((row) => row.referenceId.startsWith(prefix))
+  return {
+    fixtureId,
+    transactionCount: matching.length,
+    net: matching.reduce((sum, row) => sum + row.amount, 0),
+  }
+}
+
 export interface FirstBaselineTxDeps<Tx> {
   /** goalx:phase3r:activation, EXCLUSIVE. The project's documented global first lock. */
   acquireActivationExclusive: (tx: Tx) => Promise<void>

@@ -36,6 +36,8 @@ import {
   FIRST_BASELINE,
   FirstBaselineAbort,
   evaluateFirstBaselineGate,
+  orphanReferencePrefix,
+  readOrphanFromRows,
   runFirstBaselineTransaction,
   type CatalogReading,
   type FirstBaselineReading,
@@ -167,16 +169,38 @@ async function readSideEffectDigest(tx: Tx): Promise<SideEffectDigest> {
   }
 }
 
-/** The acknowledged historical orphan, read as evidence. Never repaired, never balanced, never reversed. */
+/**
+ * The acknowledged historical orphan, read as evidence. Never repaired, never
+ * balanced, never reversed.
+ *
+ * IDENTIFIED BY referenceId NAMESPACE, NOT BY A FIXTURE COLUMN. FinancialTransaction
+ * has no fixtureId column - its columns are id, teamId, type, amount, description,
+ * referenceId, createdAt - so a match's rows are found through the canonical
+ * `MATCH_<fixtureId>_` namespace that match/simulate.ts writes. An earlier draft of
+ * this function queried a fixtureId column that does not exist; it would have thrown
+ * inside the transaction and rolled the whole baseline back, so it could never have
+ * written anything wrong - but it could never have succeeded either.
+ *
+ * starts_with(), NOT LIKE. A parameterised literal prefix: no wildcard to escape, no
+ * substring match that could pick up a namespace invented later. The trailing
+ * underscore in the prefix stops a different fixture whose id merely begins with this
+ * one from being folded in.
+ *
+ * THE WHOLE NAMESPACE IS COUNTED, not the three known referenceIds - an unexpected
+ * fourth MATCH_ row (a FAN_INCIDENT, say) must make this gate FAIL rather than hide.
+ */
 async function readOrphan(tx: Tx): Promise<OrphanReading> {
-  const rows = await tx.$queryRaw<{ amount: bigint }[]>`
-    SELECT "amount"::bigint AS amount FROM "FinancialTransaction" WHERE "fixtureId" = ${C.orphanFixtureId}
+  const prefix = orphanReferencePrefix(C.orphanFixtureId)
+  const rows = await tx.$queryRaw<{ referenceId: string; amount: bigint }[]>`
+    SELECT "referenceId", "amount"::bigint AS amount
+      FROM "FinancialTransaction"
+     WHERE starts_with("referenceId", ${prefix})
+     ORDER BY "referenceId"
   `
-  return {
-    fixtureId: C.orphanFixtureId,
-    transactionCount: rows.length,
-    net: rows.reduce((sum, row) => sum + Number(row.amount), 0),
-  }
+  return readOrphanFromRows(
+    C.orphanFixtureId,
+    rows.map((row) => ({ referenceId: row.referenceId, amount: Number(row.amount) }))
+  )
 }
 
 async function main(): Promise<void> {
