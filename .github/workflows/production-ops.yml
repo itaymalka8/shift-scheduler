@@ -17,6 +17,7 @@ on:
           - prod:scheduled-check
           - prod:post-deploy-check
           - prod:render:status
+          - prod:render:source-migrate
           - prod:backup:list
           - prod:backup:prune
           - prod:eras:classify
@@ -71,6 +72,29 @@ on:
 # if asked to. It prints the full plan: branch ids, names, ages, which newer
 # recovery points supersede each one, and how many would remain.
 #
+# ---------------------------------------------------------------------------
+# prod:render:source-migrate IS HERE ON EXACTLY THE SAME TERMS.
+#
+# The command repoints both Render services at the canonical repository, and
+# its --execute path is a Production write. Only the DRY RUN is reachable from
+# this workflow, and that is enforced by construction rather than by a rule:
+#
+#   1. The dropdown value is the bare npm script name. The run step is
+#      `npm run "$COMMAND"` with the value quoted, so a dispatcher cannot
+#      append `-- --execute` - the whole string is one script name, and an
+#      unrecognised one fails at npm rather than running anything.
+#   2. There is no second input that reaches this command. branch_ids is read
+#      by prod:backup:prune alone.
+#   3. The read-only job never sets PRODUCTION_WRITE_CONFIRM, and the migration
+#      calls assertProductionWriteConfirmed before its first write. So even if
+#      an --execute somehow arrived, it would refuse before touching Render.
+#
+# Three independent barriers, any one of which is sufficient. Executing the
+# migration requires a human running the script in their own shell with both
+# RENDER_API_KEY and PRODUCTION_WRITE_CONFIRM present - the same standing as
+# backup deletion above.
+# ---------------------------------------------------------------------------
+#
 # If the account is ever upgraded, restore the job WITH
 # `environment: production-backup-destructive` and required reviewers. That is
 # strictly stronger than this, because it is enforced runner-side and cannot
@@ -94,7 +118,10 @@ jobs:
   # below, because PRODUCTION_WRITE_CONFIRM must never be in scope for a
   # read-only run. prod:backup:prune (no :execute) IS read-only and belongs
   # here: without the confirmation in scope it cannot delete even if asked to,
-  # and :execute is no longer reachable from this workflow at all.
+  # and :execute is no longer reachable from this workflow at all. The same
+  # reasoning puts prod:render:source-migrate here - its dry run is read-only,
+  # and its --execute path cannot be reached from a dropdown value that is a
+  # bare script name (see the block above).
   # ---------------------------------------------------------------------
   read-only:
     if: >-
