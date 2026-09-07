@@ -557,9 +557,15 @@ describe("the runner script's shape", () => {
     }
   })
 
-  it("reads the branch head from the REMOTE, not from a local clone", () => {
-    expect(script).toMatch(/execFileSync\("git", \["ls-remote"/)
-    expect(script).toMatch(/\^\[0-9a-f\]\{40\}\$/)
+  it("reads the branch head from the REMOTE through the shared authenticated reader", () => {
+    // The canonical repo is PRIVATE and the Production workflows check out with
+    // persist-credentials: false, so a bare ls-remote has no auth. The shared
+    // reader uses the GitHub API when a token exists and keeps ls-remote only
+    // as the injected local fallback - hence exactly one occurrence, inside the
+    // dependency object rather than as the read itself.
+    expect(script).toMatch(/readCanonicalHead\(/)
+    expect((script.match(/execFileSync\("git", \["ls-remote"/g) ?? []).length).toBe(1)
+    expect(script).toMatch(/gitLsRemote: \(repoUrl, branch\) =>/)
   })
 
   it("contains NO deploy call of any kind, on any path", () => {
@@ -569,11 +575,15 @@ describe("the runner script's shape", () => {
     }
   })
 
-  it("says explicitly that it did not deploy, and names the next approved step", () => {
+  it("says explicitly that it did not deploy, and names WORKFLOW B as the next step", () => {
     expect(script).toContain("SOURCE MIGRATION COMPLETE")
     expect(script).toContain("DEPLOY PERFORMED: NO")
     expect(script).toContain("PRODUCTION COMMIT UNCHANGED")
-    expect(script).toContain("NEXT APPROVED STEP: npm run prod:deploy:safe")
+    expect(script).toContain("NEXT APPROVED STEP: dispatch WORKFLOW B")
+    expect(script).toContain("goalx-render-safe-deploy-handoff.yml")
+    // And it must NOT send the operator to the ordinary safe deploy, which does
+    // not expect a suspended Cron.
+    expect(script).toContain("The ORDINARY safe deploy is NOT the next step")
   })
 
   it("tells the operator not to repair or re-run on a failure", () => {
@@ -773,7 +783,7 @@ describe("the source migration never resumes Cron", () => {
     expect(script).toContain("DEPLOY PERFORMED: NO")
     expect(script).toContain("PRODUCTION COMMIT UNCHANGED")
     expect(script).toContain("CRON STATE: SUSPENDED")
-    expect(script).toContain("NEXT APPROVED STEP: npm run prod:deploy:safe")
+    expect(script).toContain("NEXT APPROVED STEP: dispatch WORKFLOW B")
   })
 
   it("checks the deployed commit AFTER the last possible source mutation", async () => {

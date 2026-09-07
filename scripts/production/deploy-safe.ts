@@ -19,6 +19,7 @@
  */
 import { execFileSync } from "node:child_process"
 import { runDeploySafeWorkflow, type DeploySafeHandoff, type DeployWorkflowDeps } from "../../src/lib/production/deploy-workflow"
+import { fetchGithubRef, readCanonicalHead } from "../../src/lib/production/canonical-head"
 import {
   RENDER_SOURCE_MIGRATION,
   verifyDeployHandoffState,
@@ -108,9 +109,25 @@ const deps: DeployWorkflowDeps = {
  * suspend request (step F still proves Cron suspended), and adds a check that
  * both services end up on the approved commit after the resume.
  */
-function readCanonicalHead(): string {
+/**
+ * Every canonical-head read in this file goes through here, and each CALL is a
+ * fresh read - the 0h gate's result is never cached for L0. See
+ * canonical-head.ts for why this is an authenticated API read rather than
+ * `git ls-remote`: the canonical repository is private and the Production
+ * workflows check out with persist-credentials: false, so no git credential
+ * survives into the command step.
+ */
+async function readCanonicalHeadSha(): Promise<{ sha: string | null; detail: string }> {
   const C = RENDER_SOURCE_MIGRATION
-  return execFileSync("git", ["ls-remote", C.toRepo, `refs/heads/${C.branch}`], { encoding: "utf8" }).split(/\s+/)[0]?.trim() ?? ""
+  const result = await readCanonicalHead(
+    { repoUrl: C.toRepo, branch: C.branch },
+    {
+      fetchRef: fetchGithubRef,
+      gitLsRemote: (repoUrl, branch) => execFileSync("git", ["ls-remote", repoUrl, `refs/heads/${branch}`], { encoding: "utf8" }),
+      env: process.env,
+    }
+  )
+  return { sha: result.ok ? result.sha : null, detail: result.detail }
 }
 
 function buildHandoff(): DeploySafeHandoff {
@@ -122,10 +139,11 @@ function buildHandoff(): DeploySafeHandoff {
         getServiceConfigSnapshot(C.cronServiceId),
         getCronStatus(),
       ])
-      const head = readCanonicalHead()
+      // FRESH READ #1 - the handoff gate's own.
+      const head = await readCanonicalHeadSha()
       const verdict = verifyDeployHandoffState({
         contract: C,
-        reading: { web, cron, githubHead: head, cronSuspended: cronStatus.suspended === true },
+        reading: { web, cron, githubHead: head.sha ?? "", cronSuspended: cronStatus.suspended === true },
       })
       return { ok: verdict.ok, refusals: verdict.refusals.map((r) => `[${r.code}] ${r.detail}`) }
     },
@@ -137,9 +155,12 @@ function buildHandoff(): DeploySafeHandoff {
       return { ok: actual === C.targetCommit, detail: `deploy ${deployId} commit=${actual ?? "unreadable"} expected=${C.targetCommit}` }
     },
     // A FRESH read, immediately before Resume - not the one the 0h gate took.
+    // FRESH READ #2 - a separate call, immediately before Resume. Nothing from
+    // the gate's read is reused: a cached value would say nothing about the
+    // branch at the moment Resume can make Render deploy from it.
     verifyCanonicalHead: async () => {
-      const head = readCanonicalHead()
-      return { ok: head === C.targetCommit, detail: `canonical head=${head || "unreadable"} expected=${C.targetCommit}` }
+      const head = await readCanonicalHeadSha()
+      return { ok: head.sha === C.targetCommit, detail: `${head.detail} expected=${C.targetCommit}` }
     },
     verifyTargetCommits: async () => {
       const [web, cron] = await Promise.all([getServiceConfigSnapshot(C.webServiceId), getServiceConfigSnapshot(C.cronServiceId)])

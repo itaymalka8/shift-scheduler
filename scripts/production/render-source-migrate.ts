@@ -41,6 +41,7 @@ import {
 } from "../../src/lib/production/render-source-migration"
 import { getCronStatus, getServiceConfigSnapshot, migrateServiceSource, suspendCron } from "../../src/lib/production/render-ops"
 import { createBackupBranch, verifyBackupBranch } from "../../src/lib/production/neon-ops"
+import { fetchGithubRef, readCanonicalHead } from "../../src/lib/production/canonical-head"
 import { NeonCredentialsMissingError } from "../../src/lib/production/neon-client"
 import { RenderCredentialsMissingError } from "../../src/lib/production/render-client"
 import { ProductionWriteNotConfirmedError, assertProductionWriteConfirmed } from "../../src/lib/production/write-guard"
@@ -48,15 +49,27 @@ import { ProductionWriteNotConfirmedError, assertProductionWriteConfirmed } from
 const C = RENDER_SOURCE_MIGRATION
 
 /**
- * The canonical branch head, read from the REMOTE over the wire (ls-remote
- * consults the server) rather than from any local clone, which could be stale
- * or ahead.
+ * The canonical branch head, through the shared reader.
+ *
+ * NOT a bare `git ls-remote`: the canonical repository is PRIVATE, and the
+ * Production workflows check out with persist-credentials: false so the job
+ * holds no credential that could write to git. An unauthenticated git read
+ * against a private repo has no auth to use and dies. The shared reader uses
+ * the GitHub API with a read-only token when one is present, and keeps the git
+ * read only for local shells, where git is already authenticated. Everything
+ * fails closed - see canonical-head.ts.
  */
-function readGithubHead(): string {
-  const out = execFileSync("git", ["ls-remote", C.toRepo, `refs/heads/${C.branch}`], { encoding: "utf8" })
-  const sha = out.split(/\s+/)[0]?.trim() ?? ""
-  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`could not read ${C.branch} on ${C.toRepo}`)
-  return sha
+async function readGithubHead(): Promise<string> {
+  const result = await readCanonicalHead(
+    { repoUrl: C.toRepo, branch: C.branch },
+    {
+      fetchRef: fetchGithubRef,
+      gitLsRemote: (repoUrl, branch) => execFileSync("git", ["ls-remote", repoUrl, `refs/heads/${branch}`], { encoding: "utf8" }),
+      env: process.env,
+    }
+  )
+  if (!result.ok || result.sha === null) throw new Error(result.detail)
+  return result.sha
 }
 
 const deps: MigrationDeps = {
@@ -108,7 +121,11 @@ async function main() {
           `PRODUCTION COMMIT UNCHANGED: web=${outcome.deployedCommitAfter?.web ?? "unknown"} cron=${outcome.deployedCommitAfter?.cron ?? "unknown"}`
         )
         console.info("CRON STATE: SUSPENDED")
-        console.info("NEXT APPROVED STEP: npm run prod:deploy:safe")
+        console.info("NEXT APPROVED STEP: dispatch WORKFLOW B -")
+        console.info("  .github/workflows/goalx-render-safe-deploy-handoff.yml on goalx-manager/main")
+        console.info("  which runs: npm run prod:deploy:safe -- --handoff")
+        console.info("  The ORDINARY safe deploy is NOT the next step: Cron is deliberately suspended,")
+        console.info("  and only the handoff path expects that and re-proves the post-migration state.")
         return
       }
       console.error(`FAILED STEP: ${outcome.failedStep}`)
@@ -125,7 +142,7 @@ async function main() {
     }
 
     // DRY RUN: reads only.
-    const head = readGithubHead()
+    const head = await readGithubHead()
     console.info(`GitHub ${C.branch} head: ${head}`)
     console.info(`  ${head === C.targetCommit ? "MATCHES the approved target commit" : "DOES NOT MATCH the approved target commit"}\n`)
 

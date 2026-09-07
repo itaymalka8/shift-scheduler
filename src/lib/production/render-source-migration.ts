@@ -56,7 +56,7 @@
  * or one deploys and the other does not, or any protected field drifts, the
  * run stops with recoveryRequired = true and reports the exact state. It never
  * rolls a source back, never recreates a service, never re-triggers a deploy
- * to "fix" one, and never resumes Cron on a failure path.
+ * to "fix" one, and never resumes Cron at all - success included.
  *
  * Every side effect is behind MigrationDeps, which the script fills in with
  * real Render/Neon/GitHub calls and the tests fill in with mocks. Nothing in
@@ -612,7 +612,7 @@ export async function runRenderSourceMigration(deps: MigrationDeps, contract: Mi
       return failDirty(
         "20-21. Cron left suspended (handoff)",
         "Cron is not suspended at the end of the migration - something resumed it.",
-        "Both sources migrated, but Cron is ACTIVE. A resume can trigger a deployment; check Render before running prod:deploy:safe.",
+        "Both sources migrated, but Cron is ACTIVE. A resume can trigger a deployment; check Render before dispatching the safe-deploy handoff workflow.",
       )
     }
   } catch (error) {

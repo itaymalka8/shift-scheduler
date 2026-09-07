@@ -24,17 +24,29 @@
  * that read is missing or fails - never assumed from an earlier reading,
  * because Cron's real state may have changed since.
  *
- * HANDOFF MODE (options.handoff) IS OPT-IN AND CHANGES EXACTLY TWO THINGS.
- * With it absent - the default, and every existing caller - this workflow is
- * byte-for-byte the pipeline it has always been. With it present, one extra
- * gate runs before preflight (0h), and step E VERIFIES that Cron is already
- * suspended instead of REQUESTING a suspend, because the source migration
- * already suspended it deliberately. Nothing is skipped and nothing is
- * weakened: the backup is still created and verified, the deploy still goes
- * through the same single authority, and every post-deploy check still runs.
- * One step is ADDED at the end (M2), because handoff mode is the case where a
- * resume can itself deploy - so both services are re-read afterwards and
- * required to be running the approved commit.
+ * HANDOFF MODE (options.handoff) IS OPT-IN. With it absent - the default, and
+ * every existing caller - this workflow is byte-for-byte the pipeline it has
+ * always been.
+ *
+ * With it present, it CHANGES two things and ADDS three:
+ *
+ *   CHANGED  0h  an extra gate before preflight re-proves the entire
+ *                post-migration state before the first mutation
+ *   CHANGED  E   VERIFIES that Cron is already suspended instead of REQUESTING
+ *                a suspend, because the source migration suspended it
+ *                deliberately. Step F still PROVES the suspension - only the
+ *                redundant write is skipped
+ *   ADDED    G   the deploy is PINNED to the approved commit via commitId
+ *   ADDED    H2  the created deploy's commit must equal the target EXACTLY,
+ *                checked before the post-deploy checks and before Resume
+ *   ADDED    L0  the canonical branch head is re-read immediately before
+ *                Resume, because Resume is what can make Render deploy the
+ *                Cron service off that branch
+ *   ADDED    M2  after Resume, both services must be on the approved commit
+ *
+ * Nothing is skipped and nothing is weakened: the backup is still created and
+ * verified, the deploy still goes through the same single authority, and every
+ * post-deploy check still runs.
  *
  * Step 0 runs before everything else, preflight included: if Render's Auto
  * Deploy is on (or cannot be read), this whole pipeline is theatre - a
