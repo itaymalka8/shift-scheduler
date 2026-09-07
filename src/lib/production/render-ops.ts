@@ -167,12 +167,13 @@ export async function resumeCron(env: Record<string, string | undefined> = proce
 }
 
 /** MUTATES Production (triggers a new deploy of the web service's current branch) - requires PRODUCTION_WRITE_CONFIRM. */
-export async function triggerDeploy(env: Record<string, string | undefined> = process.env): Promise<RenderDeploySummary> {
+export async function triggerDeploy(commitId?: string, env: Record<string, string | undefined> = process.env): Promise<RenderDeploySummary> {
   assertProductionWriteConfirmed(env)
   const client = createRenderClient(env)
   const id = await resolveWebServiceId(client, env)
-  return createDeploy(client, id)
+  return createDeploy(client, id, commitId)
 }
+
 
 /** Read-only. Returns a specific deploy if deployId is given, otherwise the web service's latest. */
 export async function getDeployStatus(

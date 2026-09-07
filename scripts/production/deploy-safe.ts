@@ -24,7 +24,7 @@ import {
   verifyDeployHandoffState,
   verifyPostDeployTargetCommits,
 } from "../../src/lib/production/render-source-migration"
-import { getServiceConfigSnapshot } from "../../src/lib/production/render-ops"
+import { getDeployStatus, getServiceConfigSnapshot } from "../../src/lib/production/render-ops"
 import {
   getWebServiceStatus,
   getCronStatus,
@@ -79,7 +79,7 @@ const deps: DeployWorkflowDeps = {
   createBackup: async () => createBackupBranch(),
   verifyBackup: async (branchId) => verifyBackupBranch(branchId),
   suspendCron: async () => suspendCron(),
-  triggerDeploy: async () => triggerDeploy(),
+  triggerDeploy: async (commitId?: string) => triggerDeploy(commitId),
   waitForDeploy: async (deployId) => {
     const web = await getWebServiceStatus()
     const result = await waitForDeploy(web.id, deployId)
@@ -108,6 +108,11 @@ const deps: DeployWorkflowDeps = {
  * suspend request (step F still proves Cron suspended), and adds a check that
  * both services end up on the approved commit after the resume.
  */
+function readCanonicalHead(): string {
+  const C = RENDER_SOURCE_MIGRATION
+  return execFileSync("git", ["ls-remote", C.toRepo, `refs/heads/${C.branch}`], { encoding: "utf8" }).split(/\s+/)[0]?.trim() ?? ""
+}
+
 function buildHandoff(): DeploySafeHandoff {
   const C = RENDER_SOURCE_MIGRATION
   return {
@@ -117,12 +122,24 @@ function buildHandoff(): DeploySafeHandoff {
         getServiceConfigSnapshot(C.cronServiceId),
         getCronStatus(),
       ])
-      const head = execFileSync("git", ["ls-remote", C.toRepo, `refs/heads/${C.branch}`], { encoding: "utf8" }).split(/\s+/)[0]?.trim() ?? ""
+      const head = readCanonicalHead()
       const verdict = verifyDeployHandoffState({
         contract: C,
         reading: { web, cron, githubHead: head, cronSuspended: cronStatus.suspended === true },
       })
       return { ok: verdict.ok, refusals: verdict.refusals.map((r) => `[${r.code}] ${r.detail}`) }
+    },
+    targetCommit: C.targetCommit,
+    // Read the created deploy back from Render and require the EXACT commit.
+    verifyWebDeployCommit: async (deployId) => {
+      const deploy = await getDeployStatus(deployId)
+      const actual = deploy?.commitId ?? null
+      return { ok: actual === C.targetCommit, detail: `deploy ${deployId} commit=${actual ?? "unreadable"} expected=${C.targetCommit}` }
+    },
+    // A FRESH read, immediately before Resume - not the one the 0h gate took.
+    verifyCanonicalHead: async () => {
+      const head = readCanonicalHead()
+      return { ok: head === C.targetCommit, detail: `canonical head=${head || "unreadable"} expected=${C.targetCommit}` }
     },
     verifyTargetCommits: async () => {
       const [web, cron] = await Promise.all([getServiceConfigSnapshot(C.webServiceId), getServiceConfigSnapshot(C.cronServiceId)])

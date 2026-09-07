@@ -3,6 +3,7 @@ import { join } from "node:path"
 import {
   PRE_DEPLOY_PRODUCTION_COMMIT,
   RENDER_SOURCE_MIGRATION,
+  classifyPatchFailureState,
   buildServiceSourcePatch,
   deployAppearedFromPatch,
   detectConfigDrift,
@@ -729,8 +730,11 @@ describe("prod:deploy:safe still works after the source swap", () => {
     const ops = readFileSync(join(ROOT, "src/lib/production/render-ops.ts"), "utf8")
     // One POST to the deploys endpoint in the whole client.
     expect(client.match(/\/deploys`, \{ method: "POST"/g) ?? []).toHaveLength(1)
-    // createDeploy takes no commitId - the pinning parameter went with the split.
-    expect(client).toMatch(/export async function createDeploy\(client: RenderClient, serviceId: string\): Promise<RenderDeploySummary>/)
+    // createDeploy accepts an OPTIONAL pin - that widens what the one authority
+    // can express, it does not add a second path. No commitId means the
+    // original empty body.
+    expect(client).toMatch(/export async function createDeploy\(client: RenderClient, serviceId: string, commitId\?: string\): Promise<RenderDeploySummary>/)
+    expect(client).toMatch(/const body = commitId === undefined \? "\{\}" : JSON\.stringify\(\{ commitId \}\)/)
     // And render-ops exposes exactly one function that reaches it.
     expect(ops.match(/createDeploy\(/g) ?? []).toHaveLength(1)
     expect(ops.includes("triggerServiceDeploy")).toBe(false)
@@ -927,5 +931,227 @@ describe("cron schedule flows from the raw Render shape into the gate", () => {
 
   it("the expected schedule contract is unchanged", () => {
     expect(C.cronSchedule).toBe("*/2 * * * *")
+  })
+})
+
+/**
+ * A THROWN PATCH IS NOT PROOF THE WRITE DID NOT LAND.
+ *
+ * A socket can die after Render committed the change. Reporting "neither
+ * service changed" on the strength of an exception is a guess dressed as a
+ * measurement - and it is the guess most likely to send someone into a
+ * half-migrated account believing it is clean. Every case below re-reads and
+ * classifies what is actually there.
+ */
+describe("PATCH failure outcomes are measured, never assumed", () => {
+  const oldWeb = () => webSnapshot()
+  const oldCron = () => cronSnapshot()
+
+  const classify = (over: Partial<Parameters<typeof classifyPatchFailureState>[0]> = {}) =>
+    classifyPatchFailureState({
+      contract: C,
+      which: "web",
+      error: "socket hang up",
+      webBefore: oldWeb(),
+      cronBefore: oldCron(),
+      webAfter: oldWeb(),
+      cronAfter: oldCron(),
+      ...over,
+    })
+
+  it("clean no-op ONLY when both are readable, both on the OLD source, nothing drifted, no deploy", () => {
+    const r = classify()
+    expect(r.verdict).toBe("NO_SOURCE_CHANGE")
+    expect(r.recoveryRequired).toBe(false)
+    expect(r.detail).toMatch(/MEASURED unchanged/)
+  })
+
+  it("the write LANDED despite the error -> Recovery Required", () => {
+    const r = classify({ webAfter: webSnapshot({ repo: C.toRepo }) })
+    expect(r.recoveryRequired).toBe(true)
+    expect(r.detail).toMatch(/ALREADY ON THE NEW SOURCE/)
+  })
+
+  it("an UNREADABLE service -> Recovery Required, because the outcome is unknown", () => {
+    expect(classify({ webAfter: null }).recoveryRequired).toBe(true)
+    expect(classify({ webAfter: null }).detail).toMatch(/web service could not be re-read/)
+    expect(classify({ cronAfter: null }).recoveryRequired).toBe(true)
+    expect(classify({ webAfter: null, cronAfter: null }).recoveryRequired).toBe(true)
+  })
+
+  it("a DEPLOY that appeared -> Recovery Required", () => {
+    const r = classify({ webAfter: webSnapshot({ latestDeployId: "dep-new", latestDeployCommit: C.targetCommit }) })
+    expect(r.recoveryRequired).toBe(true)
+    expect(r.detail).toMatch(/DEPLOYED SOMETHING/)
+  })
+
+  it("PROTECTED CONFIG that drifted -> Recovery Required", () => {
+    expect(classify({ webAfter: webSnapshot({ buildCommand: "WIPED" }) }).detail).toMatch(/buildCommand/)
+    expect(classify({ cronAfter: cronSnapshot({ schedule: "*/9 * * * *" }) }).detail).toMatch(/schedule/)
+    expect(classify({ webAfter: webSnapshot({ autoDeploy: "on" }) }).detail).toMatch(/autoDeploy/)
+    expect(classify({ webAfter: webSnapshot({ envVarNames: ["DATABASE_URL"] }) }).detail).toMatch(/envVarNames/)
+  })
+
+  it("a repo that is NEITHER the old nor the new source -> Recovery Required", () => {
+    expect(classify({ webAfter: webSnapshot({ repo: "https://github.com/someone/else" }) }).recoveryRequired).toBe(true)
+  })
+
+  it("classifies the CRON patch the same way", () => {
+    const r = classifyPatchFailureState({
+      contract: C,
+      which: "cron",
+      error: "gateway timeout",
+      webBefore: oldWeb(),
+      cronBefore: oldCron(),
+      webAfter: webSnapshot({ repo: C.toRepo }),
+      cronAfter: cronSnapshot({ repo: C.toRepo }),
+    })
+    expect(r.recoveryRequired).toBe(true)
+  })
+})
+
+describe("the orchestration's PATCH exception paths", () => {
+  it("a web PATCH throw with both services measured on the OLD source is a clean stop", async () => {
+    const { deps } = happyDeps({
+      updateSource: async () => {
+        throw new Error("socket hang up")
+      },
+    })
+    const out = await runRenderSourceMigration(deps)
+    expect(out.outcome).toBe("FAIL")
+    expect(out.failedStep).toBe("9. Web source PATCH")
+    expect(out.recoveryRequired).toBe(false)
+    expect(out.webSourceChanged).toBe(false)
+    expect(out.steps.find((s) => s.step === "9. Web source PATCH")!.detail).toMatch(/MEASURED unchanged/)
+  })
+
+  it("a web PATCH throw where the WRITE LANDED sets Recovery Required and records the change", async () => {
+    let attempted = false
+    const { deps } = happyDeps({
+      updateSource: async () => {
+        attempted = true
+        throw new Error("socket hang up")
+      },
+      readServiceSnapshot: async (id) =>
+        id === C.webServiceId ? webSnapshot(attempted ? { repo: C.toRepo } : {}) : cronSnapshot(),
+    })
+    const out = await runRenderSourceMigration(deps)
+    expect(out.recoveryRequired).toBe(true)
+    expect(out.webSourceChanged).toBe(true)
+    expect(out.recoveryDetail).toMatch(/ALREADY ON THE NEW SOURCE/)
+  })
+
+  it("a web PATCH throw with an UNREADABLE service sets Recovery Required", async () => {
+    let attempted = false
+    const { deps } = happyDeps({
+      updateSource: async () => {
+        attempted = true
+        throw new Error("socket hang up")
+      },
+      readServiceSnapshot: async (id) => {
+        if (attempted) throw new Error("render unreachable")
+        return id === C.webServiceId ? webSnapshot() : cronSnapshot()
+      },
+    })
+    const out = await runRenderSourceMigration(deps)
+    expect(out.recoveryRequired).toBe(true)
+    expect(out.recoveryDetail).toMatch(/could not be re-read/)
+  })
+
+  it("a cron PATCH throw leaving a PARTIAL state sets Recovery Required", async () => {
+    let webDone = false
+    const { deps } = happyDeps({
+      updateSource: async (id) => {
+        if (id === C.cronServiceId) throw new Error("gateway timeout")
+        webDone = true
+      },
+      readServiceSnapshot: async (id) =>
+        id === C.webServiceId ? webSnapshot(webDone ? { repo: C.toRepo } : {}) : cronSnapshot(),
+    })
+    const out = await runRenderSourceMigration(deps)
+    expect(out.recoveryRequired).toBe(true)
+    expect(out.recoveryDetail).toMatch(/PARTIAL MIGRATION/)
+  })
+
+  it("a cron PATCH throw where BOTH look migrated is STILL Recovery Required", async () => {
+    let webDone = false
+    let cronAttempted = false
+    const { deps } = happyDeps({
+      updateSource: async (id) => {
+        if (id === C.cronServiceId) {
+          cronAttempted = true
+          throw new Error("gateway timeout")
+        }
+        webDone = true
+      },
+      readServiceSnapshot: async (id) =>
+        id === C.webServiceId ? webSnapshot(webDone ? { repo: C.toRepo } : {}) : cronSnapshot(cronAttempted ? { repo: C.toRepo } : {}),
+    })
+    const out = await runRenderSourceMigration(deps)
+    expect(out.outcome).toBe("FAIL")
+    expect(out.recoveryRequired).toBe(true)
+    expect(out.cronSourceChanged).toBe(true)
+    expect(out.recoveryDetail).toMatch(/BOTH SOURCES APPEAR MIGRATED/)
+  })
+
+  it("a cron PATCH throw with an unreadable cron is AMBIGUOUS, not assumed unchanged", async () => {
+    let webDone = false
+    const { deps } = happyDeps({
+      updateSource: async (id) => {
+        if (id === C.cronServiceId) throw new Error("gateway timeout")
+        webDone = true
+      },
+      readServiceSnapshot: async (id) => {
+        if (id === C.cronServiceId && webDone) throw new Error("render unreachable")
+        return id === C.webServiceId ? webSnapshot(webDone ? { repo: C.toRepo } : {}) : cronSnapshot()
+      },
+    })
+    const out = await runRenderSourceMigration(deps)
+    expect(out.recoveryRequired).toBe(true)
+    expect(out.recoveryDetail).toMatch(/AMBIGUOUS/)
+  })
+
+  it("a suspend throw re-reads Cron state and never claims it stayed active", async () => {
+    const { deps, calls } = happyDeps({
+      suspendCron: async () => {
+        throw new Error("render 500")
+      },
+      getCronSuspended: async () => true,
+    })
+    const out = await runRenderSourceMigration(deps)
+    expect(out.outcome).toBe("FAIL")
+    expect(out.failedStep).toBe("7. Suspend cron")
+    expect(out.steps.find((s) => s.step === "7. Suspend cron")!.detail).toMatch(/cron state: suspended=true/)
+    expect(out.reason).toMatch(/NO SOURCE PATCH WAS ISSUED/)
+    expect(calls.some((c) => c.startsWith("updateSource"))).toBe(false)
+  })
+
+  it("a suspend throw whose state read ALSO fails reports unknown, not active", async () => {
+    const { deps } = happyDeps({
+      suspendCron: async () => {
+        throw new Error("render 500")
+      },
+      getCronSuspended: async () => {
+        throw new Error("render unreachable")
+      },
+    })
+    const out = await runRenderSourceMigration(deps)
+    expect(out.cronState).toBe("unknown")
+    expect(out.steps.find((s) => s.step === "7. Suspend cron")!.detail).toMatch(/unknown/)
+  })
+
+  it("NO failure path retries, rolls back, or deploys", async () => {
+    for (const failure of [
+      { updateSource: async () => { throw new Error("boom") } },
+      { updateSource: async (id: string) => { if (id === C.cronServiceId) throw new Error("boom") } },
+      { suspendCron: async () => { throw new Error("boom") } },
+    ]) {
+      const { deps, calls } = happyDeps(failure as Partial<MigrationDeps>)
+      await runRenderSourceMigration(deps)
+      // At most one write attempt per service, and never more.
+      expect(calls.filter((c) => c === `updateSource:${C.webServiceId}`).length).toBeLessThanOrEqual(1)
+      expect(calls.filter((c) => c === `updateSource:${C.cronServiceId}`).length).toBeLessThanOrEqual(1)
+      expect(calls.some((c) => c.toLowerCase().includes("deploy"))).toBe(false)
+    }
   })
 })

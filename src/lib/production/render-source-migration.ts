@@ -279,6 +279,18 @@ function errorMessage(error: unknown): string {
 }
 
 /**
+ * A best-effort re-read that NEVER throws: a null means "could not be read",
+ * which the classifier treats as an unknown state, not as an unchanged one.
+ */
+async function readOrNull(deps: MigrationDeps, serviceId: string): Promise<ServiceConfigSnapshot | null> {
+  try {
+    return await deps.readServiceSnapshot(serviceId)
+  } catch {
+    return null
+  }
+}
+
+/**
  * The migration.
  *
  * THE CRON RACE, STATED HONESTLY. Render's Deploys API does not accept a
@@ -400,8 +412,19 @@ export async function runRenderSourceMigration(deps: MigrationDeps, contract: Mi
     await deps.suspendCron()
     steps.push({ step: "7. Suspend cron", ok: true, detail: "suspend requested" })
   } catch (error) {
-    steps.push({ step: "7. Suspend cron", ok: false, detail: errorMessage(error) })
-    return failClean("7. Suspend cron", `Failed to suspend Cron: ${errorMessage(error)}. No source was changed.`)
+    // The suspend REQUEST threw; that does not tell us whether it took effect.
+    // Read the state for the report rather than claiming Cron stayed active.
+    const message = errorMessage(error)
+    let observed = "unknown (state could not be read)"
+    try {
+      const suspended = await deps.getCronSuspended()
+      cronState = suspended ? "suspended" : "active"
+      observed = `suspended=${suspended}`
+    } catch {
+      cronState = "unknown"
+    }
+    steps.push({ step: "7. Suspend cron", ok: false, detail: `${message} | cron state: ${observed}` })
+    return failClean("7. Suspend cron", `Failed to suspend Cron: ${message}. Cron state: ${observed}. NO SOURCE PATCH WAS ISSUED.`)
   }
 
   // 8. Verify suspended.
@@ -422,8 +445,25 @@ export async function runRenderSourceMigration(deps: MigrationDeps, contract: Mi
     webSourceChanged = true
     steps.push({ step: "9. Web source PATCH", ok: true, detail: `${contract.fromRepo} -> ${contract.toRepo}` })
   } catch (error) {
-    steps.push({ step: "9. Web source PATCH", ok: false, detail: errorMessage(error) })
-    return failClean("9. Web source PATCH", `Web source update failed: ${errorMessage(error)}. Neither service was changed; Cron is left suspended.`)
+    // A THROW IS NOT PROOF THE WRITE DID NOT LAND. Re-read both services and
+    // classify what is actually there before saying anything about it.
+    const message = errorMessage(error)
+    const [webObserved, cronObserved] = await Promise.all([readOrNull(deps, contract.webServiceId), readOrNull(deps, contract.cronServiceId)])
+    const classification = classifyPatchFailureState({
+      contract,
+      which: "web",
+      error: message,
+      webBefore,
+      cronBefore,
+      webAfter: webObserved,
+      cronAfter: cronObserved,
+    })
+    // If the write did land, the source DID change - say so in the outcome.
+    if (webObserved?.repo === contract.toRepo) webSourceChanged = true
+    steps.push({ step: "9. Web source PATCH", ok: false, detail: `${message} | ${classification.detail}` })
+    return classification.recoveryRequired
+      ? failDirty("9. Web source PATCH", `Web source update failed: ${message}`, classification.detail)
+      : failClean("9. Web source PATCH", classification.detail + " Cron is left suspended.")
   }
 
   // 10. Verify the web service, including that no deploy was born from the PATCH.
@@ -458,8 +498,23 @@ export async function runRenderSourceMigration(deps: MigrationDeps, contract: Mi
     cronSourceChanged = true
     steps.push({ step: "11. Cron source PATCH", ok: true, detail: `${contract.fromRepo} -> ${contract.toRepo}` })
   } catch (error) {
-    steps.push({ step: "11. Cron source PATCH", ok: false, detail: errorMessage(error) })
-    return failDirty("11. Cron source PATCH", `Cron source update failed: ${errorMessage(error)}`, "PARTIAL MIGRATION: web source changed, cron source did NOT.")
+    // Same rule as the web PATCH: measure, do not assume. The web source has
+    // already changed by this point, so this is a recovery situation whatever
+    // the cron read says - but WHICH recovery situation depends on the read.
+    const message = errorMessage(error)
+    const [webObserved, cronObserved] = await Promise.all([readOrNull(deps, contract.webServiceId), readOrNull(deps, contract.cronServiceId)])
+    if (cronObserved?.repo === contract.toRepo) cronSourceChanged = true
+    const observed =
+      `web repo=${webObserved?.repo ?? "UNREADABLE"} deploy=${webObserved?.latestDeployCommit ?? "?"}; ` +
+      `cron repo=${cronObserved?.repo ?? "UNREADABLE"} deploy=${cronObserved?.latestDeployCommit ?? "?"}`
+    const shape =
+      cronObserved === null
+        ? "AMBIGUOUS: the cron service could not be re-read, so its source may or may not have changed."
+        : cronObserved.repo === contract.toRepo
+          ? "BOTH SOURCES APPEAR MIGRATED, but the cron request itself threw - the outcome is exceptional and must be reviewed, not assumed complete."
+          : "PARTIAL MIGRATION: web source changed, cron source did NOT."
+    steps.push({ step: "11. Cron source PATCH", ok: false, detail: `${message} | ${observed}` })
+    return failDirty("11. Cron source PATCH", `Cron source update failed: ${message}`, `${shape} Observed: ${observed}`)
   }
 
   // 12. Verify the cron service the same way.
@@ -660,4 +715,92 @@ export function verifyPostDeployTargetCommits(
 ): { ok: boolean; detail: string } {
   const ok = deployed.web === targetCommit && deployed.cron === targetCommit
   return { ok, detail: `web=${deployed.web ?? "unreadable"} cron=${deployed.cron ?? "unreadable"} expected=${targetCommit}` }
+}
+
+export type PatchOutcomeVerdict = "NO_SOURCE_CHANGE" | "RECOVERY_REQUIRED"
+
+export interface PatchOutcomeClassification {
+  verdict: PatchOutcomeVerdict
+  recoveryRequired: boolean
+  detail: string
+}
+
+/**
+ * WHAT ACTUALLY HAPPENED WHEN A SOURCE PATCH THREW.
+ *
+ * A thrown request is NOT proof that the server did not apply the write. A
+ * socket can die after Render committed the change, a gateway can time out
+ * mid-response, a 5xx can arrive after the mutation. Reporting "neither service
+ * changed" on the strength of an exception is a guess dressed as a measurement,
+ * and it is the guess most likely to send someone into a half-migrated account
+ * believing it is clean.
+ *
+ * So the caller re-reads BOTH services and passes what it saw here. Only one
+ * combination earns the clean verdict:
+ *
+ *   both services positively readable, AND
+ *   both still on the OLD repo, AND
+ *   every protected field intact against the before-snapshots, AND
+ *   both latest deploy ids and commits unchanged
+ *
+ * Anything else is RECOVERY_REQUIRED - including the case where the reads
+ * themselves failed, because an unreadable account is an unknown one, and
+ * unknown after a write attempt is exactly the state a human needs to look at.
+ *
+ * It never retries, never rolls back, never issues a second PATCH and never
+ * triggers a deploy. It classifies and reports.
+ */
+export function classifyPatchFailureState(input: {
+  contract: MigrationContract
+  which: "web" | "cron"
+  error: string
+  webBefore: ServiceConfigSnapshot
+  cronBefore: ServiceConfigSnapshot
+  /** null when the re-read itself failed. */
+  webAfter: ServiceConfigSnapshot | null
+  cronAfter: ServiceConfigSnapshot | null
+}): PatchOutcomeClassification {
+  const { contract, which, error, webBefore, cronBefore, webAfter, cronAfter } = input
+  const problems: string[] = []
+
+  if (webAfter === null) problems.push("web service could not be re-read - its state is UNKNOWN")
+  if (cronAfter === null) problems.push("cron service could not be re-read - its state is UNKNOWN")
+
+  for (const [label, before, after] of [
+    ["web", webBefore, webAfter],
+    ["cron", cronBefore, cronAfter],
+  ] as const) {
+    if (after === null) continue
+    if (after.repo === contract.toRepo) {
+      problems.push(`${label} is ALREADY ON THE NEW SOURCE (${contract.toRepo}) - the PATCH was applied despite the error`)
+    } else if (after.repo !== contract.fromRepo) {
+      problems.push(`${label} repo is ${after.repo ?? "(unreadable)"} - neither the old nor the new source`)
+    }
+    if (after.latestDeployId !== before.latestDeployId || after.latestDeployCommit !== before.latestDeployCommit) {
+      problems.push(
+        `${label} DEPLOYED SOMETHING: ${before.latestDeployCommit ?? "?"} (${before.latestDeployId ?? "?"}) -> ${after.latestDeployCommit ?? "?"} (${after.latestDeployId ?? "?"})`
+      )
+    }
+    // Protected configuration, compared against this service's own before-shot.
+    // detectConfigDrift expects the repo to have MOVED, so the old repo is the
+    // expectation here - the point is that nothing changed at all.
+    for (const d of detectConfigDrift(before, after, contract.fromRepo)) {
+      if (d.field === "repo") continue // already reported above, with better wording
+      problems.push(`${label} ${d.field}: ${d.before} -> ${d.after}`)
+    }
+  }
+
+  if (problems.length === 0) {
+    return {
+      verdict: "NO_SOURCE_CHANGE",
+      recoveryRequired: false,
+      detail: `${which} source PATCH failed (${error}); both services re-read and MEASURED unchanged on ${contract.fromRepo}, no deploy, no drift.`,
+    }
+  }
+
+  return {
+    verdict: "RECOVERY_REQUIRED",
+    recoveryRequired: true,
+    detail: `${which} source PATCH failed (${error}) and the resulting state is not a clean no-op: ${problems.join("; ")}`,
+  }
 }

@@ -104,7 +104,8 @@ export interface DeployWorkflowDeps {
   createBackup: () => Promise<BackupResult>
   verifyBackup: (branchId: string) => Promise<VerifyBackupResult>
   suspendCron: () => Promise<void>
-  triggerDeploy: () => Promise<DeployTrigger>
+  /** commitId PINS the deploy and is WEB-ONLY. Omitted in normal mode, which keeps the original empty body. */
+  triggerDeploy: (commitId?: string) => Promise<DeployTrigger>
   waitForDeploy: (deployId: string) => Promise<WaitForDeployResult>
   isWebLive: () => Promise<boolean>
   runPostDeployCheck: () => Promise<CheckResult>
@@ -123,6 +124,17 @@ export interface DeployWorkflowDeps {
  */
 export interface DeploySafeHandoff {
   verify: () => Promise<{ ok: boolean; refusals: string[] }>
+  /** The approved commit. Sent as the Web deploy's commitId and asserted afterwards. */
+  targetCommit: string
+  /** The commit the created Web deploy actually carries, read back from Render. */
+  verifyWebDeployCommit: (deployId: string) => Promise<{ ok: boolean; detail: string }>
+  /**
+   * A FRESH read of the canonical branch head, called immediately before the
+   * Resume. The gate at 0h read it too, but a backup, a suspend, a deploy and a
+   * wait have happened since - and Resume is the step that can make Render
+   * deploy the Cron service off that branch.
+   */
+  verifyCanonicalHead: () => Promise<{ ok: boolean; detail: string }>
   verifyTargetCommits: () => Promise<{ ok: boolean; detail: string }>
 }
 
@@ -343,7 +355,9 @@ export async function runDeploySafeWorkflow(deps: DeployWorkflowDeps, options: D
   // G. Trigger Web Deploy
   let deploy: DeployTrigger
   try {
-    deploy = await deps.triggerDeploy()
+    // HANDOFF PINS THE WEB DEPLOY. Normal mode passes nothing and keeps the
+    // original empty-body behaviour byte for byte.
+    deploy = handoff ? await deps.triggerDeploy(handoff.targetCommit) : await deps.triggerDeploy()
   } catch (error) {
     return failAfterCronTouched(
       "G. Trigger deploy",
@@ -371,6 +385,28 @@ export async function runDeploySafeWorkflow(deps: DeployWorkflowDeps, options: D
       `Deploy did not succeed: ${waited.outcome} (${waited.status}).`,
       recoveryForSuspendedOrUnknownCron(cronState)
     )
+  }
+
+  // H2. HANDOFF ONLY: the deploy that just finished must be the approved
+  //     commit, EXACTLY - no prefix matching. This runs before the post-deploy
+  //     checks and before Resume, because everything after it is only
+  //     meaningful if the right code is live. A mismatch stops here with Cron
+  //     still suspended: no retry, no second deploy.
+  if (handoff) {
+    let webCommit: { ok: boolean; detail: string }
+    try {
+      webCommit = await handoff.verifyWebDeployCommit(deploy.id)
+    } catch (error) {
+      return failAfterCronTouched("H2. Verify web deploy commit", `Could not read the deployed commit: ${errorMessage(error)}. Cron is left suspended.`)
+    }
+    steps.push({ step: "H2. Verify web deploy commit", ok: webCommit.ok, detail: webCommit.detail })
+    if (!webCommit.ok) {
+      return fail(
+        "H2. Verify web deploy commit",
+        `The web deploy is not the approved commit: ${webCommit.detail}. No retry and no second deploy.`,
+        recoveryForSuspendedOrUnknownCron(cronState)
+      )
+    }
   }
 
   // I. Verify Web Service is live
@@ -406,6 +442,40 @@ export async function runDeploySafeWorkflow(deps: DeployWorkflowDeps, options: D
   // K. prod:scheduled-check (dry check only - never process-scheduled-jobs)
   const dryCheck = await deps.runScheduledDryCheck()
   steps.push({ step: "K. Scheduled dry check", ok: true, detail: dryCheck.summary })
+
+  // L0. HANDOFF ONLY: THE LAST BRANCH CHECK BEFORE RESUME.
+  //
+  //     Resume is the step that can make Render deploy the Cron service, and it
+  //     deploys the BRANCH - Render does not accept a commitId for Cron Jobs.
+  //     So the branch head is re-read here, as late as possible, and the run
+  //     stops if it moved. Cron stays suspended; nothing is repaired, no branch
+  //     is moved, no deploy is triggered.
+  //
+  //     THIS IS NOT ATOMIC AND IS NOT CLAIMED TO BE. A push landing between
+  //     this read and Render resolving the branch during Resume would still be
+  //     picked up. Nothing in this project can hold a GitHub ref still; what it
+  //     can do is make that window as small as possible and then DETECT the
+  //     result at M2, which requires both services on the exact target commit.
+  if (handoff) {
+    let head: { ok: boolean; detail: string }
+    try {
+      head = await handoff.verifyCanonicalHead()
+    } catch (error) {
+      return fail(
+        "L0. Canonical head before resume",
+        `Could not re-read the canonical branch head before resuming Cron: ${errorMessage(error)}. Cron is left suspended.`,
+        recoveryForSuspendedOrUnknownCron(cronState)
+      )
+    }
+    steps.push({ step: "L0. Canonical head before resume", ok: head.ok, detail: head.detail })
+    if (!head.ok) {
+      return fail(
+        "L0. Canonical head before resume",
+        `The canonical branch head moved before Cron resume: ${head.detail}. Cron is left suspended and was NOT resumed.`,
+        recoveryForSuspendedOrUnknownCron(cronState)
+      )
+    }
+  }
 
   // L. Resume Cron - the only path that ever calls this. If this itself
   // fails, the deploy succeeded and the app is live, but the system has NOT

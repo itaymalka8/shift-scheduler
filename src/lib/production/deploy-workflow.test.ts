@@ -475,10 +475,15 @@ describe("step 0 - the auto-deploy guard, before any Production mutation", () =>
  * `service_resumed`). Without the option nothing about this workflow changes.
  */
 describe("prod:deploy:safe handoff mode", () => {
+  const TARGET = "063342e70fe5285aa3de050b7e344c83d51ec459"
+
   function okHandoff(over: Partial<DeploySafeHandoff> = {}): DeploySafeHandoff {
     return {
       verify: jest.fn(async () => ({ ok: true, refusals: [] })),
-      verifyTargetCommits: jest.fn(async () => ({ ok: true, detail: "web=063342e cron=063342e" })),
+      targetCommit: TARGET,
+      verifyWebDeployCommit: jest.fn(async (deployId: string) => ({ ok: true, detail: `deploy ${deployId} commit=${TARGET}` })),
+      verifyCanonicalHead: jest.fn(async () => ({ ok: true, detail: `canonical head=${TARGET}` })),
+      verifyTargetCommits: jest.fn(async () => ({ ok: true, detail: `web=${TARGET} cron=${TARGET}` })),
       ...over,
     }
   }
@@ -608,5 +613,174 @@ describe("prod:deploy:safe normal mode is unchanged by the handoff work", () => 
     const b = await runDeploySafeWorkflow(makeHappyPathDeps(), {})
     expect(b.steps.map((s) => s.step)).toEqual(a.steps.map((s) => s.step))
     expect(b.outcome).toBe(a.outcome)
+  })
+})
+
+/**
+ * THE THREE PRE-EXECUTE HARDENINGS.
+ *
+ * 1. The Web deploy is PINNED to the approved commit and verified afterwards.
+ * 2. The canonical branch head is re-read immediately before Resume, because
+ *    Resume is what can make Render deploy the Cron service off that branch.
+ * 3. Neither is optional in handoff mode, and neither exists outside it.
+ */
+describe("handoff pins the Web deploy to the exact commit", () => {
+  const TARGET = "063342e70fe5285aa3de050b7e344c83d51ec459"
+
+  function handoffCronStatus() {
+    return jest
+      .fn()
+      .mockResolvedValueOnce({ id: "cron-1", suspended: true })
+      .mockResolvedValueOnce({ id: "cron-1", suspended: true })
+      .mockResolvedValueOnce({ id: "cron-1", suspended: false })
+  }
+
+  function okHandoff2(over: Partial<DeploySafeHandoff> = {}): DeploySafeHandoff {
+    return {
+      verify: jest.fn(async () => ({ ok: true, refusals: [] })),
+      targetCommit: TARGET,
+      verifyWebDeployCommit: jest.fn(async () => ({ ok: true, detail: `commit=${TARGET}` })),
+      verifyCanonicalHead: jest.fn(async () => ({ ok: true, detail: `head=${TARGET}` })),
+      verifyTargetCommits: jest.fn(async () => ({ ok: true, detail: `web=${TARGET} cron=${TARGET}` })),
+      ...over,
+    }
+  }
+
+  it("passes the exact commitId to the single deploy authority", async () => {
+    const deps = makeDeps({ getCronStatus: handoffCronStatus() })
+    const result = await runDeploySafeWorkflow(deps, { handoff: okHandoff2() })
+    expect(result.outcome).toBe("PASS")
+    expect(deps.triggerDeploy).toHaveBeenCalledWith(TARGET)
+    expect(deps.triggerDeploy).toHaveBeenCalledTimes(1)
+  })
+
+  it("NORMAL mode still calls it with no argument, so the body stays {}", async () => {
+    const deps = makeHappyPathDeps()
+    await runDeploySafeWorkflow(deps)
+    expect(deps.triggerDeploy).toHaveBeenCalledWith()
+    expect(deps.triggerDeploy).not.toHaveBeenCalledWith(TARGET)
+  })
+
+  it("verifies the created deploy's commit BEFORE post-deploy checks and BEFORE resume", async () => {
+    const deps = makeDeps({ getCronStatus: handoffCronStatus() })
+    const handoff = okHandoff2()
+    const result = await runDeploySafeWorkflow(deps, { handoff })
+    const names = result.steps.map((s) => s.step)
+    expect(names).toContain("H2. Verify web deploy commit")
+    expect(names.indexOf("H2. Verify web deploy commit")).toBeLessThan(names.indexOf("J. Post-deploy check"))
+    expect(names.indexOf("H2. Verify web deploy commit")).toBeLessThan(names.indexOf("L. Resume cron"))
+    expect(handoff.verifyWebDeployCommit).toHaveBeenCalledWith("deploy-1")
+  })
+
+  it("a WRONG web deploy commit stops, leaves Cron suspended, and never redeploys", async () => {
+    const deps = makeDeps({ getCronStatus: handoffCronStatus() })
+    const result = await runDeploySafeWorkflow(deps, {
+      handoff: okHandoff2({ verifyWebDeployCommit: jest.fn(async () => ({ ok: false, detail: "commit=cc86a0a expected=063342e" })) }),
+    })
+    expect(result.outcome).toBe("FAIL")
+    expect(result.failedStep).toBe("H2. Verify web deploy commit")
+    expect(deps.triggerDeploy).toHaveBeenCalledTimes(1)
+    expect(deps.resumeCron).not.toHaveBeenCalled()
+    expect(deps.runPostDeployCheck).not.toHaveBeenCalled()
+    expect(result.recommendedRecovery).toMatch(/left SUSPENDED/i)
+  })
+
+  it("an unreadable deploy commit also stops, and does not resume", async () => {
+    const deps = makeDeps({ getCronStatus: handoffCronStatus() })
+    const result = await runDeploySafeWorkflow(deps, {
+      handoff: okHandoff2({
+        verifyWebDeployCommit: jest.fn(async () => {
+          throw new Error("render unreachable")
+        }),
+      }),
+    })
+    expect(result.outcome).toBe("FAIL")
+    expect(result.failedStep).toBe("H2. Verify web deploy commit")
+    expect(deps.resumeCron).not.toHaveBeenCalled()
+  })
+})
+
+describe("handoff re-reads the canonical head immediately before Resume", () => {
+  const TARGET = "063342e70fe5285aa3de050b7e344c83d51ec459"
+
+  function handoffCronStatus() {
+    return jest
+      .fn()
+      .mockResolvedValueOnce({ id: "cron-1", suspended: true })
+      .mockResolvedValueOnce({ id: "cron-1", suspended: true })
+      .mockResolvedValueOnce({ id: "cron-1", suspended: false })
+  }
+
+  function base(over: Partial<DeploySafeHandoff> = {}): DeploySafeHandoff {
+    return {
+      verify: jest.fn(async () => ({ ok: true, refusals: [] })),
+      targetCommit: TARGET,
+      verifyWebDeployCommit: jest.fn(async () => ({ ok: true, detail: `commit=${TARGET}` })),
+      verifyCanonicalHead: jest.fn(async () => ({ ok: true, detail: `head=${TARGET}` })),
+      verifyTargetCommits: jest.fn(async () => ({ ok: true, detail: `web=${TARGET} cron=${TARGET}` })),
+      ...over,
+    }
+  }
+
+  it("reads it again - the 0h gate's read is not reused - and does so right before Resume", async () => {
+    const deps = makeDeps({ getCronStatus: handoffCronStatus() })
+    const handoff = base()
+    const result = await runDeploySafeWorkflow(deps, { handoff })
+    expect(result.outcome).toBe("PASS")
+    expect(handoff.verifyCanonicalHead).toHaveBeenCalledTimes(1)
+    const names = result.steps.map((s) => s.step)
+    expect(names.indexOf("L0. Canonical head before resume")).toBe(names.indexOf("L. Resume cron") - 1)
+    // And it comes after the deploy, not near the start.
+    expect(names.indexOf("G. Trigger deploy")).toBeLessThan(names.indexOf("L0. Canonical head before resume"))
+  })
+
+  it("a MOVED head prevents the Resume entirely", async () => {
+    const deps = makeDeps({ getCronStatus: handoffCronStatus() })
+    const result = await runDeploySafeWorkflow(deps, {
+      handoff: base({ verifyCanonicalHead: jest.fn(async () => ({ ok: false, detail: "head=deadbeef expected=063342e" })) }),
+    })
+    expect(result.outcome).toBe("FAIL")
+    expect(result.failedStep).toBe("L0. Canonical head before resume")
+    expect(deps.resumeCron).not.toHaveBeenCalled()
+    expect(result.reason).toMatch(/was NOT resumed/)
+  })
+
+  it("a FAILED head read also prevents the Resume - fail closed", async () => {
+    const deps = makeDeps({ getCronStatus: handoffCronStatus() })
+    const result = await runDeploySafeWorkflow(deps, {
+      handoff: base({
+        verifyCanonicalHead: jest.fn(async () => {
+          throw new Error("ls-remote failed")
+        }),
+      }),
+    })
+    expect(result.outcome).toBe("FAIL")
+    expect(result.failedStep).toBe("L0. Canonical head before resume")
+    expect(deps.resumeCron).not.toHaveBeenCalled()
+  })
+
+  it("Resume itself never carries a commitId - Render does not support one for Cron", async () => {
+    const deps = makeDeps({ getCronStatus: handoffCronStatus() })
+    await runDeploySafeWorkflow(deps, { handoff: base() })
+    expect(deps.resumeCron).toHaveBeenCalledTimes(1)
+    expect(deps.resumeCron).toHaveBeenCalledWith()
+  })
+
+  it("M2 still requires BOTH services on the exact target after Resume", async () => {
+    const deps = makeDeps({ getCronStatus: handoffCronStatus() })
+    const result = await runDeploySafeWorkflow(deps, {
+      handoff: base({ verifyTargetCommits: jest.fn(async () => ({ ok: false, detail: `web=${TARGET} cron=cc86a0a` })) }),
+    })
+    expect(result.outcome).toBe("FAIL")
+    expect(result.failedStep).toBe("M2. Verify target commit on both services")
+    expect(deps.triggerDeploy).toHaveBeenCalledTimes(1)
+  })
+
+  it("normal mode has neither new step", async () => {
+    const result = await runDeploySafeWorkflow(makeHappyPathDeps())
+    const names = result.steps.map((s) => s.step)
+    expect(names).not.toContain("H2. Verify web deploy commit")
+    expect(names).not.toContain("L0. Canonical head before resume")
+    expect(names).not.toContain("M2. Verify target commit on both services")
   })
 })

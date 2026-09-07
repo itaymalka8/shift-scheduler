@@ -320,18 +320,27 @@ export async function getDeploy(client: RenderClient, serviceId: string, deployI
 }
 
 /**
- * Triggers a new deploy of the service's currently connected branch (an empty
- * body deploys latest, per Render's documented Deploys API).
+ * Triggers a new deploy. With no commitId the service's currently connected
+ * branch tip is deployed (an empty body, per Render's documented Deploys API);
+ * with one, Render deploys exactly that commit.
  *
- * THERE IS EXACTLY ONE DEPLOY AUTHORITY IN THIS CODEBASE, and this is it -
- * reached only through render-ops' triggerDeploy, which prod:deploy:safe calls
- * after its own backup and Cron-suspension gates. A commitId parameter was
- * considered for the source migration and deliberately removed with it: a
- * second way to start a deploy, however narrow, is a second path that has to
- * be audited every time the deploy contract changes.
+ * THERE IS EXACTLY ONE DEPLOY AUTHORITY IN THIS CODEBASE, and this is it. The
+ * commitId parameter widens what that one authority can express - it does not
+ * add a second path. Normal prod:deploy:safe still calls it with no commitId
+ * and still sends `{}`; only the source-migration handoff pins, because that is
+ * the run where the branch tip and the approved commit could differ.
+ *
+ * WEB SERVICES ONLY. Render does not support commitId for Cron Jobs, so the
+ * cron caller must omit it and assert the resulting deploy's commit afterwards
+ * instead - see render-source-migration.ts on why that is detection rather than
+ * atomicity.
+ *
+ * The body carries at most ONE key. A pin is a pin, not an opportunity to send
+ * anything else.
  */
-export async function createDeploy(client: RenderClient, serviceId: string): Promise<RenderDeploySummary> {
-  const raw = await renderFetch<unknown>(client, `/services/${serviceId}/deploys`, { method: "POST", body: "{}" })
+export async function createDeploy(client: RenderClient, serviceId: string, commitId?: string): Promise<RenderDeploySummary> {
+  const body = commitId === undefined ? "{}" : JSON.stringify({ commitId })
+  const raw = await renderFetch<unknown>(client, `/services/${serviceId}/deploys`, { method: "POST", body })
   return readDeploySummary(raw)
 }
 
