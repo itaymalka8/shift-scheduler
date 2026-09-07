@@ -21,20 +21,54 @@ name: GoalX Render Source Migration — DRY RUN (read only)
 #      PRODUCTION_WRITE_CONFIRM." Mutation requires the literal `--execute`
 #      argument, which appears nowhere in this file.
 #
-#   2. The credentials. Only RENDER_API_KEY is passed. NEON_API_KEY,
-#      PRODUCTION_DATABASE_URL and PRODUCTION_WRITE_CONFIRM are deliberately
-#      absent, so no production write credential exists inside this job at all —
-#      the write guard cannot be satisfied even if something tried.
+#   2. The credentials. Only RENDER_API_KEY and a READ-ONLY GitHub token are
+#      passed. NEON_API_KEY, PRODUCTION_DATABASE_URL and
+#      PRODUCTION_WRITE_CONFIRM are deliberately absent, so no production write
+#      credential exists inside this job at all — the write guard cannot be
+#      satisfied even if something tried.
 #
-#   3. The token. `permissions: contents: read` and
+#   3. The git credentials. `permissions: contents: read` and
 #      `persist-credentials: false` mean the job holds no credential that could
-#      write to git, so it cannot move a branch or push a commit.
+#      write to THIS repository, so it cannot move a branch or push a commit
+#      here. The one git credential it does hold is described below, and it is
+#      read-only, scoped to one other repository, and sent to nothing else.
 #
 # There is no Render mutation call, no Neon call, no backup creation, no Cron
 # suspend or resume, no deploy, and no baseline anywhere in this file.
 #
 # NO DISPATCH INPUTS. The dispatcher supplies nothing: no command, no arguments,
 # no flags. The command below is a fixed literal.
+#
+# ---------------------------------------------------------------------------
+# WHY A GITHUB TOKEN IS NEEDED AT ALL, AND WHY IT IS NOT GITHUB_TOKEN
+#
+# The dry run calls `git ls-remote https://github.com/itaymalka8/goalx-manager`
+# to read the canonical branch head over the wire. goalx-manager is PRIVATE and
+# is a DIFFERENT repository from this one. GITHUB_TOKEN is scoped to the running
+# repository and can never read another private repo, which is why the previous
+# attempt failed at that step with "could not read Username for
+# 'https://github.com'". That was never caused by persist-credentials: false;
+# no setting of this workflow could have fixed it.
+#
+# So the job supplies a separate credential:
+#
+#   secret name : GOALX_MANAGER_READ_TOKEN
+#   type        : fine-grained personal access token
+#   repository  : itaymalka8/goalx-manager — that ONE repository, nothing else
+#   permissions : Contents = Read-only. Nothing else. No write of any kind.
+#
+# It is bound to exactly one URL. `http.<url>.extraheader` matches by URL
+# prefix, and the URL configured below is the full goalx-manager clone URL, so
+# git attaches the header to requests for that repository and to no other host,
+# owner or repository. The header form is the same one actions/checkout uses.
+# The config is written to the ephemeral runner's git config and removed again
+# in an always() step; GitHub masks the value in logs regardless.
+#
+# A read-only token cannot push, cannot open a PR, and cannot change a branch.
+# Combined with layer 1 (the command takes no --execute) and layer 2 (no
+# production write credential exists in this job), adding it does not create a
+# write path anywhere.
+# ---------------------------------------------------------------------------
 
 on:
   workflow_dispatch:
@@ -57,6 +91,35 @@ jobs:
           ref: 831ac5d673026bb3630d230ac4f6e3c1f45a94f3
           persist-credentials: false
 
+      # Fail before installing anything if the secret is absent, and say so
+      # without revealing any part of it. GitHub masks secret values in logs.
+      - name: Assert the read-only goalx-manager token is present
+        env:
+          GOALX_MANAGER_READ_TOKEN: ${{ secrets.GOALX_MANAGER_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GOALX_MANAGER_READ_TOKEN:-}" ]; then
+            echo "FAIL: the repository secret GOALX_MANAGER_READ_TOKEN is not set." >&2
+            echo "      It must be a fine-grained PAT scoped to itaymalka8/goalx-manager" >&2
+            echo "      only, with Contents = Read-only and no other permission." >&2
+            exit 1
+          fi
+          echo "OK: a GOALX_MANAGER_READ_TOKEN secret is present. Its value is never printed."
+
+      # Bound to the goalx-manager clone URL alone. No other repository, owner
+      # or host receives this header. The pinned tooling commit is NOT modified
+      # to make this work — its `git ls-remote` call is untouched.
+      - name: Authorize read-only access to goalx-manager, and nothing else
+        env:
+          GOALX_MANAGER_READ_TOKEN: ${{ secrets.GOALX_MANAGER_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          AUTH=$(printf 'x-access-token:%s' "$GOALX_MANAGER_READ_TOKEN" | base64 -w0)
+          git config --global \
+            "http.https://github.com/itaymalka8/goalx-manager.extraheader" \
+            "AUTHORIZATION: basic $AUTH"
+          echo "Configured read-only auth for https://github.com/itaymalka8/goalx-manager only."
+
       - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
@@ -71,3 +134,11 @@ jobs:
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: npm run prod:render:source-migrate
+
+      - name: Remove the git credential from the runner
+        if: always()
+        run: |
+          set -euo pipefail
+          git config --global --unset-all \
+            "http.https://github.com/itaymalka8/goalx-manager.extraheader" || true
+          echo "Git credential removed."
